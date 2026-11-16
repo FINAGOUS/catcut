@@ -131,6 +131,42 @@ export interface ChromaKey {
 
 export type StabilizeMethod = 'vidstab' | 'deshake';
 
+/**
+ * Audio ducking (P1, M4): while the sidechain (voice) is loud, this
+ * clip's audio (music) is compressed down. Implemented with FFmpeg
+ * sidechaincompress (native libavfilter — LGPL part, but still to be
+ * re-checked on the BtbN LGPL 9.0 build at the M2 gate).
+ * `source` is the voice audio file; it is used from its own t=0,
+ * aligned to the clip-local timeline (v1: the caller aligns it, e.g.
+ * the mic track of the same session). The voice is a CONTROL signal
+ * only — it is not mixed into the output.
+ */
+export interface DuckingOptions {
+  /** Path to the sidechain (voice) audio file. Required. */
+  source: string;
+  /**
+   * Compressor threshold in dBFS (default -20). Range -60..0.
+   * sidechaincompress itself takes a linear threshold (0.00098..1);
+   * this dB value is converted with 10^(dB/20).
+   */
+  thresholdDb?: number;
+  /** Compression ratio (default 8). Range 1..20. */
+  ratio?: number;
+  /** Attack in ms (default 20). Range 1..1000. */
+  attackMs?: number;
+  /** Release in ms (default 250). Range 10..5000. */
+  releaseMs?: number;
+  /**
+   * Extra duck depth in dB (default 0, range 0..30). Implemented by
+   * lowering the effective threshold by duckDb / (1 - 1/ratio): for
+   * any sidechain level above threshold that adds exactly duckDb more
+   * gain reduction on top of what threshold/ratio alone give. During
+   * silence the sidechain sits below threshold and the music is
+   * untouched, so duckDb never cuts the music's resting level.
+   */
+  duckDb?: number;
+}
+
 export interface StabilizeOptions {
   /**
    * 'vidstab': two-pass libvidstab (best quality, GPL-only — libvidstab is
@@ -215,6 +251,12 @@ export interface Clip {
    * (reversed frame order breaks the .trf alignment).
    */
   stabilize?: boolean | StabilizeOptions;
+  /**
+   * Audio ducking: while the sidechain voice file is loud, this clip's
+   * audio is compressed down (sidechaincompress). The sidechain is a
+   * control signal only and is not mixed into the output.
+   */
+  ducking?: DuckingOptions;
 }
 
 export type TransitionType =
