@@ -23,6 +23,11 @@ import {
 import { subtitlesToTextOverlays } from './subtitles.js';
 import { TEXT_PRESETS } from './presets.js';
 import { maskOverlayPos, maskSegments } from './mask.js';
+import {
+  deshakeFilter,
+  validateStabilize,
+  vidstabTransformFilter,
+} from './stabilize.js';
 
 export interface FilterGraph {
   filterComplex: string;
@@ -39,6 +44,35 @@ interface MaskCtx {
   extraInputs: string[];
   /** `${clipIdx}:${segIdx}` -> ffmpeg input index. */
   inputIndex: Map<string, number>;
+  /** clipIdx -> ffmpeg input index of its chroma-key background source. */
+  bgInputIndex: Map<number, number>;
+}
+
+/** despill screen type from the key colour (blue-dominant hex => blue). */
+function despillType(color: string): 'green' | 'blue' {
+  const c = color.toLowerCase().trim();
+  if (c === 'blue' || c === '0x0000ff' || c === '#0000ff') return 'blue';
+  const m = c.match(/^(?:0x|#)?([0-9a-f]{6})$/);
+  if (m) {
+    const v = parseInt(m[1], 16);
+    const r = (v >> 16) & 0xff;
+    const g = (v >> 8) & 0xff;
+    const b = v & 0xff;
+    if (b > r && b > g) return 'blue';
+  }
+  return 'green';
+}
+
+function validateChromaKey(key: NonNullable<Clip['chromaKey']>, id: string): void {
+  if (key.similarity !== undefined && (key.similarity <= 0 || key.similarity > 1)) {
+    throw new Error(`clip ${id}: chromaKey.similarity ${key.similarity} outside (0, 1]`);
+  }
+  if (key.blend !== undefined && (key.blend < 0 || key.blend > 1)) {
+    throw new Error(`clip ${id}: chromaKey.blend ${key.blend} outside [0, 1]`);
+  }
+  if (key.background?.color && key.background?.source) {
+    throw new Error(`clip ${id}: chromaKey.background takes either color or source, not both`);
+  }
 }
 
 /** xfade transition name per TransitionType (all verified in ffmpeg 8.1). */
@@ -111,9 +145,33 @@ function clipVideoChains(
   fontfile: string,
   lut?: string,
   maskCtx?: MaskCtx,
+  stabTrf?: Map<number, string>,
 ): string[] {
   const { width, height, fps } = project;
   const chains: string[] = [];
+
+  // Stabilisation, vidstab path: the transform must see exactly the frames
+  // the detect pass saw, in the same order — so build one stabilised
+  // full-range stream FIRST ([vstb]), then cut speed segments out of it.
+  // (validateStabilize rejects vidstab+reverse for the same reason.)
+  const stab = validateStabilize(clip);
+  let segInput = `[${idx}:v]`;
+  let segBase = clip.in;
+  if (stab?.method === 'vidstab') {
+    const trf = stabTrf?.get(idx);
+    if (!trf) {
+      throw new Error(
+        `clip ${clip.id}: vidstab .trf not prepared; call prepareStabilization first`,
+      );
+    }
+    chains.push(
+      `[${idx}:v]trim=start=${clip.in}:end=${clip.out},setpts=PTS-STARTPTS,` +
+        `${vidstabTransformFilter(trf, stab)}[vstb${idx}]`,
+    );
+    segInput = `[vstb${idx}]`;
+    segBase = 0;
+  }
+
   const segments = clip.reverse
     ? speedCurveSegments(clip).slice().reverse()
     : speedCurveSegments(clip);
@@ -121,13 +179,13 @@ function clipVideoChains(
   if (segments.length === 1) {
     const seg = segments[0];
     chains.push(
-      `[${idx}:v]trim=start=${clip.in + seg.start}:end=${clip.in + seg.end},` +
+      `${segInput}trim=start=${segBase + seg.start}:end=${segBase + seg.end},` +
         `setpts=(PTS-STARTPTS)/${seg.speed}${reverseTail}[vb${idx}]`,
     );
   } else {
     const outs = segments.map((seg, j) => {
       chains.push(
-        `[${idx}:v]trim=start=${clip.in + seg.start}:end=${clip.in + seg.end},` +
+        `${segInput}trim=start=${segBase + seg.start}:end=${segBase + seg.end},` +
           `setpts=(PTS-STARTPTS)/${seg.speed}${reverseTail}[vs${idx}_${j}]`,
       );
       return `[vs${idx}_${j}]`;
@@ -135,9 +193,16 @@ function clipVideoChains(
     chains.push(`${outs.join('')}concat=n=${segments.length}:v=1:a=0[vb${idx}]`);
   }
 
+  // Stabilisation, deshake path (single-pass, no .trf): apply to the
+  // assembled clip stream before the freeze stage.
+  let baseLabel = `[vb${idx}]`;
+  if (stab?.method === 'deshake') {
+    chains.push(`[vb${idx}]${deshakeFilter(stab)}[vds${idx}]`);
+    baseLabel = `[vds${idx}]`;
+  }
+
   // Freeze stage: hold the frame at output time freezeAt for freezeDuration.
   // pre + frozen frame (loop) + post, concatenated back into one stream.
-  let baseLabel = `[vb${idx}]`;
   if (clip.freezeAt !== undefined) {
     const F = clip.freezeAt;
     const fd = clip.freezeDuration ?? 1;
@@ -145,16 +210,16 @@ function clipVideoChains(
     const frames = Math.max(1, Math.round(fd * fps));
     const parts: string[] = [];
     if (F > 0) {
-      chains.push(`[vb${idx}]trim=start=0:end=${F},setpts=PTS-STARTPTS[vpre${idx}]`);
+      chains.push(`${baseLabel}trim=start=0:end=${F},setpts=PTS-STARTPTS[vpre${idx}]`);
       parts.push(`[vpre${idx}]`);
     }
     chains.push(
-      `[vb${idx}]trim=start=${F}:end=${F + 1 / fps},setpts=N/FRAME_RATE/TB,` +
+      `${baseLabel}trim=start=${F}:end=${F + 1 / fps},setpts=N/FRAME_RATE/TB,` +
         `loop=loop=${frames - 1}:size=1:start=0,setpts=N/FRAME_RATE/TB[vfrz${idx}]`,
     );
     parts.push(`[vfrz${idx}]`);
     if (D - F > 0.001) {
-      chains.push(`[vb${idx}]trim=start=${F}:end=${D},setpts=PTS-STARTPTS[vpost${idx}]`);
+      chains.push(`${baseLabel}trim=start=${F}:end=${D},setpts=PTS-STARTPTS[vpost${idx}]`);
       parts.push(`[vpost${idx}]`);
     }
     chains.push(`${parts.join('')}concat=n=${parts.length}:v=1:a=0[vbf${idx}]`);
@@ -173,6 +238,14 @@ function clipVideoChains(
   let picLabel = `[vbs${idx}]`;
   if (clip.mask && maskCtx) {
     picLabel = applyMaskStage(chains, picLabel, clip, idx, project, maskCtx);
+  }
+
+  // Chroma-key stage (P1): key the foreground to alpha and composite it
+  // over the background (colour source, video/image input, or black).
+  // Runs after the mask stage so zoom/rotation/colour act as camera
+  // effects on the composited frame, same as the mask stage.
+  if (clip.chromaKey) {
+    picLabel = applyChromaStage(chains, picLabel, clip, idx, project, maskCtx);
   }
 
   const parts: string[] = [picLabel];
@@ -253,6 +326,58 @@ function clipVideoChains(
     picChain + (textFilters.length > 0 ? `,${textFilters.join(',')}` : '') + `[v${idx}]`,
   );
   return chains;
+}
+
+/**
+ * Chroma-key stage (P1). Input is the full-frame clip picture; output is
+ * the keyed foreground composited over the background. The keyed area is
+ * genuinely transparent (yuva420p) between chromakey and overlay — a
+ * standalone chromakey -> PNG check in verify-p1b confirms alpha ~0 in
+ * the green area. No background = solid black (MP4 has no alpha channel,
+ * so transparency must land on something).
+ */
+function applyChromaStage(
+  chains: string[],
+  input: string,
+  clip: Clip,
+  idx: number,
+  project: Project,
+  ctx?: MaskCtx,
+): string {
+  const key = clip.chromaKey as NonNullable<Clip['chromaKey']>;
+  validateChromaKey(key, clip.id);
+  const { width, height, fps } = project;
+  const dur = clipDuration(clip);
+  const similarity = key.similarity ?? 0.1;
+  const blend = key.blend ?? 0;
+  const despill = key.despill ?? true;
+  const despillPart = despill ? `,despill=type=${despillType(key.color)}` : '';
+  chains.push(
+    `${input}format=yuva420p,` +
+      `chromakey=color=${key.color}:similarity=${similarity}:blend=${blend}` +
+      `${despillPart}[ckfg${idx}]`,
+  );
+  const bg = key.background;
+  if (bg?.source) {
+    const inputIdx = ctx?.bgInputIndex.get(idx);
+    if (inputIdx === undefined) {
+      throw new Error(`clip ${clip.id}: no input for chroma background source`);
+    }
+    const isImage = /\.(png|jpe?g|webp|bmp)$/i.test(bg.source);
+    const loopPart = isImage ? 'loop=loop=-1:size=1:start=0,' : '';
+    chains.push(
+      `[${inputIdx}:v]${loopPart}trim=start=0:end=${dur},setpts=PTS-STARTPTS,` +
+        `scale=${width}:${height}:force_original_aspect_ratio=increase,` +
+        `crop=${width}:${height},fps=${fps},format=yuv420p[ckbg${idx}]`,
+    );
+  } else {
+    const color = bg?.color ?? 'black';
+    chains.push(
+      `color=c=${color}:s=${width}x${height}:r=${fps}:d=${dur}[ckbg${idx}]`,
+    );
+  }
+  chains.push(`[ckbg${idx}][ckfg${idx}]overlay=0:0,format=yuv420p[ckout${idx}]`);
+  return `[ckout${idx}]`;
 }
 
 /**
@@ -424,11 +549,18 @@ export function buildFilterGraph(
   lut?: string,
   assFile?: string,
   maskFiles?: Map<number, string[]>,
+  stabilizeTrf?: Map<number, string>,
 ): FilterGraph {
   const n = project.clips.length;
   if (n === 0) throw new Error('project has no clips');
-  // Assign ffmpeg input indexes to mask PNGs (after the clip inputs).
-  const maskCtx: MaskCtx = { maskFiles, extraInputs: [], inputIndex: new Map() };
+  // Assign ffmpeg input indexes to mask PNGs (after the clip inputs),
+  // then to chroma-key background sources.
+  const maskCtx: MaskCtx = {
+    maskFiles,
+    extraInputs: [],
+    inputIndex: new Map(),
+    bgInputIndex: new Map(),
+  };
   project.clips.forEach((clip, i) => {
     if (!clip.mask) return;
     const files = maskFiles?.get(i) ?? [];
@@ -437,9 +569,15 @@ export function buildFilterGraph(
       maskCtx.extraInputs.push(f);
     });
   });
+  project.clips.forEach((clip, i) => {
+    const src = clip.chromaKey?.background?.source;
+    if (!src) return;
+    maskCtx.bgInputIndex.set(i, n + maskCtx.extraInputs.length);
+    maskCtx.extraInputs.push(src);
+  });
   const chains: string[] = [];
   project.clips.forEach((clip, i) => {
-    chains.push(...clipVideoChains(clip, i, project, fontfile, lut, maskCtx));
+    chains.push(...clipVideoChains(clip, i, project, fontfile, lut, maskCtx, stabilizeTrf));
     chains.push(...clipAudioChains(clip, i));
   });
 
