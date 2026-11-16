@@ -12,6 +12,7 @@
 //   clip-local OUTPUT time, matching their keyframe `t` semantics.
 
 import {
+  clipBaseDuration,
   clipDuration,
   speedCurveSegments,
   type Clip,
@@ -19,6 +20,8 @@ import {
   type Project,
   type ZoomKeyframe,
 } from './project.js';
+import { subtitlesToTextOverlays } from './subtitles.js';
+import { TEXT_PRESETS } from './presets.js';
 
 export interface FilterGraph {
   filterComplex: string;
@@ -84,8 +87,10 @@ function drawtextFilter(
 /**
  * Video chains for one clip. Returns one or more filter_complex segments;
  * the clip's final video label is [v<idx>].
- * Order after the segment concat: scale/pad/fps -> zoom -> rotation ->
- * colour -> LUT -> opacity (split + black branch + blend) -> text.
+ * Order: segment trim/speed (+reverse) -> freeze stage -> scale/pad/fps ->
+ * zoom -> rotation -> colour -> LUT -> opacity (split + black branch +
+ * blend) -> text (+ clip subtitles).
+ * freezeAt is clip-local OUTPUT time (after speed, after reverse).
  */
 function clipVideoChains(
   clip: Clip,
@@ -96,26 +101,55 @@ function clipVideoChains(
 ): string[] {
   const { width, height, fps } = project;
   const chains: string[] = [];
-  const segments = speedCurveSegments(clip);
+  const segments = clip.reverse
+    ? speedCurveSegments(clip).slice().reverse()
+    : speedCurveSegments(clip);
+  const reverseTail = clip.reverse ? ',reverse,setpts=N/FRAME_RATE/TB' : '';
   if (segments.length === 1) {
     const seg = segments[0];
     chains.push(
       `[${idx}:v]trim=start=${clip.in + seg.start}:end=${clip.in + seg.end},` +
-        `setpts=(PTS-STARTPTS)/${seg.speed}[vb${idx}]`,
+        `setpts=(PTS-STARTPTS)/${seg.speed}${reverseTail}[vb${idx}]`,
     );
   } else {
     const outs = segments.map((seg, j) => {
       chains.push(
         `[${idx}:v]trim=start=${clip.in + seg.start}:end=${clip.in + seg.end},` +
-          `setpts=(PTS-STARTPTS)/${seg.speed}[vs${idx}_${j}]`,
+          `setpts=(PTS-STARTPTS)/${seg.speed}${reverseTail}[vs${idx}_${j}]`,
       );
       return `[vs${idx}_${j}]`;
     });
     chains.push(`${outs.join('')}concat=n=${segments.length}:v=1:a=0[vb${idx}]`);
   }
 
+  // Freeze stage: hold the frame at output time freezeAt for freezeDuration.
+  // pre + frozen frame (loop) + post, concatenated back into one stream.
+  let baseLabel = `[vb${idx}]`;
+  if (clip.freezeAt !== undefined) {
+    const F = clip.freezeAt;
+    const fd = clip.freezeDuration ?? 1;
+    const D = clipBaseDuration(clip);
+    const frames = Math.max(1, Math.round(fd * fps));
+    const parts: string[] = [];
+    if (F > 0) {
+      chains.push(`[vb${idx}]trim=start=0:end=${F},setpts=PTS-STARTPTS[vpre${idx}]`);
+      parts.push(`[vpre${idx}]`);
+    }
+    chains.push(
+      `[vb${idx}]trim=start=${F}:end=${F + 1 / fps},setpts=N/FRAME_RATE/TB,` +
+        `loop=loop=${frames - 1}:size=1:start=0,setpts=N/FRAME_RATE/TB[vfrz${idx}]`,
+    );
+    parts.push(`[vfrz${idx}]`);
+    if (D - F > 0.001) {
+      chains.push(`[vb${idx}]trim=start=${F}:end=${D},setpts=PTS-STARTPTS[vpost${idx}]`);
+      parts.push(`[vpost${idx}]`);
+    }
+    chains.push(`${parts.join('')}concat=n=${parts.length}:v=1:a=0[vbf${idx}]`);
+    baseLabel = `[vbf${idx}]`;
+  }
+
   const parts: string[] = [
-    `[vb${idx}]scale=${width}:${height}:force_original_aspect_ratio=decrease`,
+    `${baseLabel}scale=${width}:${height}:force_original_aspect_ratio=decrease`,
     `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`,
     `fps=${fps}`,
   ];
@@ -152,6 +186,14 @@ function clipVideoChains(
   }
   if (lut) parts.push(`lut3d=${lut}`);
   const textFilters = (clip.text ?? []).map((t) => drawtextFilter(t, fontfile));
+  // Clip-level subtitles (clip-local output time, lower-third style).
+  if (clip.subtitles && clip.subtitles.length > 0) {
+    textFilters.push(
+      ...subtitlesToTextOverlays(clip.subtitles, TEXT_PRESETS.lowerThird).map((t) =>
+        drawtextFilter(t, fontfile),
+      ),
+    );
+  }
 
   const opacity = clip.opacity ?? [];
   if (opacity.length >= 1) {
@@ -198,29 +240,59 @@ function atempoChain(speed: number): string {
 
 /**
  * Audio chains for one clip. Final audio label is [a<idx>].
- * Order after the segment concat: afade in/out -> afftdn -> loudnorm -> volume.
+ * Order: segment trim/speed (+areverse) -> freeze stage (silent span)
+ * -> afade in/out -> afftdn -> loudnorm -> volume.
+ * The freeze span is silence built from a muted 10 ms slice of the clip
+ * itself (apad), so sample rate / channel layout always match.
  */
 function clipAudioChains(clip: Clip, idx: number): string[] {
   const chains: string[] = [];
-  const segments = speedCurveSegments(clip);
+  const segments = clip.reverse
+    ? speedCurveSegments(clip).slice().reverse()
+    : speedCurveSegments(clip);
+  const reverseTail = clip.reverse ? ',areverse,asetpts=PTS-STARTPTS' : '';
   if (segments.length === 1) {
     const seg = segments[0];
     chains.push(
       `[${idx}:a]atrim=start=${clip.in + seg.start}:end=${clip.in + seg.end},` +
-        `asetpts=PTS-STARTPTS,${atempoChain(seg.speed)}[ab${idx}]`,
+        `asetpts=PTS-STARTPTS,${atempoChain(seg.speed)}${reverseTail}[ab${idx}]`,
     );
   } else {
     const outs = segments.map((seg, j) => {
       chains.push(
         `[${idx}:a]atrim=start=${clip.in + seg.start}:end=${clip.in + seg.end},` +
-          `asetpts=PTS-STARTPTS,${atempoChain(seg.speed)}[as${idx}_${j}]`,
+          `asetpts=PTS-STARTPTS,${atempoChain(seg.speed)}${reverseTail}[as${idx}_${j}]`,
       );
       return `[as${idx}_${j}]`;
     });
     chains.push(`${outs.join('')}concat=n=${segments.length}:v=0:a=1[ab${idx}]`);
   }
+
+  let audioBase = `[ab${idx}]`;
+  if (clip.freezeAt !== undefined) {
+    const F = clip.freezeAt;
+    const fd = clip.freezeDuration ?? 1;
+    const D = clipBaseDuration(clip);
+    const parts: string[] = [];
+    if (F > 0) {
+      chains.push(`[ab${idx}]atrim=start=0:end=${F},asetpts=PTS-STARTPTS[apre${idx}]`);
+      parts.push(`[apre${idx}]`);
+    }
+    chains.push(
+      `[ab${idx}]atrim=start=0:end=0.01,asetpts=PTS-STARTPTS,` +
+        `volume=0,apad=whole_dur=${fd}[asil${idx}]`,
+    );
+    parts.push(`[asil${idx}]`);
+    if (D - F > 0.001) {
+      chains.push(`[ab${idx}]atrim=start=${F}:end=${D},asetpts=PTS-STARTPTS[apost${idx}]`);
+      parts.push(`[apost${idx}]`);
+    }
+    chains.push(`${parts.join('')}concat=n=${parts.length}:v=0:a=1[abf${idx}]`);
+    audioBase = `[abf${idx}]`;
+  }
+
   const dur = clipDuration(clip);
-  const parts: string[] = [`[ab${idx}]`];
+  const parts: string[] = [audioBase];
   const audioFilters: string[] = [];
   if (clip.audioFadeIn !== undefined && clip.audioFadeIn > 0) {
     audioFilters.push(`afade=t=in:st=0:d=${Math.min(clip.audioFadeIn, dur)}`);
@@ -242,6 +314,7 @@ export function buildFilterGraph(
   project: Project,
   fontfile: string,
   lut?: string,
+  assFile?: string,
 ): FilterGraph {
   const n = project.clips.length;
   if (n === 0) throw new Error('project has no clips');
@@ -260,9 +333,7 @@ export function buildFilterGraph(
     const aInputs = project.clips.map((_, i) => `[a${i}]`).join('');
     chains.push(`${vInputs}concat=n=${n}:v=1:a=0[vout]`);
     chains.push(`${aInputs}concat=n=${n}:v=0:a=1[aout]`);
-    return { filterComplex: chains.join(';'), videoOut, audioOut };
-  }
-
+  } else {
   // Chained xfade / acrossfade. Offset of the k-th transition (0-based) is the
   // accumulated timeline duration before clip k+1, minus the overlaps already
   // applied (each non-cut transition overlaps transitionDuration).
@@ -295,5 +366,14 @@ export function buildFilterGraph(
       acc = acc + clipDuration(project.clips[k + 1]);
     }
   });
+  }
+
+  // Project-level subtitles: karaoke word highlight via the ASS filter,
+  // applied once to the assembled timeline (project time).
+  if (assFile) {
+    const quoted = `'${assFile.replace(/\\/g, '\\\\').replace(/'/g, "'\\''")}'`;
+    chains.push(`[vout]ass=${quoted}[vsub]`);
+    videoOut = '[vsub]';
+  }
   return { filterComplex: chains.join(';'), videoOut, audioOut };
 }
