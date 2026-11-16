@@ -1,0 +1,64 @@
+name: Build test (cloud)
+
+# First cloud-build check for the FINAGOUS/catcut fork.
+# Manual trigger only. Builds the WPF app exactly like the upstream
+# release workflow does (setup-tools -> build -> startup checks ->
+# portable ZIP), but uploads the ZIP as a workflow artifact instead of
+# creating or publishing a GitHub Release. No release is created.
+# NOTE: this test build still uses the upstream setup-tools.ps1, which
+# downloads Gyan's GPL FFmpeg build. The LGPL FFmpeg swap (M2 plan) is
+# a separate step before any public distribution.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Download FFmpeg
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          & ./Windows/setup-tools.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency setup failed.' }
+
+      - name: Build
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & powershell -NoProfile -ExecutionPolicy Bypass -File Windows/build.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Windows build failed.' }
+
+      - name: Startup checks
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $app = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/DogSC.Windows.exe') -ArgumentList '--snapshot' -WindowStyle Hidden -PassThru
+          if (-not $app.WaitForExit(30000)) { Stop-Process -Id $app.Id; throw 'Startup check timed out.' }
+          if ($app.ExitCode -ne 0 -or -not (Test-Path 'Windows/bin/editor-preview.png')) { throw 'Startup check failed.' }
+          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/DogSC.Windows.exe') -ArgumentList '--update-test' -WindowStyle Hidden -PassThru -Wait
+          if ($test.ExitCode -ne 0 -or -not ((Get-Content 'Windows/bin/update-results.txt' -Raw).StartsWith('PASS:'))) { throw 'Update checks failed.' }
+
+      - name: Package portable ZIP
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & powershell -NoProfile -ExecutionPolicy Bypass -File Windows/package.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Packaging failed.' }
+
+      - name: Upload portable ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: catcut-windows-portable
+          path: Windows/share/*.zip
+          if-no-files-found: error
+          retention-days: 7
