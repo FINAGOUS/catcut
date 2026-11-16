@@ -5,6 +5,9 @@
 // text overlays, transitions) in a Windows/FFmpeg-native form.
 // P0 (M4): transitions extended, generic keyframes (opacity/rotation),
 // speed curves, text styles, audio fades/denoise/loudnorm, colour adjust.
+// P0b: reverse + freeze frame, subtitles (clip- and project-level).
+
+import type { SubtitleItem } from './subtitles.js';
 
 export interface TextOverlay {
   /** Text to burn in. */
@@ -99,6 +102,19 @@ export interface Clip {
   loudnorm?: boolean;
   /** Colour adjustment (eq + colorbalance). */
   color?: ColorAdjust;
+  /** Play the whole clip backwards (video reverse + audio areverse). */
+  reverse?: boolean;
+  /**
+   * Freeze-frame: hold the frame at clip-local OUTPUT time `freezeAt`
+   * (i.e. after speed is applied) for `freezeDuration` seconds.
+   * The frozen span is SILENT (audio is muted there); the frame itself
+   * is the source frame at output time freezeAt.
+   */
+  freezeAt?: number;
+  /** Freeze duration in seconds, default 1. */
+  freezeDuration?: number;
+  /** Clip-level subtitles, clip-local OUTPUT time, burned with drawtext. */
+  subtitles?: SubtitleItem[];
 }
 
 export type TransitionType =
@@ -122,6 +138,11 @@ export interface Project {
   transitions: TransitionType[];
   /** Transition duration in seconds (used by every non-'cut' transition). */
   transitionDuration: number;
+  /**
+   * Project-level subtitles, PROJECT time, burned with the ASS filter
+   * (karaoke word highlight) after the timeline is assembled.
+   */
+  subtitles?: SubtitleItem[];
 }
 
 export interface SpeedSegment {
@@ -152,7 +173,27 @@ export function speedCurveSegments(clip: Clip): SpeedSegment[] {
 
 /** Clip-local duration after speed (or speed curve) is applied. */
 export function clipDuration(clip: Clip): number {
-  return speedCurveSegments(clip).reduce((sum, s) => sum + (s.end - s.start) / s.speed, 0);
+  const base = speedCurveSegments(clip).reduce(
+    (sum, s) => sum + (s.end - s.start) / s.speed,
+    0,
+  );
+  if (clip.freezeAt === undefined) return base;
+  if (clip.freezeAt < 0 || clip.freezeAt >= base) {
+    throw new Error(
+      `clip ${clip.id}: freezeAt ${clip.freezeAt} outside [0, ${base.toFixed(3)})`,
+    );
+  }
+  const fd = clip.freezeDuration ?? 1;
+  if (fd <= 0) throw new Error(`clip ${clip.id}: freezeDuration must be > 0`);
+  return base + fd;
+}
+
+/** Clip duration WITHOUT the freeze extension (freeze source window). */
+export function clipBaseDuration(clip: Clip): number {
+  return speedCurveSegments(clip).reduce(
+    (sum, s) => sum + (s.end - s.start) / s.speed,
+    0,
+  );
 }
 
 /** Total timeline duration, accounting for transition overlaps. */
