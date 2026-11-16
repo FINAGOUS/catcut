@@ -194,6 +194,21 @@ export interface StabilizeOptions {
   deshakeEdge?: 'blank' | 'original' | 'clamp' | 'mirror';
 }
 
+export interface PortraitCutout {
+  /** Path to the segmentation .onnx file; default is the bundled MediaPipe
+   *  Selfie Segmentation model (models/selfie_segmentation_256x256.onnx). */
+  model?: string;
+  /** What shows through the cut-out area (colour or video/image file).
+   *  No background = solid black. Same shape as ChromaBackground. */
+  background?: ChromaBackground;
+  /** Soften the mask edge in px (gblur sigma on the mask, default 0). */
+  edgeFeather?: number;
+  /** Run the model every Nth frame (default 1); the mask video is then
+   *  upsampled to full fps in the graph. Use 3-5 for long clips when the
+   *  person barely moves. */
+  sampleEvery?: number;
+}
+
 export interface Clip {
   id: string;
   /** Path to the source media file. */
@@ -268,6 +283,14 @@ export interface Clip {
    * duration (validateAudioOffset throws otherwise).
    */
   audioOffset?: number;
+  /**
+   * Smart portrait cutout (P1, M4): ONNX human segmentation, local only.
+   * The model runs before export (preparePortraitMasks) and produces a
+   * mask video; the graph merges it as alpha and composites the person
+   * over `background`. v1 limits (enforced in portrait.ts): speed must
+   * be 1, no reverse/freeze, and it cannot combine with chromaKey.
+   */
+  portraitCutout?: PortraitCutout;
 }
 
 export type TransitionType =
