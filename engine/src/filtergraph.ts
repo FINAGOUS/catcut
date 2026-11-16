@@ -22,11 +22,23 @@ import {
 } from './project.js';
 import { subtitlesToTextOverlays } from './subtitles.js';
 import { TEXT_PRESETS } from './presets.js';
+import { maskOverlayPos, maskSegments } from './mask.js';
 
 export interface FilterGraph {
   filterComplex: string;
   videoOut: string;
   audioOut: string;
+  /** Still-image inputs (mask PNGs) appended AFTER the clip inputs;
+   *  the caller must add them as `-i` args in this exact order. */
+  extraInputs: string[];
+}
+
+/** Per-clip mask PNG files (segment order) + assigned input indexes. */
+interface MaskCtx {
+  maskFiles?: Map<number, string[]>;
+  extraInputs: string[];
+  /** `${clipIdx}:${segIdx}` -> ffmpeg input index. */
+  inputIndex: Map<string, number>;
 }
 
 /** xfade transition name per TransitionType (all verified in ffmpeg 8.1). */
@@ -98,6 +110,7 @@ function clipVideoChains(
   project: Project,
   fontfile: string,
   lut?: string,
+  maskCtx?: MaskCtx,
 ): string[] {
   const { width, height, fps } = project;
   const chains: string[] = [];
@@ -148,11 +161,21 @@ function clipVideoChains(
     baseLabel = `[vbf${idx}]`;
   }
 
-  const parts: string[] = [
+  const baseParts: string[] = [
     `${baseLabel}scale=${width}:${height}:force_original_aspect_ratio=decrease`,
     `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`,
     `fps=${fps}`,
   ];
+  chains.push(baseParts.join(',') + `[vbs${idx}]`);
+
+  // Shape-mask PiP (P1): composite first, then zoom/rotation/colour act as
+  // camera effects on the composited frame. Without a mask this is a no-op.
+  let picLabel = `[vbs${idx}]`;
+  if (clip.mask && maskCtx) {
+    picLabel = applyMaskStage(chains, picLabel, clip, idx, project, maskCtx);
+  }
+
+  const parts: string[] = [picLabel];
   const zoom = clip.zoom ?? [];
   if (zoom.length >= 2) {
     // Animated zoom = scale up with a time-varying factor, then crop a
@@ -186,14 +209,22 @@ function clipVideoChains(
   }
   if (lut) parts.push(`lut3d=${lut}`);
   const textFilters = (clip.text ?? []).map((t) => drawtextFilter(t, fontfile));
-  // Clip-level subtitles (clip-local output time, lower-third style).
+  // Clip-level subtitles (clip-local output time, lower-third style unless
+  // the clip carries its own subtitleStyle, e.g. from a talk preset).
   if (clip.subtitles && clip.subtitles.length > 0) {
     textFilters.push(
-      ...subtitlesToTextOverlays(clip.subtitles, TEXT_PRESETS.lowerThird).map((t) =>
-        drawtextFilter(t, fontfile),
-      ),
+      ...subtitlesToTextOverlays(
+        clip.subtitles,
+        clip.subtitleStyle ?? TEXT_PRESETS.lowerThird,
+      ).map((t) => drawtextFilter(t, fontfile)),
     );
   }
+
+  // parts[0] is the input label, parts[1..] are the tail filters. A chain
+  // with no tail filter still needs a filter (null) between the labels.
+  const tailFilters = parts.slice(1);
+  const picChain =
+    tailFilters.length > 0 ? `${parts[0]}${tailFilters.join(',')}` : `${parts[0]}null`;
 
   const opacity = clip.opacity ?? [];
   if (opacity.length >= 1) {
@@ -204,7 +235,7 @@ function clipVideoChains(
     // Rejected alternatives, all verified: eq's expression is evaluated once
     // at init (no per-frame change) and pivots on mid-grey, not black;
     // colorchannelmixer rejects expressions outright; geq not used per spec.
-    chains.push(parts.join(',') + `[vo${idx}]`);
+    chains.push(picChain + `[vo${idx}]`);
     const oExpr = lerpExpr(opacity, (k: Keyframe<number>) => k.value, 'T');
     chains.push(`[vo${idx}]split[va${idx}][vbk${idx}]`);
     chains.push(`[vbk${idx}]drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill[blk${idx}]`);
@@ -218,8 +249,85 @@ function clipVideoChains(
     }
     return chains;
   }
-  chains.push([...parts, ...textFilters].join(',') + `[v${idx}]`);
+  chains.push(
+    picChain + (textFilters.length > 0 ? `,${textFilters.join(',')}` : '') + `[v${idx}]`,
+  );
   return chains;
+}
+
+/**
+ * Shape-mask picture-in-picture stage (P1). Input is the full-frame clip
+ * picture; output is the same frame with a masked, scaled copy overlaid
+ * at the mask position. The background is the clip picture itself
+ * (optionally blurred); the foreground is a cropped, scaled copy of it
+ * with the pre-generated PNG mask as alpha (alphaextract + alphamerge).
+ * Mask PNGs are still images; framesync repeats their last frame, so one
+ * PNG covers a whole segment (verified 2026-11-16, mask-test2.mp4).
+ * Keyframed masks split the stream at the keyframe times, one PNG per
+ * segment, then concat back — same segment pattern as speed curves.
+ * Returns the output label. Throws if a needed PNG was not prepared.
+ */
+function applyMaskStage(
+  chains: string[],
+  input: string,
+  clip: Clip,
+  idx: number,
+  project: Project,
+  ctx: MaskCtx,
+): string {
+  const mask = clip.mask as NonNullable<Clip['mask']>;
+  const files = ctx.maskFiles?.get(idx) ?? [];
+  const segments = maskSegments(mask, clipDuration(clip));
+  if (files.length < segments.length) {
+    throw new Error(
+      `clip ${clip.id}: mask PNGs not prepared (${files.length} files for ` +
+        `${segments.length} segments); call prepareClipMaskFiles first`,
+    );
+  }
+  const { width, height } = project;
+
+  // Multi-segment (keyframed shape): split the stream once, trim each
+  // branch to its segment. Single segment uses the input directly.
+  if (segments.length > 1) {
+    chains.push(
+      `${input}split=${segments.length}${segments.map((_, k) => `[msp${idx}_${k}]`).join('')}`,
+    );
+  }
+
+  const outs: string[] = [];
+  segments.forEach((seg, j) => {
+    const inputIdx = ctx.inputIndex.get(`${idx}:${seg.fileIndex}`);
+    if (inputIdx === undefined) {
+      throw new Error(`clip ${clip.id}: no input for mask segment ${j}`);
+    }
+    const { x, y, pxW, pxH } = maskOverlayPos(mask, width, height, seg.shape);
+    let segIn = input;
+    if (segments.length > 1) {
+      chains.push(
+        `[msp${idx}_${j}]trim=start=${seg.t0}:end=${seg.t1},setpts=PTS-STARTPTS[mseg${idx}_${j}]`,
+      );
+      segIn = `[mseg${idx}_${j}]`;
+    }
+    chains.push(`${segIn}split[mbg${idx}_${j}][mfg${idx}_${j}]`);
+    if (mask.backgroundBlur !== undefined && mask.backgroundBlur > 0) {
+      chains.push(`[mbg${idx}_${j}]gblur=sigma=${mask.backgroundBlur}[mbgF${idx}_${j}]`);
+    } else {
+      chains.push(`[mbg${idx}_${j}]null[mbgF${idx}_${j}]`);
+    }
+    chains.push(
+      `[mfg${idx}_${j}]scale=${pxW}:${pxH}:force_original_aspect_ratio=increase,` +
+        `crop=${pxW}:${pxH},format=yuva420p[mfgF${idx}_${j}]`,
+    );
+    chains.push(`[${inputIdx}:v]alphaextract[malp${idx}_${j}]`);
+    chains.push(`[mfgF${idx}_${j}][malp${idx}_${j}]alphamerge[mfgM${idx}_${j}]`);
+    chains.push(
+      `[mbgF${idx}_${j}][mfgM${idx}_${j}]overlay=${x}:${y},format=yuv420p[mout${idx}_${j}]`,
+    );
+    outs.push(`[mout${idx}_${j}]`);
+  });
+  if (outs.length === 1) return outs[0];
+  chains.push(`${outs.join('')}concat=n=${outs.length}:v=1:a=0[vmkc${idx}]`);
+  return `[vmkc${idx}]`;
 }
 
 function atempoChain(speed: number): string {
@@ -315,12 +423,23 @@ export function buildFilterGraph(
   fontfile: string,
   lut?: string,
   assFile?: string,
+  maskFiles?: Map<number, string[]>,
 ): FilterGraph {
   const n = project.clips.length;
   if (n === 0) throw new Error('project has no clips');
+  // Assign ffmpeg input indexes to mask PNGs (after the clip inputs).
+  const maskCtx: MaskCtx = { maskFiles, extraInputs: [], inputIndex: new Map() };
+  project.clips.forEach((clip, i) => {
+    if (!clip.mask) return;
+    const files = maskFiles?.get(i) ?? [];
+    files.forEach((f, j) => {
+      maskCtx.inputIndex.set(`${i}:${j}`, n + maskCtx.extraInputs.length);
+      maskCtx.extraInputs.push(f);
+    });
+  });
   const chains: string[] = [];
   project.clips.forEach((clip, i) => {
-    chains.push(...clipVideoChains(clip, i, project, fontfile, lut));
+    chains.push(...clipVideoChains(clip, i, project, fontfile, lut, maskCtx));
     chains.push(...clipAudioChains(clip, i));
   });
 
@@ -375,5 +494,5 @@ export function buildFilterGraph(
     chains.push(`[vout]ass=${quoted}[vsub]`);
     videoOut = '[vsub]';
   }
-  return { filterComplex: chains.join(';'), videoOut, audioOut };
+  return { filterComplex: chains.join(';'), videoOut, audioOut, extraInputs: maskCtx.extraInputs };
 }
