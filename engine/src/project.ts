@@ -102,6 +102,62 @@ export interface ColorAdjust {
   temperature?: number;
 }
 
+/** Chroma-key (green/blue screen) background: solid colour or a video/image file. */
+export interface ChromaBackground {
+  /** Solid colour, e.g. '0x0000ff' or 'red'. Exactly one of color/source. */
+  color?: string;
+  /** Path to a background video or still image (looped to the clip length). */
+  source?: string;
+}
+
+export interface ChromaKey {
+  /** Key colour, e.g. '0x00ff00' (green) or '0x0000ff' (blue). */
+  color: string;
+  /**
+   * chromakey similarity, 0..1 (default 0.1). Larger = more aggressive key.
+   * Measured 2026-11-17: 0.01 does NOT key at all (corner alpha stays 255
+   * and keyed pixels turn black in the composite); 0.1 keys cleanly
+   * (corner alpha 0, subject alpha 255). Do not lower the default.
+   */
+  similarity?: number;
+  /** chromakey blend, 0..1 (default 0). Larger = softer keyed edges. */
+  blend?: number;
+  /** Apply despill after keying (default true): removes green/blue spill
+   *  from the subject edges. Type (green/blue) is derived from `color`. */
+  despill?: boolean;
+  /** What shows through the keyed-out area. No background = solid black. */
+  background?: ChromaBackground;
+}
+
+export type StabilizeMethod = 'vidstab' | 'deshake';
+
+export interface StabilizeOptions {
+  /**
+   * 'vidstab': two-pass libvidstab (best quality, GPL-only — libvidstab is
+   * listed by ffmpeg.org as a GPL library, so BtbN LGPL builds do NOT
+   * include vidstabdetect/vidstabtransform; re-check on the LGPL build
+   * before shipping). 'deshake': single-pass native libavfilter filter,
+   * LGPL-safe, weaker on rotation. Default 'vidstab'.
+   */
+  method?: StabilizeMethod;
+  /** vidstabtransform smoothing, frames*2+1 lowpass window (default 15). */
+  smoothing?: number;
+  /** vidstabtransform zoom %, 0 = let optzoom decide (default 0). */
+  zoom?: number;
+  /** vidstabtransform camera-path optimisation: 0 opt / 1 gauss / 2 avg. */
+  optalgo?: 0 | 1 | 2;
+  /** vidstabdetect shakiness 1..10 (default 5). */
+  shakiness?: number;
+  /** vidstabdetect accuracy 1..15 (default 15). */
+  accuracy?: number;
+  /** deshake horizontal search radius px (default 16). */
+  deshakeRx?: number;
+  /** deshake vertical search radius px (default 16). */
+  deshakeRy?: number;
+  /** deshake edge fill: 'blank' | 'original' | 'clamp' | 'mirror'. */
+  deshakeEdge?: 'blank' | 'original' | 'clamp' | 'mirror';
+}
+
 export interface Clip {
   id: string;
   /** Path to the source media file. */
@@ -150,6 +206,15 @@ export interface Clip {
   /** Shape mask / picture-in-picture: the clip picture is shown full-frame
    *  as background, with a masked, scaled copy overlaid at (x, y). */
   mask?: ClipMask;
+  /** Green/blue-screen keying (chromakey + despill, optional background). */
+  chromaKey?: ChromaKey;
+  /**
+   * Video stabilisation. `true` = vidstab with defaults.
+   * vidstab is two-pass (detect .trf first, then transform) and GPL-only;
+   * deshake is single-pass and LGPL-safe. vidstab + reverse is rejected
+   * (reversed frame order breaks the .trf alignment).
+   */
+  stabilize?: boolean | StabilizeOptions;
 }
 
 export type TransitionType =
