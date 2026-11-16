@@ -59,6 +59,27 @@ export {
   validateDucking,
 } from './ducking.js';
 export type { DuckingOptions } from './project.js';
+export {
+  audioShiftFilter,
+  estimateOffset,
+  estimateOffsetFromSamples,
+  shiftClipAudioToReference,
+  validateAudioOffset,
+} from './align.js';
+export type { AlignOptions, AlignResult } from './align.js';
+export {
+  applyTemplateToClip,
+  applyTemplateToProject,
+  BUILTIN_TEMPLATE_IDS,
+  loadAllBuiltInTemplates,
+  loadBuiltInTemplate,
+  parseTemplate,
+  serializeTemplate,
+  templatesDir,
+  TRANSITIONS,
+  validateTemplate,
+} from './templates.js';
+export type { ApplyTemplateOptions, Template } from './templates.js';
 
 export interface ExportPreset {
   name: string;
