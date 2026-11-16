@@ -4,13 +4,24 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { writeFileSync } from 'node:fs';
 import { buildFilterGraph } from './filtergraph.js';
 import { projectDuration, type Project } from './project.js';
+import {
+  DEFAULT_ASS_STYLE,
+  subtitlesToASS,
+  writeSRT,
+  type SubtitleItem,
+} from './subtitles.js';
 
 const execFileAsync = promisify(execFile);
 
 export { TEXT_PRESETS, COLOR_PRESETS } from './presets.js';
 export type { TextStylePreset } from './presets.js';
+export { toSRT, parseSRT, subtitlesToASS, subtitlesToTextOverlays, countBoundaryErrors, validateWordTimes, formatSrtTime } from './subtitles.js';
+export type { SubtitleItem, SubtitleWord } from './subtitles.js';
+export { FasterWhisperTranscriber, StubTranscriber, FASTER_WHISPER_SETUP } from './transcribe.js';
+export type { Transcriber, TranscribeOptions } from './transcribe.js';
 
 export interface ExportPreset {
   name: string;
@@ -86,6 +97,10 @@ export interface ExportOptions {
   fontfile: string;
   preset: ExportPreset;
   onProgress?: (line: string) => void;
+  /** When set, project-level subtitles are also written here as .srt. */
+  srtPath?: string;
+  /** Font name for the ASS karaoke burn (project subtitles). */
+  assFont?: string;
 }
 
 export interface ExportReport {
@@ -102,10 +117,30 @@ export async function exportProject(
   opts: ExportOptions,
 ): Promise<ExportReport> {
   const ffmpeg = opts.ffmpeg ?? 'ffmpeg';
+  // Project-level subtitles: write the .ass karaoke file next to the output
+  // and burn it with the ASS filter; clip-level subtitles are already in
+  // the per-clip chains (drawtext). Keep the .ass file: it is the audit
+  // trail for what was burned, and the WPF side can reuse it for preview.
+  let assFile: string | undefined;
+  if (project.subtitles && project.subtitles.length > 0) {
+    assFile = `${output}.ass`;
+    const style = {
+      ...DEFAULT_ASS_STYLE,
+      fontname: opts.assFont ?? DEFAULT_ASS_STYLE.fontname,
+      fontsize: Math.max(24, Math.round(project.height * 0.055)),
+    };
+    writeFileSync(
+      assFile,
+      subtitlesToASS(project.subtitles, style, project.width, project.height),
+      'utf8',
+    );
+    if (opts.srtPath) writeSRT(project.subtitles, opts.srtPath);
+  }
   const { filterComplex, videoOut, audioOut } = buildFilterGraph(
     project,
     opts.fontfile,
     opts.preset.lut,
+    assFile,
   );
   const args: string[] = [];
   project.clips.forEach((clip) => args.push('-i', clip.source));
