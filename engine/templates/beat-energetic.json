@@ -1,0 +1,1 @@
+{"audioFadeIn":0.1,"audioFadeOut":0.3,"beatPulse":{"attack":0.08,"baseScale":1.0,"maxScale":1.6,"pulseScale":1.2,"release":0.15},"canvas":{"height":1080,"width":1920},"colorPreset":"cool","description":"卡点动感款：硬切、中央强调大字、冷色、每个节拍推近到 1.2。需要先检出节拍（BeatGrid）才能套用。","id":"beat-energetic","label":"卡点·动感","textStylePreset":"emphasis","transition":"cut","version":1}
