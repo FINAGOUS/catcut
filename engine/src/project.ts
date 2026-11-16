@@ -257,6 +257,17 @@ export interface Clip {
    * control signal only and is not mixed into the output.
    */
   ducking?: DuckingOptions;
+  /**
+   * Audio-visual alignment (P1, M4): shift this clip's audio relative
+   * to its video, in OUTPUT seconds (after speed). Positive = audio
+   * plays later (delayed), negative = audio plays earlier. Set it from
+   * an estimateOffset() result with shiftClipAudioToReference()
+   * (audioOffset = −offset). Total duration is unchanged: a positive
+   * shift pads silence at the head, a negative shift cuts the head
+   * and pads silence at the tail. |audioOffset| must be < clip
+   * duration (validateAudioOffset throws otherwise).
+   */
+  audioOffset?: number;
 }
 
 export type TransitionType =
