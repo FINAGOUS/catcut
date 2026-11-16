@@ -1,0 +1,1 @@
+{"audioFadeIn":0.5,"audioFadeOut":0.5,"autoZoom":{"baseScale":1.0,"ease":0.2,"emphasisScale":1.15,"maxScale":1.6,"minHold":0.5},"canvas":{"height":1080,"width":1920},"colorPreset":"cool","description":"访谈双人款：淡入淡出转场 0.6 秒、冷色、下三分之一字幕、轻推近、首尾 0.5 秒淡入淡出。稳，不抢话。","id":"interview-duo","label":"访谈·双人","textStylePreset":"lowerThird","transition":"fade","transitionDuration":0.6,"version":1}
