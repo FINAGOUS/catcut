@@ -1,0 +1,1 @@
+{"audioFadeIn":0.3,"audioFadeOut":0.3,"autoZoom":{"baseScale":1.0,"ease":0.2,"emphasisScale":1.25,"maxScale":1.6,"minHold":0.5},"canvas":{"height":1080,"width":1920},"description":"口播干净款：硬切、下三分之一字幕、轻推近、首尾各 0.3 秒淡入淡出。什么都不抢戏，话本身是主角。","id":"talking-clean","label":"口播·干净","textStylePreset":"lowerThird","transition":"cut","version":1}
