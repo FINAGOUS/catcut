@@ -12,6 +12,9 @@ import {
   cleanupStabilization,
   prepareStabilization,
 } from './stabilize.js';
+import {
+  preparePortraitMasks,
+} from './portrait.js';
 import { dirname } from 'node:path';
 import {
   DEFAULT_ASS_STYLE,
@@ -80,6 +83,16 @@ export {
   validateTemplate,
 } from './templates.js';
 export type { ApplyTemplateOptions, Template } from './templates.js';
+export {
+  defaultPortraitModelPath,
+  defaultPortraitScriptPath,
+  PORTRAIT_SETUP,
+  preparePortraitMasks,
+  probeVideoFps,
+  resolvePortraitModelPath,
+  validatePortraitCutout,
+} from './portrait.js';
+export type { PortraitCutout, PortraitRunSummary, PreparePortraitOptions } from './portrait.js';
 
 export interface ExportPreset {
   name: string;
@@ -159,6 +172,12 @@ export interface ExportOptions {
   srtPath?: string;
   /** Font name for the ASS karaoke burn (project subtitles). */
   assFont?: string;
+  /** Python binary with onnxruntime installed (portrait cutout only). */
+  python?: string;
+  /** Portrait model path override (default: bundled model in models/). */
+  portraitModel?: string;
+  /** Portrait helper script override (default: scripts/portrait_segment.py). */
+  portraitScript?: string;
 }
 
 export interface ExportReport {
@@ -230,6 +249,19 @@ async function exportProjectInner(
   const maskFiles = project.clips.some((c) => c.mask)
     ? prepareClipMaskFiles(project, dirname(output))
     : undefined;
+  // Smart portrait cutout: run the ONNX helper for every portrait clip
+  // BEFORE the main export; the mask videos go in as extra inputs. The
+  // videos are kept next to the output as an audit trail (like the mask
+  // PNGs and the .ass file).
+  const portraitMasks = project.clips.some((c) => c.portraitCutout)
+    ? await preparePortraitMasks(project, dirname(output), {
+        python: opts.python,
+        script: opts.portraitScript,
+        model: opts.portraitModel,
+        ffmpeg,
+        ffprobe: opts.ffprobe,
+      })
+    : undefined;
   const { filterComplex, videoOut, audioOut, extraInputs } = buildFilterGraph(
     project,
     opts.fontfile,
@@ -237,6 +269,7 @@ async function exportProjectInner(
     assFile,
     maskFiles,
     stabTrf,
+    portraitMasks,
   );
   const args: string[] = [];
   project.clips.forEach((clip) => args.push('-i', clip.source));
