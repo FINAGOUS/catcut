@@ -28,6 +28,10 @@ import {
   validateStabilize,
   vidstabTransformFilter,
 } from './stabilize.js';
+import {
+  duckingFilter,
+  validateDucking,
+} from './ducking.js';
 
 export interface FilterGraph {
   filterComplex: string;
@@ -46,6 +50,8 @@ interface MaskCtx {
   inputIndex: Map<string, number>;
   /** clipIdx -> ffmpeg input index of its chroma-key background source. */
   bgInputIndex: Map<number, number>;
+  /** clipIdx -> ffmpeg input index of its ducking sidechain source. */
+  duckInputIndex: Map<number, number>;
 }
 
 /** despill screen type from the key colour (blue-dominant hex => blue). */
@@ -474,11 +480,15 @@ function atempoChain(speed: number): string {
 /**
  * Audio chains for one clip. Final audio label is [a<idx>].
  * Order: segment trim/speed (+areverse) -> freeze stage (silent span)
- * -> afade in/out -> afftdn -> loudnorm -> volume.
+ * -> afade in/out -> afftdn -> loudnorm -> sidechaincompress (ducking)
+ * -> volume.
  * The freeze span is silence built from a muted 10 ms slice of the clip
  * itself (apad), so sample rate / channel layout always match.
+ * Ducking sits AFTER loudnorm on purpose: loudnorm after ducking would
+ * re-normalise the ducked passages and undo the effect. The sidechain
+ * source is a control signal only (never mixed into the output).
  */
-function clipAudioChains(clip: Clip, idx: number): string[] {
+function clipAudioChains(clip: Clip, idx: number, ctx?: MaskCtx): string[] {
   const chains: string[] = [];
   const segments = clip.reverse
     ? speedCurveSegments(clip).slice().reverse()
@@ -525,21 +535,32 @@ function clipAudioChains(clip: Clip, idx: number): string[] {
   }
 
   const dur = clipDuration(clip);
-  const parts: string[] = [audioBase];
-  const audioFilters: string[] = [];
+  const preDuck: string[] = [];
   if (clip.audioFadeIn !== undefined && clip.audioFadeIn > 0) {
-    audioFilters.push(`afade=t=in:st=0:d=${Math.min(clip.audioFadeIn, dur)}`);
+    preDuck.push(`afade=t=in:st=0:d=${Math.min(clip.audioFadeIn, dur)}`);
   }
   if (clip.audioFadeOut !== undefined && clip.audioFadeOut > 0) {
     const d = Math.min(clip.audioFadeOut, dur);
-    audioFilters.push(`afade=t=out:st=${Math.max(0, dur - d)}:d=${d}`);
+    preDuck.push(`afade=t=out:st=${Math.max(0, dur - d)}:d=${d}`);
   }
-  if (clip.denoise) audioFilters.push('afftdn');
+  if (clip.denoise) preDuck.push('afftdn');
   // loudnorm single-pass (linear=true is the default); no two-pass measurement.
-  if (clip.loudnorm) audioFilters.push('loudnorm=I=-16:TP=-1.5:LRA=11:linear=true');
-  audioFilters.push(`volume=${clip.volume}`);
-  parts.push(audioFilters.join(','));
-  chains.push(parts.join('') + `[a${idx}]`);
+  if (clip.loudnorm) preDuck.push('loudnorm=I=-16:TP=-1.5:LRA=11:linear=true');
+  const duck = validateDucking(clip);
+  if (duck) {
+    const scIdx = ctx?.duckInputIndex.get(idx);
+    if (scIdx === undefined) {
+      throw new Error(`clip ${clip.id}: no input for ducking source`);
+    }
+    chains.push(
+      `${audioBase}${preDuck.length > 0 ? preDuck.join(',') : 'anull'}[ad${idx}]`,
+    );
+    chains.push(`[ad${idx}][${scIdx}:a]${duckingFilter(duck)}[adc${idx}]`);
+    chains.push(`[adc${idx}]volume=${clip.volume}[a${idx}]`);
+    return chains;
+  }
+  const audioFilters = [...preDuck, `volume=${clip.volume}`];
+  chains.push(`${audioBase}${audioFilters.join(',')}[a${idx}]`);
   return chains;
 }
 
@@ -560,6 +581,7 @@ export function buildFilterGraph(
     extraInputs: [],
     inputIndex: new Map(),
     bgInputIndex: new Map(),
+    duckInputIndex: new Map(),
   };
   project.clips.forEach((clip, i) => {
     if (!clip.mask) return;
@@ -575,10 +597,16 @@ export function buildFilterGraph(
     maskCtx.bgInputIndex.set(i, n + maskCtx.extraInputs.length);
     maskCtx.extraInputs.push(src);
   });
+  project.clips.forEach((clip, i) => {
+    const src = clip.ducking?.source;
+    if (!src) return;
+    maskCtx.duckInputIndex.set(i, n + maskCtx.extraInputs.length);
+    maskCtx.extraInputs.push(src);
+  });
   const chains: string[] = [];
   project.clips.forEach((clip, i) => {
     chains.push(...clipVideoChains(clip, i, project, fontfile, lut, maskCtx, stabilizeTrf));
-    chains.push(...clipAudioChains(clip, i));
+    chains.push(...clipAudioChains(clip, i, maskCtx));
   });
 
   const hasXfade = project.transitions.some((t) => t !== 'cut');
