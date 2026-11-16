@@ -7,6 +7,8 @@ import { promisify } from 'node:util';
 import { writeFileSync } from 'node:fs';
 import { buildFilterGraph } from './filtergraph.js';
 import { projectDuration, type Project } from './project.js';
+import { prepareClipMaskFiles } from './mask.js';
+import { dirname } from 'node:path';
 import {
   DEFAULT_ASS_STYLE,
   subtitlesToASS,
@@ -16,8 +18,13 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-export { TEXT_PRESETS, COLOR_PRESETS } from './presets.js';
-export type { TextStylePreset } from './presets.js';
+export { TEXT_PRESETS, COLOR_PRESETS, TALK_PRESETS, applyTalkPreset, serializeTalkPreset, parseTalkPreset } from './presets.js';
+export type { TextStylePreset, TalkPreset, SubtitleMode } from './presets.js';
+export { generateAutoZoom, generateAutoZoomWithSilences, detectSilences, zoomScaleAt, countScalePushes, emphasisPlateaus } from './autozoom.js';
+export type { AutoZoomOptions, SilenceInterval } from './autozoom.js';
+export { renderMaskPng, maskPixelSize, maskOverlayPos, maskSegments, maskAlpha, prepareClipMaskFiles, validateMask } from './mask.js';
+export type { MaskSegment } from './mask.js';
+export type { MaskShape, MaskKeyframe, ClipMask } from './project.js';
 export { toSRT, parseSRT, subtitlesToASS, subtitlesToTextOverlays, countBoundaryErrors, validateWordTimes, formatSrtTime } from './subtitles.js';
 export type { SubtitleItem, SubtitleWord } from './subtitles.js';
 export { FasterWhisperTranscriber, StubTranscriber, FASTER_WHISPER_SETUP } from './transcribe.js';
@@ -136,14 +143,21 @@ export async function exportProject(
     );
     if (opts.srtPath) writeSRT(project.subtitles, opts.srtPath);
   }
-  const { filterComplex, videoOut, audioOut } = buildFilterGraph(
+  // Shape masks: bake one PNG per mask segment next to the output and pass
+  // them as extra inputs (after the clip inputs, in segment order).
+  const maskFiles = project.clips.some((c) => c.mask)
+    ? prepareClipMaskFiles(project, dirname(output))
+    : undefined;
+  const { filterComplex, videoOut, audioOut, extraInputs } = buildFilterGraph(
     project,
     opts.fontfile,
     opts.preset.lut,
     assFile,
+    maskFiles,
   );
   const args: string[] = [];
   project.clips.forEach((clip) => args.push('-i', clip.source));
+  extraInputs.forEach((p) => args.push('-i', p));
   args.push(
     '-filter_complex', filterComplex,
     '-map', videoOut, '-map', audioOut,
