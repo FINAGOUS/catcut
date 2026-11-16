@@ -8,6 +8,10 @@ import { writeFileSync } from 'node:fs';
 import { buildFilterGraph } from './filtergraph.js';
 import { projectDuration, type Project } from './project.js';
 import { prepareClipMaskFiles } from './mask.js';
+import {
+  cleanupStabilization,
+  prepareStabilization,
+} from './stabilize.js';
 import { dirname } from 'node:path';
 import {
   DEFAULT_ASS_STYLE,
@@ -29,6 +33,16 @@ export { toSRT, parseSRT, subtitlesToASS, subtitlesToTextOverlays, countBoundary
 export type { SubtitleItem, SubtitleWord } from './subtitles.js';
 export { FasterWhisperTranscriber, StubTranscriber, FASTER_WHISPER_SETUP } from './transcribe.js';
 export type { Transcriber, TranscribeOptions } from './transcribe.js';
+export {
+  cleanupStabilization,
+  deshakeFilter,
+  prepareStabilization,
+  resolveStabilize,
+  runStabilizeDetect,
+  validateStabilize,
+  vidstabTransformFilter,
+} from './stabilize.js';
+export type { ChromaBackground, ChromaKey, StabilizeMethod, StabilizeOptions } from './project.js';
 
 export interface ExportPreset {
   name: string;
@@ -124,6 +138,37 @@ export async function exportProject(
   opts: ExportOptions,
 ): Promise<ExportReport> {
   const ffmpeg = opts.ffmpeg ?? 'ffmpeg';
+  // Vidstab pass 1: run vidstabdetect for every vidstab clip BEFORE the
+  // main export, writing one .trf per clip next to the output. The .trf
+  // files are deleted after a successful export; on failure they are kept
+  // and their paths logged, so the failed run can be debugged/re-run.
+  const outDir = dirname(output);
+  const stabTrf = await prepareStabilization(project, outDir, ffmpeg);
+  let ok = false;
+  try {
+    const report = await exportProjectInner(project, output, opts, ffmpeg, stabTrf);
+    ok = true;
+    return report;
+  } catch (e) {
+    if (stabTrf.size > 0) {
+      console.error(
+        `export failed; vidstab .trf files kept for debugging: ${[...stabTrf.values()].join(', ')}`,
+      );
+    }
+    throw e;
+  } finally {
+    if (ok) cleanupStabilization(stabTrf.values());
+  }
+}
+
+/** Inner export: graph build + single ffmpeg invocation + ffprobe check. */
+async function exportProjectInner(
+  project: Project,
+  output: string,
+  opts: ExportOptions,
+  ffmpeg: string,
+  stabTrf: Map<number, string>,
+): Promise<ExportReport> {
   // Project-level subtitles: write the .ass karaoke file next to the output
   // and burn it with the ASS filter; clip-level subtitles are already in
   // the per-clip chains (drawtext). Keep the .ass file: it is the audit
@@ -154,6 +199,7 @@ export async function exportProject(
     opts.preset.lut,
     assFile,
     maskFiles,
+    stabTrf,
   );
   const args: string[] = [];
   project.clips.forEach((clip) => args.push('-i', clip.source));
