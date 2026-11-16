@@ -36,6 +36,9 @@ import {
   audioShiftFilter,
   validateAudioOffset,
 } from './align.js';
+import {
+  validatePortraitCutout,
+} from './portrait.js';
 
 export interface FilterGraph {
   filterComplex: string;
@@ -49,6 +52,8 @@ export interface FilterGraph {
 /** Per-clip mask PNG files (segment order) + assigned input indexes. */
 interface MaskCtx {
   maskFiles?: Map<number, string[]>;
+  /** clipIdx -> portrait mask video path (preparePortraitMasks output). */
+  portraitMaskFiles?: Map<number, string>;
   extraInputs: string[];
   /** `${clipIdx}:${segIdx}` -> ffmpeg input index. */
   inputIndex: Map<string, number>;
@@ -56,6 +61,8 @@ interface MaskCtx {
   bgInputIndex: Map<number, number>;
   /** clipIdx -> ffmpeg input index of its ducking sidechain source. */
   duckInputIndex: Map<number, number>;
+  /** clipIdx -> ffmpeg input index of its portrait mask video. */
+  portraitInputIndex: Map<number, number>;
 }
 
 /** despill screen type from the key colour (blue-dominant hex => blue). */
@@ -258,6 +265,14 @@ function clipVideoChains(
     picLabel = applyChromaStage(chains, picLabel, clip, idx, project, maskCtx);
   }
 
+  // Smart portrait cutout (P1): same composite pattern as chroma-key,
+  // but the alpha comes from the pre-computed ONNX mask video instead of
+  // a key colour. Runs after the chroma stage; a clip cannot have both
+  // (validatePortraitCutout throws), so the stages never stack.
+  if (clip.portraitCutout) {
+    picLabel = applyPortraitStage(chains, picLabel, clip, idx, project, maskCtx);
+  }
+
   const parts: string[] = [picLabel];
   const zoom = clip.zoom ?? [];
   if (zoom.length >= 2) {
@@ -339,6 +354,81 @@ function clipVideoChains(
 }
 
 /**
+ * Background chain shared by the chroma-key and portrait stages: a solid
+ * colour source, a video/image input, or black. `tag` is 'ck' (chroma) or
+ * 'pc' (portrait); the filter strings are identical for both, only the
+ * label prefix differs. Returns the background label, e.g. `[ckbg0]`.
+ */
+function buildBackgroundChain(
+  chains: string[],
+  bg: { color?: string; source?: string } | undefined,
+  idx: number,
+  project: Project,
+  ctx?: MaskCtx,
+  tag = 'ck',
+): string {
+  const { width, height, fps } = project;
+  const dur = clipDuration(project.clips[idx]);
+  if (bg?.source) {
+    const inputIdx = ctx?.bgInputIndex.get(idx);
+    if (inputIdx === undefined) {
+      throw new Error(`clip ${project.clips[idx].id}: no input for background source`);
+    }
+    const isImage = /\.(png|jpe?g|webp|bmp)$/i.test(bg.source);
+    const loopPart = isImage ? 'loop=loop=-1:size=1:start=0,' : '';
+    chains.push(
+      `[${inputIdx}:v]${loopPart}trim=start=0:end=${dur},setpts=PTS-STARTPTS,` +
+        `scale=${width}:${height}:force_original_aspect_ratio=increase,` +
+        `crop=${width}:${height},fps=${fps},format=yuv420p[${tag}bg${idx}]`,
+    );
+  } else {
+    const color = bg?.color ?? 'black';
+    chains.push(
+      `color=c=${color}:s=${width}x${height}:r=${fps}:d=${dur}[${tag}bg${idx}]`,
+    );
+  }
+  return `[${tag}bg${idx}]`;
+}
+
+/**
+ * Smart portrait cutout stage (P1). Input is the full-frame clip picture;
+ * output is the person composited over the background. The alpha comes
+ * from the pre-computed mask video (grayscale, full project size):
+ * fps brings it to project fps (it may be sampled), format=gray takes
+ * the luma as alpha, optional gblur softens the edge. The foreground is
+ * made yuva420p and merged with the mask via alphamerge, then overlaid
+ * on the background — same composite as the chroma stage.
+ */
+function applyPortraitStage(
+  chains: string[],
+  input: string,
+  clip: Clip,
+  idx: number,
+  project: Project,
+  ctx?: MaskCtx,
+): string {
+  const cutout = clip.portraitCutout as NonNullable<Clip['portraitCutout']>;
+  validatePortraitCutout(cutout, clip);
+  const { fps } = project;
+  const maskIdx = ctx?.portraitInputIndex.get(idx);
+  if (maskIdx === undefined) {
+    throw new Error(
+      `clip ${clip.id}: portrait mask video not prepared; call preparePortraitMasks first`,
+    );
+  }
+  const feather = cutout.edgeFeather ?? 0;
+  const blurPart = feather > 0 ? `,gblur=sigma=${feather}` : '';
+  chains.push(
+    `[${maskIdx}:v]fps=fps=${fps},format=gray${blurPart}[pmk${idx}]`,
+  );
+  chains.push(`${input}format=yuva420p[pcfg${idx}]`);
+  chains.push(`[pcfg${idx}][pmk${idx}]alphamerge[pcfm${idx}]`);
+  const bgLabel = buildBackgroundChain(chains, cutout.background, idx, project, ctx, 'pc');
+  chains.push(`${bgLabel}[pcfm${idx}]overlay=0:0,format=yuv420p[pcout${idx}]`);
+  return `[pcout${idx}]`;
+}
+
+/**
  * Chroma-key stage (P1). Input is the full-frame clip picture; output is
  * the keyed foreground composited over the background. The keyed area is
  * genuinely transparent (yuva420p) between chromakey and overlay — a
@@ -356,8 +446,6 @@ function applyChromaStage(
 ): string {
   const key = clip.chromaKey as NonNullable<Clip['chromaKey']>;
   validateChromaKey(key, clip.id);
-  const { width, height, fps } = project;
-  const dur = clipDuration(clip);
   const similarity = key.similarity ?? 0.1;
   const blend = key.blend ?? 0;
   const despill = key.despill ?? true;
@@ -367,26 +455,8 @@ function applyChromaStage(
       `chromakey=color=${key.color}:similarity=${similarity}:blend=${blend}` +
       `${despillPart}[ckfg${idx}]`,
   );
-  const bg = key.background;
-  if (bg?.source) {
-    const inputIdx = ctx?.bgInputIndex.get(idx);
-    if (inputIdx === undefined) {
-      throw new Error(`clip ${clip.id}: no input for chroma background source`);
-    }
-    const isImage = /\.(png|jpe?g|webp|bmp)$/i.test(bg.source);
-    const loopPart = isImage ? 'loop=loop=-1:size=1:start=0,' : '';
-    chains.push(
-      `[${inputIdx}:v]${loopPart}trim=start=0:end=${dur},setpts=PTS-STARTPTS,` +
-        `scale=${width}:${height}:force_original_aspect_ratio=increase,` +
-        `crop=${width}:${height},fps=${fps},format=yuv420p[ckbg${idx}]`,
-    );
-  } else {
-    const color = bg?.color ?? 'black';
-    chains.push(
-      `color=c=${color}:s=${width}x${height}:r=${fps}:d=${dur}[ckbg${idx}]`,
-    );
-  }
-  chains.push(`[ckbg${idx}][ckfg${idx}]overlay=0:0,format=yuv420p[ckout${idx}]`);
+  const bgLabel = buildBackgroundChain(chains, key.background, idx, project, ctx, 'ck');
+  chains.push(`${bgLabel}[ckfg${idx}]overlay=0:0,format=yuv420p[ckout${idx}]`);
   return `[ckout${idx}]`;
 }
 
@@ -585,17 +655,20 @@ export function buildFilterGraph(
   assFile?: string,
   maskFiles?: Map<number, string[]>,
   stabilizeTrf?: Map<number, string>,
+  portraitMasks?: Map<number, string>,
 ): FilterGraph {
   const n = project.clips.length;
   if (n === 0) throw new Error('project has no clips');
   // Assign ffmpeg input indexes to mask PNGs (after the clip inputs),
-  // then to chroma-key background sources.
+  // then to chroma-key / portrait background sources.
   const maskCtx: MaskCtx = {
     maskFiles,
+    portraitMaskFiles: portraitMasks,
     extraInputs: [],
     inputIndex: new Map(),
     bgInputIndex: new Map(),
     duckInputIndex: new Map(),
+    portraitInputIndex: new Map(),
   };
   project.clips.forEach((clip, i) => {
     if (!clip.mask) return;
@@ -606,7 +679,7 @@ export function buildFilterGraph(
     });
   });
   project.clips.forEach((clip, i) => {
-    const src = clip.chromaKey?.background?.source;
+    const src = clip.chromaKey?.background?.source ?? clip.portraitCutout?.background?.source;
     if (!src) return;
     maskCtx.bgInputIndex.set(i, n + maskCtx.extraInputs.length);
     maskCtx.extraInputs.push(src);
@@ -616,6 +689,12 @@ export function buildFilterGraph(
     if (!src) return;
     maskCtx.duckInputIndex.set(i, n + maskCtx.extraInputs.length);
     maskCtx.extraInputs.push(src);
+  });
+  project.clips.forEach((clip, i) => {
+    const file = portraitMasks?.get(i);
+    if (!file) return;
+    maskCtx.portraitInputIndex.set(i, n + maskCtx.extraInputs.length);
+    maskCtx.extraInputs.push(file);
   });
   const chains: string[] = [];
   project.clips.forEach((clip, i) => {
