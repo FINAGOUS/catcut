@@ -8,6 +8,36 @@
 // P0b: reverse + freeze frame, subtitles (clip- and project-level).
 
 import type { SubtitleItem } from './subtitles.js';
+import type { TextStylePreset } from './presets.js';
+
+/** Shape-mask (PiP) geometry. All fractions are of the frame (0..1). */
+export type MaskShape = 'circle' | 'ellipse' | 'rect' | 'roundedRect';
+
+export interface MaskKeyframe {
+  /** Clip-local OUTPUT time in seconds; shape applies from t on. */
+  t: number;
+  shape: MaskShape;
+}
+
+export interface ClipMask {
+  /** Base shape (before the first keyframe, if any). */
+  shape: MaskShape;
+  /** Centre x/y as fractions of frame width/height. */
+  x: number;
+  y: number;
+  /** Box width/height as fractions of frame width/height. For 'circle'
+   *  the diameter is w (of frame width) in pixels; h is ignored. */
+  w: number;
+  h: number;
+  /** roundedRect corner radius, fraction of min(pxW, pxH), 0..0.5. */
+  radius?: number;
+  /** Edge feather in pixels (0 = hard edge). Baked into the PNG alpha. */
+  feather?: number;
+  /** Blur the background under the PiP box (Gaussian sigma in px, 0 = none). */
+  backgroundBlur?: number;
+  /** Shape switches over time; same timeline as zoom keyframes. */
+  keyframes?: MaskKeyframe[];
+}
 
 export interface TextOverlay {
   /** Text to burn in. */
@@ -115,6 +145,11 @@ export interface Clip {
   freezeDuration?: number;
   /** Clip-level subtitles, clip-local OUTPUT time, burned with drawtext. */
   subtitles?: SubtitleItem[];
+  /** Style used for clip-level subtitle burn-in (default lowerThird). */
+  subtitleStyle?: TextStylePreset;
+  /** Shape mask / picture-in-picture: the clip picture is shown full-frame
+   *  as background, with a masked, scaled copy overlaid at (x, y). */
+  mask?: ClipMask;
 }
 
 export type TransitionType =
