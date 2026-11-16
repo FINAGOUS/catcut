@@ -32,6 +32,10 @@ import {
   duckingFilter,
   validateDucking,
 } from './ducking.js';
+import {
+  audioShiftFilter,
+  validateAudioOffset,
+} from './align.js';
 
 export interface FilterGraph {
   filterComplex: string;
@@ -535,6 +539,16 @@ function clipAudioChains(clip: Clip, idx: number, ctx?: MaskCtx): string[] {
   }
 
   const dur = clipDuration(clip);
+  // AV alignment shift (P1): applied to the assembled output-time
+  // audio, before fades/denoise/loudnorm/ducking — those are defined
+  // on the output timeline, so they see the shifted audio. The shift
+  // keeps the total duration (adelay+trim for a delay, cut+apad for
+  // an advance); see audioShiftFilter in align.ts.
+  const shift = validateAudioOffset(clip);
+  if (shift !== undefined && shift !== 0) {
+    chains.push(`${audioBase}${audioShiftFilter(shift, dur)}[ash${idx}]`);
+    audioBase = `[ash${idx}]`;
+  }
   const preDuck: string[] = [];
   if (clip.audioFadeIn !== undefined && clip.audioFadeIn > 0) {
     preDuck.push(`afade=t=in:st=0:d=${Math.min(clip.audioFadeIn, dur)}`);
