@@ -43,6 +43,22 @@ export {
   vidstabTransformFilter,
 } from './stabilize.js';
 export type { ChromaBackground, ChromaKey, StabilizeMethod, StabilizeOptions } from './project.js';
+export {
+  applyBeatPulse,
+  beatPulseKeys,
+  decodeAudioMono,
+  detectBeats,
+  detectBeatsFromSamples,
+  splitClipByBeats,
+} from './beat.js';
+export type { BeatCutOptions, BeatDetectOptions, BeatGrid, BeatPulseOptions } from './beat.js';
+export {
+  duckingEffectiveThresholdDb,
+  duckingFilter,
+  resolveDucking,
+  validateDucking,
+} from './ducking.js';
+export type { DuckingOptions } from './project.js';
 
 export interface ExportPreset {
   name: string;
