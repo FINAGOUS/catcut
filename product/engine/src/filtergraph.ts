@@ -14,6 +14,7 @@
 import {
   clipBaseDuration,
   clipDuration,
+  projectDuration,
   speedCurveSegments,
   type Clip,
   type Keyframe,
@@ -88,6 +89,16 @@ import {
   minterpolateFilter,
   validateFrameInterp,
 } from './frameinterp.js';
+import {
+  repairFilter,
+  validateAudioRepair,
+} from './audiorepair.js';
+import {
+  surroundUpmixFilter,
+  validateSurroundLayout,
+  type SurroundLayout,
+} from './surround.js';
+import type { TtsNarration } from './tts.js';
 
 export interface FilterGraph {
   filterComplex: string;
@@ -960,6 +971,14 @@ function clipAudioChains(clip: Clip, idx: number, ctx?: MaskCtx): string[] {
   const fx = validateAudioFx(clip.audioFx, clip.id);
   const fxChain = fx ? audioFxFilter(fx) : '';
   if (fxChain) preDuck.push(fxChain);
+  // Audio repair (P3): adeclick -> highpass (hum) -> afftdn
+  // (nr=25:nf=-30). It sits after the audioFx block and before the
+  // plain `denoise` afftdn — when repair.denoise is set the repair
+  // afftdn IS the denoise, so the plain one is skipped (two afftdn
+  // stages would double-process the same noise estimate).
+  const repair = validateAudioRepair(clip.audioRepair, clip.id);
+  const repairChain = repair ? repairFilter(repair) : '';
+  if (repairChain) preDuck.push(repairChain);
   const gainDb = fx?.gainDb;
   // Volume keyframes (P3): after loudnorm/ducking/volume/gainDb, so
   // they are a trim loudnorm cannot eat. The last key must sit inside
@@ -972,7 +991,7 @@ function clipAudioChains(clip: Clip, idx: number, ctx?: MaskCtx): string[] {
     }
   }
   const volKeysFilterStr = volumeKeysFilter(volKeys);
-  if (clip.denoise) preDuck.push('afftdn');
+  if (clip.denoise && !(repair?.denoise)) preDuck.push('afftdn');
   // loudnorm single-pass (linear=true is the default); no two-pass measurement.
   if (clip.loudnorm) preDuck.push('loudnorm=I=-16:TP=-1.5:LRA=11:linear=true');
   const duck = validateDucking(clip);
@@ -1022,6 +1041,18 @@ export function buildFilterGraph(
   /** clipIdx -> beauty mask video path (prepareBeautyMasks output);
    *  required by any clip with beauty (strength > 0). */
   beautyMasks?: Map<number, string>,
+  /** TTS narration (P3): synthesized WAV file + its options. The
+   *  file is registered as an extra input and mixed over the
+   *  assembled timeline (after assembly, before master gain). */
+  narrationFile?: string,
+  narration?: TtsNarration,
+  /** Surround layout (P3): 'stereo' (default) or '5.1'/'7.1'. The
+   *  upmix is applied to the mix only, after master gain; role
+   *  stems stay stereo. */
+  surroundLayout?: SurroundLayout,
+  /** Mix-bus input channel count for the surround upmix (1 = mono,
+   *  2 = stereo; probed by export.ts). Defaults to 2 (stereo). */
+  surroundInputChannels?: number,
 ): FilterGraph {
   const n = project.clips.length;
   if (n === 0) throw new Error('project has no clips');
@@ -1098,6 +1129,22 @@ export function buildFilterGraph(
       maskCtx.extraInputs.push(a);
     });
   });
+  // TTS narration (P3): one extra audio input, registered after all
+  // clip/multicam inputs so export.ts can map it by index.
+  let narrationInputIdx = -1;
+  if (narrationFile) {
+    if (!narration) {
+      throw new Error('narrationFile given but no narration options');
+    }
+    const start = narration.start ?? 0;
+    if (start >= projectDuration(project)) {
+      throw new Error(
+        `narration start ${start}s is past the project duration ${projectDuration(project).toFixed(3)}s — the narration would never be heard`,
+      );
+    }
+    narrationInputIdx = n + maskCtx.extraInputs.length;
+    maskCtx.extraInputs.push(narrationFile);
+  }
   const chains: string[] = [];
   project.clips.forEach((clip, i) => {
     chains.push(...clipVideoChains(clip, i, project, fontfile, lut, maskCtx, stabilizeTrf, colorLuts, smartcutTracks));
@@ -1216,6 +1263,25 @@ export function buildFilterGraph(
     ...audioAssemblyChains(mixInputs, project.transitions, durations, project.transitionDuration, '[aout]', 'a'),
   );
 
+  // TTS narration (P3): the synthesized voice is resampled to the
+  // 48 kHz mix bus, duplicated to stereo, delayed to its project
+  // start, and mixed over the assembled timeline with amix
+  // (duration=first keeps the timeline length; normalize=0 keeps
+  // the mix level — amix's default normalisation would halve it).
+  // Role stems below are untouched: the narration rides the mix only.
+  if (narrationFile && narration && narrationInputIdx >= 0) {
+    const startMs = Math.round((narration.start ?? 0) * 1000);
+    const gain = narration.gainDb ?? 0;
+    chains.push(
+      `[${narrationInputIdx}:a]aresample=48000,pan=stereo|c0=c0|c1=c0,` +
+        `adelay=${startMs}|${startMs}` +
+        (gain !== 0 ? `,volume=${gain}dB` : '') +
+        `[narr]`,
+    );
+    chains.push('[aout][narr]amix=inputs=2:duration=first:normalize=0[aoutn]');
+    audioOut = '[aoutn]';
+  }
+
   // Role stems (roleStems only): one assembled timeline per role, in
   // first-appearance order, with every other role replaced by silence
   // (anullsrc, 48 kHz stereo, same length as the clip it replaces).
@@ -1251,8 +1317,18 @@ export function buildFilterGraph(
   // loudnorm. Range -30..+30 dB, same as the clip gain trim.
   validateMasterGainDb(project.masterGainDb);
   if (project.masterGainDb !== undefined && project.masterGainDb !== 0) {
-    chains.push(`[aout]volume=${project.masterGainDb}dB[aoutm]`);
+    chains.push(`[${audioOut.slice(1, -1)}]volume=${project.masterGainDb}dB[aoutm]`);
     audioOut = '[aoutm]';
+  }
+
+  // Surround upmix (P3): the mix bus widens to 5.1/7.1 at the very
+  // end, after master gain and after the narration mix. Role stems
+  // stay stereo. The LFE is silent by design (see surround.ts).
+  const surround = validateSurroundLayout(surroundLayout ?? project.surroundLayout);
+  const surroundFilter = surround ? surroundUpmixFilter(surround, surroundInputChannels ?? 2) : '';
+  if (surroundFilter) {
+    chains.push(`[${audioOut.slice(1, -1)}]${surroundFilter}[asur]`);
+    audioOut = '[asur]';
   }
 
   // Project-level subtitles: karaoke word highlight via the ASS filter,
