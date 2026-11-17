@@ -43,6 +43,10 @@ import {
   lut3dFilter,
   validateAdvancedColor,
 } from './color.js';
+import {
+  multicamSegments,
+  validateMulticam,
+} from './multicam.js';
 
 export interface FilterGraph {
   filterComplex: string;
@@ -67,6 +71,19 @@ interface MaskCtx {
   duckInputIndex: Map<number, number>;
   /** clipIdx -> ffmpeg input index of its portrait mask video. */
   portraitInputIndex: Map<number, number>;
+  /** `${clipIdx}:${angleIdx}` -> ffmpeg input index of a multicam angle
+   *  (angle 0 rides on the clip's own input, so only angles 1.. are here). */
+  multicamInputIndex: Map<string, number>;
+}
+
+/** ffmpeg input index for one multicam angle: angle 0 is the clip's own input. */
+function multicamAngleInputIndex(ctx: MaskCtx, clipIdx: number, angle: number): number {
+  if (angle === 0) return clipIdx;
+  const i = ctx.multicamInputIndex.get(`${clipIdx}:${angle}`);
+  if (i === undefined) {
+    throw new Error(`clip ${clipIdx}: no input registered for multicam angle ${angle}`);
+  }
+  return i;
 }
 
 /** despill screen type from the key colour (blue-dominant hex => blue). */
@@ -172,6 +189,38 @@ function clipVideoChains(
   const { width, height, fps } = project;
   const chains: string[] = [];
 
+  // Multicam (P2): the [vb] stream is assembled from the angle
+  // segments instead of the speed-curve segments below. vidstab,
+  // deshake, reverse and freeze are all rejected for multicam clips
+  // by validateMulticam, so [vb] is already final here — the scale/
+  // pad/fps stage below applies to it directly.
+  const mc = validateMulticam(clip);
+  let baseLabel: string;
+  if (mc) {
+    if (!maskCtx) {
+      throw new Error(`clip ${clip.id}: multicam needs the graph context`);
+    }
+    const segs = multicamSegments(clip);
+    if (segs.length === 1) {
+      const seg = segs[0];
+      const inputIdx = multicamAngleInputIndex(maskCtx, idx, seg.angle);
+      chains.push(
+        `[${inputIdx}:v]trim=start=${clip.in + seg.t0}:end=${clip.in + seg.t1},` +
+          `setpts=PTS-STARTPTS[vb${idx}]`,
+      );
+    } else {
+      const outs = segs.map((seg, j) => {
+        const inputIdx = multicamAngleInputIndex(maskCtx, idx, seg.angle);
+        chains.push(
+          `[${inputIdx}:v]trim=start=${clip.in + seg.t0}:end=${clip.in + seg.t1},` +
+            `setpts=PTS-STARTPTS[vsm${idx}_${j}]`,
+        );
+        return `[vsm${idx}_${j}]`;
+      });
+      chains.push(`${outs.join('')}concat=n=${segs.length}:v=1:a=0[vb${idx}]`);
+    }
+    baseLabel = `[vb${idx}]`;
+  } else {
   // Stabilisation, vidstab path: the transform must see exactly the frames
   // the detect pass saw, in the same order — so build one stabilised
   // full-range stream FIRST ([vstb]), then cut speed segments out of it.
@@ -217,7 +266,7 @@ function clipVideoChains(
 
   // Stabilisation, deshake path (single-pass, no .trf): apply to the
   // assembled clip stream before the freeze stage.
-  let baseLabel = `[vb${idx}]`;
+  baseLabel = `[vb${idx}]`;
   if (stab?.method === 'deshake') {
     chains.push(`[vb${idx}]${deshakeFilter(stab)}[vds${idx}]`);
     baseLabel = `[vds${idx}]`;
@@ -246,6 +295,7 @@ function clipVideoChains(
     }
     chains.push(`${parts.join('')}concat=n=${parts.length}:v=1:a=0[vbf${idx}]`);
     baseLabel = `[vbf${idx}]`;
+  }
   }
 
   const baseParts: string[] = [
@@ -584,6 +634,17 @@ function atempoChain(speed: number): string {
  */
 function clipAudioChains(clip: Clip, idx: number, ctx?: MaskCtx): string[] {
   const chains: string[] = [];
+  // Multicam (P2): audio comes from one angle only (audioAngle, default
+  // 0) for the whole clip — the angle switches are video-only. Angle 0
+  // is the clip's own input; other angles are extra inputs.
+  const mc = validateMulticam(clip);
+  let audioInputIdx = idx;
+  if (mc) {
+    if (!ctx) {
+      throw new Error(`clip ${clip.id}: multicam needs the graph context`);
+    }
+    audioInputIdx = multicamAngleInputIndex(ctx, idx, mc.audioAngle ?? 0);
+  }
   const segments = clip.reverse
     ? speedCurveSegments(clip).slice().reverse()
     : speedCurveSegments(clip);
@@ -591,13 +652,13 @@ function clipAudioChains(clip: Clip, idx: number, ctx?: MaskCtx): string[] {
   if (segments.length === 1) {
     const seg = segments[0];
     chains.push(
-      `[${idx}:a]atrim=start=${clip.in + seg.start}:end=${clip.in + seg.end},` +
+      `[${audioInputIdx}:a]atrim=start=${clip.in + seg.start}:end=${clip.in + seg.end},` +
         `asetpts=PTS-STARTPTS,${atempoChain(seg.speed)}${reverseTail}[ab${idx}]`,
     );
   } else {
     const outs = segments.map((seg, j) => {
       chains.push(
-        `[${idx}:a]atrim=start=${clip.in + seg.start}:end=${clip.in + seg.end},` +
+        `[${audioInputIdx}:a]atrim=start=${clip.in + seg.start}:end=${clip.in + seg.end},` +
           `asetpts=PTS-STARTPTS,${atempoChain(seg.speed)}${reverseTail}[as${idx}_${j}]`,
       );
       return `[as${idx}_${j}]`;
@@ -680,6 +741,17 @@ export function buildFilterGraph(
 ): FilterGraph {
   const n = project.clips.length;
   if (n === 0) throw new Error('project has no clips');
+  // A compound clip that reaches the graph unresolved is a caller bug:
+  // export.ts resolves them (rendering the child first) before the graph
+  // build. Fail here with a clear message instead of emitting a graph
+  // that references an empty source path.
+  project.clips.forEach((clip) => {
+    if (clip.compound) {
+      throw new Error(
+        `clip ${clip.id}: compound project not resolved; call resolveCompoundClips first`,
+      );
+    }
+  });
   // Assign ffmpeg input indexes to mask PNGs (after the clip inputs),
   // then to chroma-key / portrait background sources.
   const maskCtx: MaskCtx = {
@@ -690,6 +762,7 @@ export function buildFilterGraph(
     bgInputIndex: new Map(),
     duckInputIndex: new Map(),
     portraitInputIndex: new Map(),
+    multicamInputIndex: new Map(),
   };
   project.clips.forEach((clip, i) => {
     if (!clip.mask) return;
@@ -716,6 +789,18 @@ export function buildFilterGraph(
     if (!file) return;
     maskCtx.portraitInputIndex.set(i, n + maskCtx.extraInputs.length);
     maskCtx.extraInputs.push(file);
+  });
+  // Multicam angles: angle 0 is the clip's own input (clip.source), so
+  // only angles 1.. are registered here as extra inputs. Shape errors
+  // fail fast here, before any chain is built.
+  project.clips.forEach((clip, i) => {
+    const mc = clip.multicam;
+    if (!mc) return;
+    validateMulticam(clip);
+    mc.angles.slice(1).forEach((a, j) => {
+      maskCtx.multicamInputIndex.set(`${i}:${j + 1}`, n + maskCtx.extraInputs.length);
+      maskCtx.extraInputs.push(a);
+    });
   });
   const chains: string[] = [];
   project.clips.forEach((clip, i) => {
