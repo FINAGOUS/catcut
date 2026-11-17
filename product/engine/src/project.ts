@@ -29,6 +29,42 @@ import type { OptimizedRef } from './optimized.js';
 import type { TtsNarration } from './tts.js';
 import type { SurroundLayout } from './surround.js';
 import type { MediaItem } from './medialib.js';
+import type {
+  AutoVideo,
+  CloneEffect,
+  ColorManagement,
+  ColorMatch,
+  GradeNodeGraph,
+  KeyOutline,
+  LutLibrary,
+  ObjectTrack,
+  ReferenceStill,
+  TrackedWindow,
+  UpscaleOptions,
+} from './p3g.js';
+
+export type {
+  AutoVideo,
+  AutoVideoLine,
+  AutoVideoSegment,
+  CloneEffect,
+  ColorManagement,
+  ColorMatch,
+  GradeBlendMode,
+  GradeNode,
+  GradeNodeGraph,
+  InputColorSpace,
+  KeyOutline,
+  LutLibrary,
+  LutLibraryEntry,
+  ObjectTrack,
+  OutputColorSpace,
+  ReferenceStill,
+  TrackedWindow,
+  UpscaleModel,
+  UpscaleOptions,
+  WorkingColorSpace,
+} from './p3g.js';
 
 export type { AudioRepair } from './audiorepair.js';
 export type { VocalSepOptions } from './vocalsep.js';
@@ -536,6 +572,52 @@ export interface Clip {
    * mix. v1: speed 1, no reverse/freeze, no compound/multicam.
    */
   vocalSep?: VocalSepOptions;
+  /**
+   * Colour management input space (P3, M4 §8.4): how this clip's
+   * footage is encoded (log/Rec.709/sRGB...). Converted into the
+   * project's working space at the head of the clip chain (see
+   * p3g.ts). Only inputSpace is meaningful here — working/output
+   * spaces belong on the project and throw when set on a clip.
+   */
+  colorManagement?: ColorManagement;
+  /**
+   * Shot-to-shot colour match (P3, M4 §8.4): bake a histogram-match
+   * LUT from `referenceFrame` onto this clip's first frame (see
+   * p3g.ts prepareColorMatchLuts). Applied after the advanced-colour
+   * LUTs, before the preset LUT.
+   */
+  colorMatch?: ColorMatch;
+  /**
+   * Node-based grading (P3, M4 §8.4): a serial/parallel node graph
+   * baked into LUTs (see p3g.ts). Mutually exclusive with
+   * advancedColor — a clip carrying both throws at export prep.
+   */
+  gradeNodes?: GradeNodeGraph;
+  /**
+   * Tracked grading window (P3, M4 §8.4): a shape mask that follows
+   * `track`, graded inside only (see p3g.ts). Complements the P1
+   * static shape mask (Clip.mask).
+   */
+  trackedWindow?: TrackedWindow;
+  /**
+   * Object tracking (P3, M4 §8.7): track a user-boxed target across
+   * frames; a sticker text and/or a mosaic follow it (see p3g.ts).
+   * Speed must be 1, no reverse/freeze.
+   */
+  objectTrack?: ObjectTrack;
+  /**
+   * Clone effect (P3, M4 §8.7): the same source duplicated into 2
+   * (left/right) or 4 (2x2 grid) lanes, each lane a time-offset copy
+   * of the clip (see p3g.ts). Speed must be 1, no
+   * reverse/freeze/reframe/multicam/compound.
+   */
+  clone?: CloneEffect;
+  /**
+   * Key outline (P3, M4 §8.7): a coloured stroke around the cut-out
+   * person (see p3g.ts). Requires portraitCutout — the outline is
+   * drawn from the P1e mask alpha (dilated ring).
+   */
+  outline?: KeyOutline;
 }
 
 export type TransitionType =
@@ -667,6 +749,39 @@ export interface Project {
    * and never copy files.
    */
   mediaLibrary?: MediaItem[];
+  /**
+   * Colour management (P3, M4 §8.4): timeline working space +
+   * delivery space (see p3g.ts). Input spaces live on the clips.
+   * Working defaults to 'rec709'; output defaults to the working
+   * space. A log clip is converted at the head of its chain; the
+   * output conversion runs after assembly, before subtitle burn.
+   */
+  colorManagement?: ColorManagement;
+  /**
+   * LUT library (P3, M4 §8.4): managed .cube entries by category /
+   * favourite (see p3g.ts). Metadata only — the .cube files live
+   * where the entries point; P2a .cube import is unchanged.
+   */
+  lutLibrary?: LutLibrary;
+  /**
+   * Reference stills library (P3, M4 §8.4): stored frames for
+   * grade comparison (see p3g.ts saveReferenceStill). Each entry
+   * points at a PNG + a JSON sidecar next to it.
+   */
+  referenceStills?: ReferenceStill[];
+  /**
+   * Auto-video script (P3, M4 §8.7): the script this project was
+   * built from, if it was built by buildAutoVideoProject (see
+   * p3g.ts). Kept for round-tripping; it never affects the render.
+   */
+  autoVideo?: AutoVideo;
+  /**
+   * AI upscaling (P3, M4 §8.7): upscale the finished export to the
+   * target size with the Real-ESRGAN ONNX model (see p3g.ts).
+   * Export-time option only; a missing model throws instead of
+   * exporting un-upscaled.
+   */
+  upscale?: UpscaleOptions;
 }
 
 export interface SpeedSegment {
