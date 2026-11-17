@@ -62,12 +62,21 @@ namespace DogSC.Replica {
  }
  // ---- 设备枚举（与 RecorderWindow.Microphone 同款 dshow 枚举）----
  public static class CameraDevices {
+  // ffmpeg -list_devices 的真实格式：类型只在段头行出现，设备行本身没有 (video)/(audio) 标记：
+  //   DirectShow video devices
+  //     "Integrated Camera"
+  //   DirectShow audio devices
+  //     "Microphone (Realtek Audio)"
+  // 所以按段头切换当前段，再取段内带引号的行。旧的 (video)/(audio) 行内标记也兼容（有的版本会带）。
   public static List<string> ParseDevices(string text,string kind){
    var result=new List<string>();
    if(string.IsNullOrEmpty(text))return result;
-   string marker="("+kind+")";
+   bool inSection=false;
    foreach(string line in text.Split('\n')){
-    if(!line.Contains(marker))continue;
+    if(line.Contains("DirectShow video devices")){inSection=(kind=="video");continue;}
+    if(line.Contains("DirectShow audio devices")){inSection=(kind=="audio");continue;}
+    bool marked=line.Contains("("+kind+")");
+    if(!inSection&&!marked)continue;
     int begin=line.IndexOf('"'),end=line.LastIndexOf('"');
     if(begin<0||end<=begin)continue;
     string name=line.Substring(begin+1,end-begin-1);
