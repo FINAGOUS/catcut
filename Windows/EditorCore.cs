@@ -40,6 +40,8 @@ namespace DogSC.Replica {
   public ColorGrade Grade=new ColorGrade(); public List<MixerChannel> Mixer=new List<MixerChannel>(); public double MasterGainDb;
   public string ProxyPath=""; public bool ProxyEnabled; public double ProxyDuration;
   public List<string> MulticamAngles=new List<string>(); public List<MulticamSwitch> MulticamSwitches=new List<MulticamSwitch>();
+  // W4：摄像头画中画轨（模型见 Windows/W4Camera.cs；老工程反序列化为 null，Validate() 里补默认值）。
+  public CameraClip Camera;
   public double Length { get { return Cuts.Sum(c=>c.Length); } }
   public static JavaScriptSerializer Serializer() { return new JavaScriptSerializer { MaxJsonLength=int.MaxValue }; }
   public string Serialize() { return Serializer().Serialize(this); }
@@ -54,6 +56,7 @@ namespace DogSC.Replica {
    if(Subtitles==null)Subtitles=new List<SubtitleCue>(); if(string.IsNullOrEmpty(SubtitleSidecar))SubtitleSidecar="srt";
    if(Grade==null)Grade=new ColorGrade(); if(Grade.HslSat==null||Grade.HslSat.Length!=7)Grade.HslSat=new double[]{1,1,1,1,1,1,1}; if(Grade.HslLum==null||Grade.HslLum.Length!=7)Grade.HslLum=new double[7]; if(Grade.WheelHue==null||Grade.WheelHue.Length!=3)Grade.WheelHue=new double[3]; if(Grade.WheelSat==null||Grade.WheelSat.Length!=3)Grade.WheelSat=new double[]{1,1,1};
    if(Mixer==null)Mixer=new List<MixerChannel>(); if(MulticamAngles==null)MulticamAngles=new List<string>(); if(MulticamSwitches==null)MulticamSwitches=new List<MulticamSwitch>();
+   if(Camera==null)Camera=new CameraClip();
    if(!Finite(FrameRate)||FrameRate<=0||FrameRate>240)FrameRate=30;
    if(Cuts.Any(c=>!Finite(c.Start)||!Finite(c.End)||!Finite(c.Speed)||c.Start<0||c.End>Duration+.1||(!c.Gap&&(c.End<=c.Start||c.Speed<.5||c.Speed>2))||(c.Gap&&(!Finite(c.GapDuration)||c.GapDuration<=0||c.End<c.Start)))) throw new Exception("项目的剪辑范围无效。");
    // W3：字幕 / 调色 / 混音 / 代理 / 多机位校验（范围外的值直接拒绝，不静默修正）。
@@ -63,6 +66,12 @@ namespace DogSC.Replica {
    if(!Finite(MasterGainDb)||MasterGainDb<-60||MasterGainDb>12)throw new Exception("总输出增益超出范围。");
    foreach(var ch in Mixer){if(string.IsNullOrEmpty(ch.Role)||!new[]{"对话","音乐","音效","旁白"}.Contains(ch.Role)||!Finite(ch.GainDb)||ch.GainDb<-60||ch.GainDb>12||!Finite(ch.Pan)||ch.Pan<-1||ch.Pan>1)throw new Exception("混音通道参数无效。");if(!string.IsNullOrEmpty(ch.SourcePath)&&!File.Exists(ch.SourcePath))throw new Exception("混音通道的音频文件缺失："+ch.SourcePath);}
    ProxyTools.Validate(this);MulticamModel.Validate(this);
+   // W4：画中画开时素材缺失是硬错（与代理/混音通道同款语义，不静默回退）。
+   if(Camera.Enabled){
+    if(string.IsNullOrEmpty(Camera.SourcePath)||!File.Exists(Camera.SourcePath))throw new Exception("摄像头画中画素材缺失："+(string.IsNullOrEmpty(Camera.SourcePath)?"（未关联）":Camera.SourcePath)+"。请重新关联或关闭画中画。");
+    if(!Finite(Camera.X)||!Finite(Camera.Y)||Camera.X<0||Camera.X>1||Camera.Y<0||Camera.Y>1||!Finite(Camera.Size)||Camera.Size<.05||Camera.Size>.5)throw new Exception("摄像头画中画位置或大小无效。");
+    if(Camera.Shape!="circle"&&Camera.Shape!="rounded"&&Camera.Shape!="rect")throw new Exception("摄像头画中画形状无效。");
+   }
    if(Pointer.Any(p=>!Finite(p.Time)||!Finite(p.X)||!Finite(p.Y)))throw new Exception("鼠标轨迹无效。");
    if(Zooms.Any(z=>!Finite(z.Start)||!Finite(z.End)||!Finite(z.Scale)||!Finite(z.X)||!Finite(z.Y)||!Finite(z.Transition)||z.End<=z.Start||z.Start<0||z.Scale<1||z.Scale>3||z.Transition<.05||z.Transition>5))throw new Exception("运镜参数无效。");
    double[] values={Style.Padding,Style.Radius,Style.Shadow,Style.Border,Style.Scale,Style.X,Style.Y,Style.Volume,Style.ZoomScale,Style.Opening};
@@ -227,11 +236,11 @@ namespace DogSC.Replica {
   internal sealed class SceneCache:IDisposable {
    readonly Bitmap background;readonly ShadowCache shadow=new ShadowCache();
    public SceneCache(EditDocument doc,int width,int height,Image wallpaper){background=new Bitmap(width,height,PixelFormat.Format32bppArgb);using(var g=Graphics.FromImage(background)){g.InterpolationMode=InterpolationMode.HighQualityBicubic;g.SmoothingMode=SmoothingMode.AntiAlias;DrawBackground(g,doc,width,height,wallpaper);}}
-   public void Render(Graphics g,Bitmap frame,EditDocument doc,MotionEvaluator motion,double time,int width,int height,Image wallpaper,Bitmap canvas){DrawCore(g,frame,doc,motion,time,width,height,wallpaper,canvas,background,shadow);}
+   public void Render(Graphics g,Bitmap frame,EditDocument doc,MotionEvaluator motion,double time,int width,int height,Image wallpaper,Bitmap canvas,Func<double,Bitmap> cameraFrame=null){DrawCore(g,frame,doc,motion,time,width,height,wallpaper,canvas,background,shadow,cameraFrame);}
    public void Dispose(){shadow.Dispose();background.Dispose();}
   }
-  public static void Draw(Graphics g,Bitmap frame,EditDocument doc,MotionEvaluator motion,double time,int width,int height,Image wallpaper,Bitmap canvas=null){DrawCore(g,frame,doc,motion,time,width,height,wallpaper,canvas,null,null);}
-  static void DrawCore(Graphics g,Bitmap frame,EditDocument doc,MotionEvaluator motion,double time,int width,int height,Image wallpaper,Bitmap canvas,Bitmap background,ShadowCache shadowCache) {
+  public static void Draw(Graphics g,Bitmap frame,EditDocument doc,MotionEvaluator motion,double time,int width,int height,Image wallpaper,Bitmap canvas=null,Func<double,Bitmap> cameraFrame=null){DrawCore(g,frame,doc,motion,time,width,height,wallpaper,canvas,null,null,cameraFrame);}
+  static void DrawCore(Graphics g,Bitmap frame,EditDocument doc,MotionEvaluator motion,double time,int width,int height,Image wallpaper,Bitmap canvas,Bitmap background,ShadowCache shadowCache,Func<double,Bitmap> cameraFrame=null) {
    var a=doc.Style;if(background==null)DrawBackground(g,doc,width,height,wallpaper);else g.DrawImageUnscaled(background,0,0);
    var pose=motion.At(time);pose.Opacity*=1-EffectRenderer.Suppression(doc,time);var layout=SceneLayout.Make(doc,width,height,pose);float unit=Math.Min(width,height)/720f;
    var projection=new ScreenProjection(layout.Frame,ScreenMotionModels.At(doc,time),width,height);
@@ -240,7 +249,7 @@ namespace DogSC.Replica {
     using(var cg=Graphics.FromImage(card)){cg.Clear(Color.Transparent);cg.TranslateTransform(-bounds.X,-bounds.Y);cg.InterpolationMode=g.InterpolationMode;cg.SmoothingMode=g.SmoothingMode;DrawScreen(cg,frame,doc,motion,time,width,height,pose,layout);using(var mask=Round(layout.Frame,layout.Radius)){cg.SetClip(mask);EffectRenderer.Spotlights(cg,doc,time,layout,pose,width,height);}}
     using(var projected=projection.Warp(card,bounds,width,height))g.DrawImageUnscaled(projected,0,0);
    }
-   }EffectRenderer.Backdrop(g,canvas,doc,time,width,height);EffectRenderer.Stickers(g,doc,motion,time,width,height);DrawSubtitles(g,doc,time,layout,width,height);
+   }EffectRenderer.Backdrop(g,canvas,doc,time,width,height);EffectRenderer.Stickers(g,doc,motion,time,width,height);CameraOverlay.Draw(g,doc,time,layout,width,height,cameraFrame);DrawSubtitles(g,doc,time,layout,width,height);
   }
   // W3 字幕烧录（GDI+，与贴图/光标同一条路）：预览 Compose 与导出 DrawCore
   // 都走这里，所以烧录效果在预览里看得到、导出里也一定有。主行白色在下，
@@ -327,7 +336,7 @@ namespace DogSC.Replica {
    doc.Validate();if(File.Exists(output))throw new Exception("请选择一个新的导出文件名。");
    var size=SceneLayout.OutputSize(doc,height);int width=size[0];height=size[1];
    string work=Path.Combine(Path.GetDirectoryName(output),".dogsc-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(work);
-   Process decoder=null,encoder=null;
+   Process decoder=null,encoder=null;CameraFrameStream cameraStream=null;
    try {
     string timeline=Path.Combine(work,"timeline.mp4"),filter=Path.Combine(work,"timeline.txt"),result=Path.Combine(work,"result.mp4");
     progress(0,"整理时间线");bool direct=doc.Cuts.Count==1&&Math.Abs(doc.Cuts[0].Speed-1)<.000001&&!doc.Cuts[0].Gap&&!MulticamModel.Active(doc);string media=direct?doc.Source:timeline;string selection=direct?"-ss "+Media.N(doc.Cuts[0].Start)+" -t "+Media.N(doc.Cuts[0].End-doc.Cuts[0].Start)+" ":"";
@@ -343,19 +352,23 @@ namespace DogSC.Replica {
     using(var background=new Bitmap(width,height,PixelFormat.Format32bppArgb))using(var shadowCache=new ShadowCache()){
      g.InterpolationMode=InterpolationMode.HighQualityBicubic;g.SmoothingMode=SmoothingMode.AntiAlias;
      using(var bg=Graphics.FromImage(background)){bg.InterpolationMode=g.InterpolationMode;bg.SmoothingMode=g.SmoothingMode;DrawBackground(bg,doc,width,height,wall);}
-     var input=new byte[dw*dh*4];var bytes=new byte[width*height*4];int frame=0;long drawTicks=0,writeTicks=0;using(var motion=new MotionEvaluator(doc)){
+     var input=new byte[dw*dh*4];var bytes=new byte[width*height*4];int frame=0;long drawTicks=0,writeTicks=0;
+     // W4：画中画开时用一条顺序流解码摄像头文件（与主画面逐帧对齐；失败只关画中画，不拦导出）。声明在 try 外，catch/finally 也能看见。
+     try{if(doc.Camera!=null&&doc.Camera.Enabled&&File.Exists(doc.Camera.SourcePath))cameraStream=new CameraFrameStream(doc.Camera.SourcePath,fps);}catch{}
+     using(var motion=new MotionEvaluator(doc)){
      while(true){token.ThrowIfCancellationRequested();int filled=0,count;while(filled<input.Length&&(count=decoder.StandardOutput.BaseStream.Read(input,filled,input.Length-filled))>0)filled+=count;
       if(filled==0)break;if(filled!=input.Length)throw new Exception("解码帧不完整。");
       var data=source.LockBits(new Rectangle(0,0,dw,dh),ImageLockMode.WriteOnly,PixelFormat.Format32bppArgb);try{Marshal.Copy(input,0,data.Scan0,input.Length);}finally{source.UnlockBits(data);}
-      long timeStart=diagnostics==null?0:Stopwatch.GetTimestamp();DrawCore(g,source,doc,motion,frame/(double)fps,width,height,wall,canvas,background,shadowCache);if(diagnostics!=null)drawTicks+=Stopwatch.GetTimestamp()-timeStart;
+      long timeStart=diagnostics==null?0:Stopwatch.GetTimestamp();DrawCore(g,source,doc,motion,frame/(double)fps,width,height,wall,canvas,background,shadowCache,cameraStream==null?(Func<double,Bitmap>)null:(t=>cameraStream.FrameAt(t)));if(diagnostics!=null)drawTicks+=Stopwatch.GetTimestamp()-timeStart;
       data=canvas.LockBits(new Rectangle(0,0,width,height),ImageLockMode.ReadOnly,PixelFormat.Format32bppArgb);try{Marshal.Copy(data.Scan0,bytes,0,bytes.Length);}finally{canvas.UnlockBits(data);}
       timeStart=diagnostics==null?0:Stopwatch.GetTimestamp();encoder.StandardInput.BaseStream.Write(bytes,0,bytes.Length);if(diagnostics!=null)writeTicks+=Stopwatch.GetTimestamp()-timeStart;frame++;if(frame%15==0)progress(.1+.88*Math.Min(1,frame/(doc.Length*fps)),"渲染画面与运镜");
      }
      encoder.StandardInput.Close();decoder.WaitForExit();encoder.WaitForExit();token.ThrowIfCancellationRequested();
      if(frame==0||decoder.ExitCode!=0||encoder.ExitCode!=0)throw new Exception("导出失败："+decodeError.Result+encodeError.Result);if(diagnostics!=null)diagnostics("Frames: "+frame+"; rendering: "+(drawTicks/(double)Stopwatch.Frequency).ToString("F2")+" seconds; encoder input wait: "+(writeTicks/(double)Stopwatch.Frequency).ToString("F2")+" seconds.");}
+     if(cameraStream!=null)cameraStream.Dispose();
     }
     File.Move(result,output);SubtitleFiles.WriteSidecar(doc,output);progress(1,"导出完成");
-   }catch{token.ThrowIfCancellationRequested();throw;}finally{
+   }catch{if(cameraStream!=null)cameraStream.Dispose();token.ThrowIfCancellationRequested();throw;}finally{
     foreach(var p in new[]{decoder,encoder})if(p!=null){try{if(!p.HasExited)p.Kill();p.WaitForExit();}catch{}p.Dispose();}
     // Only delete the unique, explicitly created transaction directory.
     try{if(Directory.Exists(work))Directory.Delete(work,true);}catch{}

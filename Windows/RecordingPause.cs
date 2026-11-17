@@ -47,8 +47,8 @@ namespace DogSC.Replica {
   void BeginSegment(){captureSession=take.Current;capture=captureSession.Process;watch=captureSession.Clock;segmentPointStart=points.Count;if(target!=IntPtr.Zero){Native.Point origin=new Native.Point();if(ClientToScreen(target,ref origin)){area.X=origin.X;area.Y=origin.Y;}}var p=NativeCursor.Sample(area,take.CommittedSeconds,false);p.Segment=segmentPointStart;points.Add(p);lastStatus=-1;StartPointerSampling();}
   void CommitPointerSegment(){double end=take.CommittedSeconds;for(int i=segmentPointStart;i<points.Count;i++){points[i].Time=Math.Min(points[i].Time,Math.Max(0,end-.00001));points[i].Segment=segmentPointStart;}}
   async Task ChangePause(){if(take==null||busy)return;busy=true;timer.Stop();StopPointerSampling();start.IsEnabled=false;UpdatePauseButton();
-   try{if(!take.IsPaused){state.Text="正在暂停…";await take.Pause();CommitPointerSegment();capture=null;captureSession=null;state.Text="已暂停 · "+UI.Time(take.CommittedSeconds)+" · 点击继续或停止保存";}
-    else {state.Text="正在继续…";await take.Resume(message=>state.Text=message);BeginSegment();}}
+   try{if(!take.IsPaused){state.Text="正在暂停…";await take.Pause();if(cameraRecorder!=null)await cameraRecorder.Pause();CommitPointerSegment();capture=null;captureSession=null;state.Text="已暂停 · "+UI.Time(take.CommittedSeconds)+" · 点击继续或停止保存";}
+    else {state.Text="正在继续…";await take.Resume(message=>state.Text=message);if(cameraRecorder!=null){try{await cameraRecorder.Start();}catch(Exception ex){cameraRecorder.Dispose();cameraRecorder=null;state.Text="摄像头继续失败，已停止摄像头录制："+ex.Message;}}BeginSegment();}}
    catch(Exception ex){state.Text=take.IsPaused?"继续失败 · 已录片段已保留，可停止保存":"暂停失败 · 请停止保存";if(!take.IsPaused){capture=take.Current.Process;captureSession=take.Current;StartPointerSampling();}if(testingCapture)throw;AppDialogs.Notice(this,take.IsPaused?"无法继续录制":"无法暂停录制",ex.Message+"\n素材目录："+Path.GetDirectoryName(sourcePath));}
    finally{busy=false;start.IsEnabled=true;UpdatePauseButton();}
   }
