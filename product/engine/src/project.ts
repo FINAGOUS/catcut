@@ -23,6 +23,19 @@ import type { SilenceCutOptions } from './silencecut.js';
 import type { TextCutOptions } from './textcut.js';
 import type { RemixOptions } from './remix.js';
 import type { FrameInterpOptions } from './frameinterp.js';
+import type { AudioRepair } from './audiorepair.js';
+import type { VocalSepOptions } from './vocalsep.js';
+import type { OptimizedRef } from './optimized.js';
+import type { TtsNarration } from './tts.js';
+import type { SurroundLayout } from './surround.js';
+import type { MediaItem } from './medialib.js';
+
+export type { AudioRepair } from './audiorepair.js';
+export type { VocalSepOptions } from './vocalsep.js';
+export type { OptimizedRef } from './optimized.js';
+export type { TtsNarration } from './tts.js';
+export type { SurroundLayout } from './surround.js';
+export type { MediaItem, MediaMetadata, MediaFilterRule } from './medialib.js';
 
 export type { TimelineMarker, AdjustmentLayer, AlternateClip } from './timeline.js';
 export type { SilenceCutOptions } from './silencecut.js';
@@ -440,7 +453,8 @@ export interface Clip {
    * Multicam clip (P2, M4): N synchronised angle files, cut between
    * them on the timeline (see multicam.ts). `source` is angle 0 — the
    * main angle — and angles[0] must equal it. Audio comes from one
-   * angle only (audioAngle, default 0). v1: 2–4 angles, all the same
+   * angle only (audioAngle, default 0). v1: 2–4 angles (P2b); P3f
+   * widened to 2–16 angles, all the same
    * duration, speed 1, no reverse/freeze/stabilisation/portrait.
    */
   multicam?: Multicam;
@@ -495,6 +509,33 @@ export interface Clip {
    * back to the original. v1: not supported on compound/multicam clips.
    */
   proxy?: ProxyRef;
+  /**
+   * Optimized media (P3, M4 §8.6): full-resolution DNxHR
+   * intermediate for this clip's source (see optimized.ts). The
+   * timeline / preview renders against it; EXPORT always renders
+   * from `source` after validateOptimizedMedia confirms the file
+   * exists and matches. v1: not supported on compound/multicam
+   * clips (same as proxy).
+   */
+  optimizedMedia?: OptimizedRef;
+  /**
+   * Audio repair (P3, M4 §8.3): de-click (adeclick), mains-hum
+   * removal (highpass), noise reduction (afftdn nr=25:nf=-30).
+   * See audiorepair.ts — the default afftdn settings measure ~0.3 dB
+   * on steady hiss, the repair settings measure ~25 dB. De-reverb
+   * is NOT in v1 (no LGPL de-reverb filter exists).
+   */
+  audioRepair?: AudioRepair;
+  /**
+   * Vocal separation (P3, M4 §8.3): replace this clip's audio with
+   * the Demucs vocals or accompaniment stem (see vocalsep.ts).
+   * Applied at export prep: the stem is muxed with the clip's video
+   * into an intermediate file (video re-encoded libx264 CRF 20) and
+   * the clip is re-pointed at it. Requires Demucs installed; a
+   * missing Demucs/model throws instead of exporting the unseparated
+   * mix. v1: speed 1, no reverse/freeze, no compound/multicam.
+   */
+  vocalSep?: VocalSepOptions;
 }
 
 export type TransitionType =
@@ -603,6 +644,29 @@ export interface Project {
    * targetFps must exceed the project fps.
    */
   frameInterp?: FrameInterpOptions;
+  /**
+   * TTS narration (P3, M4 §8.3): one local Sherpa-ONNX voice-over
+   * mixed over the timeline from `start` (see tts.ts). Synthesized
+   * at export prep; missing sherpa-onnx/model throws instead of
+   * exporting without the narration.
+   */
+  narration?: TtsNarration;
+  /**
+   * Surround layout of the mix bus (P3, M4 §8.3): 'stereo'
+   * (default, P2c behaviour), '5.1' or '7.1'. The mix stays stereo
+   * through assembly; a single pan upmix at the end widens it
+   * (see surround.ts). Surround exports default to AC-3 for 5.1
+   * and AAC for 7.1 (AC-3 tops out at 5.1). Role stems stay stereo.
+   */
+  surroundLayout?: SurroundLayout;
+  /**
+   * Media library (P3, M4 §8.1): bins, keywords, ratings,
+   * favourites, rejected flags, camera tags and per-item metadata
+   * (see medialib.ts). The library is metadata only — the clips
+   * still reference files by path; subclips store in/out ranges
+   * and never copy files.
+   */
+  mediaLibrary?: MediaItem[];
 }
 
 export interface SpeedSegment {
