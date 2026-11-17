@@ -15,6 +15,9 @@ import {
 import {
   preparePortraitMasks,
 } from './portrait.js';
+import {
+  prepareBeautyMasks,
+} from './beauty.js';
 import { dirname } from 'node:path';
 import { prepareColorLuts } from './color.js';
 import {
@@ -171,6 +174,7 @@ export {
   applyAdvancedColorToRgb,
   applyCurve,
   buildColorLut,
+  colorWheelWeight,
   hslToRgb,
   HSL_ZONE_HALF_WIDTH,
   HUE_ZONE_CENTER,
@@ -182,7 +186,27 @@ export {
   validateAdvancedColor,
   writeColorLutFile,
 } from './color.js';
-export type { AdvancedColor, BuiltLut, Curves, CurvePoint, HslZoneAdjust, HueZoneName, ParsedCube, WhiteBalance } from './color.js';
+export type { AdvancedColor, BuiltLut, ColorWheels, ColorWheelZone, Curves, CurvePoint, HslCurves, HslZoneAdjust, HueZoneName, ParsedCube, WhiteBalance } from './color.js';
+export {
+  beautyFilter,
+  countComponents,
+  defaultBeautyScriptPath,
+  hqdn3dFilter,
+  prepareBeautyMasks,
+  validateBeauty,
+} from './beauty.js';
+export type { BeautyMaskInfo, BeautyMaskSummary, BeautyMode, BeautyOptions, MaskComponents, PrepareBeautyOptions } from './beauty.js';
+export {
+  beatFlashFilters,
+  beatSpeedCurve,
+  validateBeatFlash,
+  validateBeatSpeed,
+} from './beat.js';
+export type { BeatFlashOptions, BeatSpeedOptions } from './beat.js';
+export {
+  volumeKeysFilter,
+} from './audiofx.js';
+export type { VolumeKeyframe } from './audiofx.js';
 export {
   compoundChildDuration,
   compoundIntermediatePath,
@@ -641,6 +665,20 @@ async function exportProjectInner(
         ffprobe: opts.ffprobe,
       })
     : undefined;
+  // Face beautify (P3): same ONNX mask, filtered to the largest
+  // component (single) or all components (multi) by beauty_mask.py.
+  // Strength-0 clips are skipped inside prepareBeautyMasks. A clip
+  // with no person at all throws there ("no face") instead of
+  // exporting an unretouched clip as "beautified".
+  const beautyMasks = project.clips.some((c) => c.beauty && (c.beauty.strength ?? 50) > 0)
+    ? await prepareBeautyMasks(project, dirname(output), {
+        python: opts.python,
+        portraitScript: opts.portraitScript,
+        model: opts.portraitModel,
+        ffmpeg,
+        ffprobe: opts.ffprobe,
+      })
+    : undefined;
   // Advanced colour (P2): bake HSL/curves/white-balance into a .cube
   // per clip BEFORE the main export; the .cube files are kept next to
   // the output as an audit trail (like the mask PNGs). Imported .cube
@@ -682,6 +720,7 @@ async function exportProjectInner(
     opts.roleStems,
     smartcutTracks,
     hdrMode,
+    beautyMasks ? new Map([...beautyMasks].map(([k, v]) => [k, v.mask] as [number, string])) : undefined,
   );
   // Export-only switches: an output that is not mapped MUST still be
   // consumed, or FFmpeg rejects the graph ("output unconnected").
