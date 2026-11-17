@@ -577,10 +577,10 @@ namespace DogSC.Replica {
    var onsets = RefineOnsets(samples, PickOnsets(env, hopSec, 0.3));
    double ac0 = Autocorr(env, 0);
    if (onsets.Count < 2 || ac0 <= 0) return new BeatGrid { Bpm = 0, Period = 0, Beats = new List<double>(), Onsets = onsets, Confidence = 0, Duration = duration };
-   Func<double, int> lagForBpm = bpm => (int)Math.Round(60 / bpm / hopSec);
+   Func<double, int> lagForBpm = b => (int)Math.Round(60 / b / hopSec);
    int minLag = lagForBpm(200), maxLag = lagForBpm(60);
    int bestLag = minLag; double bestVal = -1;
-   for (int lag = minLag; lag <= maxLag; lag++) { double v = Autocorr(env, lag); if (v > bestVal) { bestVal = v; bestLag = lag; } }
+   for (int candidate = minLag; candidate <= maxLag; candidate++) { double v = Autocorr(env, candidate); if (v > bestVal) { bestVal = v; bestLag = candidate; } }
    int lag = bestLag;
    int halfLag = (int)Math.Round(bestLag / 2.0);
    if (halfLag >= minLag && Autocorr(env, halfLag) >= 0.9 * bestVal) { lag = halfLag; bestVal = Autocorr(env, halfLag); }
