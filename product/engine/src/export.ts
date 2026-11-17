@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { buildFilterGraph } from './filtergraph.js';
-import { projectDuration, type Clip, type Project } from './project.js';
+import { clipDuration, projectDuration, type Clip, type Project } from './project.js';
 import { prepareClipMaskFiles } from './mask.js';
 import {
   cleanupStabilization,
@@ -18,7 +18,7 @@ import {
 import {
   prepareBeautyMasks,
 } from './beauty.js';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { prepareColorLuts } from './color.js';
 import {
   compoundChildDuration,
@@ -58,6 +58,20 @@ import {
   type HdrMode,
   type SubtitleSidecarFormat,
 } from './deliver.js';
+import {
+  markersToFfmetadata,
+  deleteClip as deleteClipLinked,
+  replaceClipWithSplits,
+  validateTimelineProject,
+} from './timeline.js';
+import {
+  compressSilences,
+  cutSilences,
+  detectSilencesForClip,
+  validateSilenceCut,
+} from './silencecut.js';
+import { cutClipByText } from './textcut.js';
+import { remixAudio } from './remix.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -187,6 +201,61 @@ export {
   writeColorLutFile,
 } from './color.js';
 export type { AdvancedColor, BuiltLut, ColorWheels, ColorWheelZone, Curves, CurvePoint, HslCurves, HslZoneAdjust, HueZoneName, ParsedCube, WhiteBalance } from './color.js';
+export {
+  adjustmentLayerFilter,
+  deleteClip,
+  MARKER_COLORS,
+  markersToFfmetadata,
+  pasteAttributes,
+  PASTEABLE_FIELDS,
+  replaceClipSource,
+  replaceClipWithSplits,
+  searchTimeline,
+  switchAlternate,
+  threePointInsert,
+  threePointOverwrite,
+  validateJLClip,
+  validateTimelineProject,
+} from './timeline.js';
+export type { AdjustmentLayer, AlternateClip, PasteableField, TimelineHit, TimelineMarker } from './timeline.js';
+export {
+  clampSilences,
+  compressSilences,
+  cutSilences,
+  detectSilencesForClip,
+  SILENCE_CUT_DEFAULTS,
+  totalSilence,
+  validateSilenceCut,
+} from './silencecut.js';
+export type { SilenceCutOptions } from './silencecut.js';
+export {
+  annotateSpeakers,
+  cutClipByText,
+  hasWordTimestamps,
+  PyannoteDiarizer,
+  PYANNOTE_SETUP,
+} from './textcut.js';
+export type { SpeakerSegment, TextCutOptions, TextCutResult } from './textcut.js';
+export {
+  buildRemixAudio,
+  planRemix,
+  remixAudio,
+  remixBars,
+  validateRemix,
+} from './remix.js';
+export type { RemixOptions, RemixPlan, RemixSegment } from './remix.js';
+export {
+  minterpolateFilter,
+  validateFrameInterp,
+} from './frameinterp.js';
+export type { FrameInterpOptions } from './frameinterp.js';
+export {
+  beatSpeedNodes,
+  clipBaseDuration,
+  clipDuration,
+  projectDuration,
+  speedCurveSegments,
+} from './project.js';
 export {
   beautyFilter,
   countComponents,
@@ -501,6 +570,114 @@ export async function resolveCompoundClips(
 }
 
 /**
+ * P3e export prep (timeline ops that rewrite the project before the
+ * graph build): project-level silence cut, text cut, and per-clip
+ * music Remix. Runs after compound resolution (so it only ever sees
+ * ordinary clips with real source files) and before stabilization
+ * prep (so the .trf pass sees the final clips). Returns a new
+ * project; the input is untouched.
+ *
+ * - silenceCut: each clip's silences are detected on its source
+ *   window (silencedetect) and deleted (split) or compressed
+ *   (speed curve). Subtitles/markers are NOT re-timed — documented
+ *   limit; a project that needs both should cut first, subtitle
+ *   after. Compound/multicam clips are refused (their audio does
+ *   not come from a single source window).
+ * - textCut: the named clip is split by the transcript; an empty
+ *   result deletes the clip.
+ * - clip.remix: the clip's music is remixed to the clip's own output
+ *   duration (beat-aware splice, remixAudio) and muxed with the
+ *   clip's video into an intermediate MP4 (video re-encoded libx264
+ *   CRF 20 — the remix audio cannot ride on the original file, the
+ *   graph has no per-clip external audio input); the clip is then
+ *   re-pointed at the intermediate with in=0/out=duration.
+ */
+async function applyTimelinePrep(
+  project: Project,
+  dir: string,
+  opts: ExportOptions,
+  ffmpeg: string,
+): Promise<Project> {
+  let p: Project = project;
+  if (p.silenceCut) {
+    validateSilenceCut(p.silenceCut);
+    const mode = p.silenceCut.mode ?? 'delete';
+    const factor = p.silenceCut.compressFactor ?? 0.3;
+    // Reverse order: replacing/deleting clip i never shifts the
+    // indexes of clips before it.
+    for (let i = p.clips.length - 1; i >= 0; i--) {
+      const clip = p.clips[i];
+      if (clip.compound || clip.multicam) {
+        throw new Error(`clip ${clip.id}: silenceCut does not support compound/multicam clips yet`);
+      }
+      const sil = await detectSilencesForClip(clip, {
+        ...p.silenceCut,
+        ffmpeg,
+      });
+      if (mode === 'compress') {
+        const next = compressSilences(clip, sil, factor);
+        p = { ...p, clips: p.clips.map((c, j) => (j === i ? next : c)) };
+      } else {
+        const kept = cutSilences(clip, sil);
+        p = kept.length === 0
+          ? deleteClipLinked(p, i, true)
+          : replaceClipWithSplits(p, i, kept);
+      }
+    }
+  }
+  if (p.textCut) {
+    const tc = p.textCut;
+    const idx = p.clips.findIndex((c) => c.id === tc.clipId);
+    if (idx < 0) {
+      throw new Error(`textCut: clip "${tc.clipId}" not found in the project`);
+    }
+    const clip = p.clips[idx];
+    if (clip.compound || clip.multicam) {
+      throw new Error(`clip ${clip.id}: textCut does not support compound/multicam clips yet`);
+    }
+    const res = cutClipByText(clip, tc.subtitles, tc.remove, { speaker: tc.speaker });
+    if (res.unmatched.length > 0) {
+      throw new Error(`textCut: no match for ${res.unmatched.map((u) => `"${u}"`).join(', ')}`);
+    }
+    p = res.clips.length === 0
+      ? deleteClipLinked(p, idx, true)
+      : replaceClipWithSplits(p, idx, res.clips);
+  }
+  for (let i = 0; i < p.clips.length; i++) {
+    const clip = p.clips[i];
+    if (!clip.remix) continue;
+    if (clip.compound || clip.multicam) {
+      throw new Error(`clip ${clip.id}: remix does not support compound/multicam clips yet`);
+    }
+    if (clip.speed !== 1 || clip.reverse || clip.freezeAt !== undefined ||
+      (clip.speedCurve ?? []).length > 0 || clip.beatSpeed) {
+      throw new Error(`clip ${clip.id}: remix needs speed 1, no reverse/freeze/speedCurve/beatSpeed`);
+    }
+    const dur = clipDuration(clip);
+    const target = clip.remix.targetDuration;
+    if (Math.abs(target - dur) > 0.05) {
+      throw new Error(
+        `clip ${clip.id}: remix.targetDuration ${target} must equal the clip duration ${dur.toFixed(3)} (±0.05s) — the clip IS the target length`,
+      );
+    }
+    const wav = join(dir, `remix-c${i}.wav`);
+    await remixAudio(clip.source, { ...clip.remix, ffmpeg }, wav);
+    const intermediate = join(dir, `remix-c${i}.mp4`);
+    await execFileAsync(ffmpeg, [
+      '-v', 'error',
+      '-ss', String(clip.in), '-i', clip.source,
+      '-t', String(dur), '-i', wav,
+      '-map', '0:v', '-map', '1:a',
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac', '-b:a', '160k', '-shortest', '-y', intermediate,
+    ]);
+    const next: Clip = { ...clip, source: intermediate, in: 0, out: dur, remix: undefined };
+    p = { ...p, clips: p.clips.map((c, j) => (j === i ? next : c)) };
+  }
+  return p;
+}
+
+/**
  * Render one project with its own vidstab pass. Compound clips are
  * resolved FIRST (their child renders recurse through this same
  * function at depth+1), so prepareStabilization only ever sees
@@ -515,14 +692,17 @@ async function renderProjectWithStab(
 ): Promise<ExportReport> {
   const outDir = dirname(output);
   const resolved = await resolveCompoundClips(project, outDir, opts, ffmpeg, depth);
+  // P3e prep (silence cut / text cut / remix) runs on the resolved
+  // project, before stabilization prep sees the clips.
+  const prepped = await applyTimelinePrep(resolved, outDir, opts, ffmpeg);
   // Vidstab pass 1: run vidstabdetect for every vidstab clip BEFORE the
   // main export, writing one .trf per clip next to the output. The .trf
   // files are deleted after a successful export; on failure they are kept
   // and their paths logged, so the failed run can be debugged/re-run.
-  const stabTrf = await prepareStabilization(resolved, outDir, ffmpeg);
+  const stabTrf = await prepareStabilization(prepped, outDir, ffmpeg);
   let ok = false;
   try {
-    const report = await exportProjectInner(resolved, output, opts, ffmpeg, stabTrf);
+    const report = await exportProjectInner(prepped, output, opts, ffmpeg, stabTrf);
     ok = true;
     return report;
   } catch (e) {
@@ -737,12 +917,28 @@ async function exportProjectInner(
   const args: string[] = [];
   project.clips.forEach((clip) => args.push('-i', clip.source));
   extraInputs.forEach((p) => args.push('-i', p));
+  // Chapters (P3): chapter markers are written to an ffmetadata file
+  // and muxed in as an extra input; -map_metadata copies the global
+  // tags, -map_chapters copies the chapter table (probe-verified
+  // 2026-11-18: ffprobe reads the titles + times back). The .ffmeta
+  // file is kept next to the output as an audit trail (like .ass).
+  let chapterInputIdx = -1;
+  if ((project.markers ?? []).some((m) => m.chapter)) {
+    validateTimelineProject(project);
+    const metaFile = `${output}.ffmeta`;
+    writeFileSync(metaFile, markersToFfmetadata(project), 'utf8');
+    chapterInputIdx = project.clips.length + extraInputs.length;
+    args.push('-i', metaFile);
+  }
   args.push('-filter_complex', filterComplex);
   // Export-only switches (P3): video-only drops the audio map (+ -an),
   // audio-only drops the video map (+ -vn). Role stems are audio too —
   // they are only mapped when the audio survives.
   if (exportOnly !== 'audio') args.push('-map', videoOut);
   if (exportOnly !== 'video') args.push('-map', audioOut);
+  if (chapterInputIdx >= 0) {
+    args.push('-map_metadata', String(chapterInputIdx), '-map_chapters', String(chapterInputIdx));
+  }
   // Role stems (roleStems only): one extra audio stream per role, in
   // first-appearance order (mix is audio stream 0, stems are 1..N).
   const stemRoles: string[] = [];
