@@ -79,6 +79,15 @@ import {
   hqdn3dFilter,
   validateBeauty,
 } from './beauty.js';
+import {
+  adjustmentLayerFilter,
+  validateJLClip,
+  validateTimelineProject,
+} from './timeline.js';
+import {
+  minterpolateFilter,
+  validateFrameInterp,
+} from './frameinterp.js';
 
 export interface FilterGraph {
   filterComplex: string;
@@ -301,7 +310,18 @@ function clipVideoChains(
   // pad/fps stage below applies to it directly.
   const mc = validateMulticam(clip);
   let baseLabel: string;
-  if (mc) {
+  if (clip.audioOnly) {
+    // Linked selection off (P3): the video was deleted but the audio
+    // kept — the video renders black for the clip's duration. No
+    // visual effect can apply to a black frame, so they are rejected.
+    if (clip.mask || clip.chromaKey || clip.portraitCutout || clip.reframe || clip.beauty || clip.stabilize) {
+      throw new Error(`clip ${clip.id}: audio-only clip cannot carry mask/chromaKey/portraitCutout/reframe/beauty/stabilize`);
+    }
+    chains.push(
+      `color=c=black:s=${width}x${height}:r=${fps}:d=${clipDuration(clip)}[vb${idx}]`,
+    );
+    baseLabel = `[vb${idx}]`;
+  } else if (mc) {
     if (!maskCtx) {
       throw new Error(`clip ${clip.id}: multicam needs the graph context`);
     }
@@ -861,7 +881,19 @@ function clipAudioChains(clip: Clip, idx: number, ctx?: MaskCtx): string[] {
     ? speedCurveSegments(clip).slice().reverse()
     : speedCurveSegments(clip);
   const reverseTail = clip.reverse ? ',areverse,asetpts=PTS-STARTPTS' : '';
-  if (segments.length === 1) {
+  // J/L edit (P3): the audio comes from its own source window
+  // [audioIn, audioOut] instead of the video window, then is fitted
+  // to the video duration — longer audio is trimmed, shorter audio
+  // is padded with silence (apad). Total duration never changes.
+  const jl = validateJLClip(clip);
+  if (jl) {
+    const vDur = clipDuration(clip);
+    chains.push(
+      `[${audioInputIdx}:a]atrim=start=${jl.audioIn}:end=${jl.audioOut},` +
+        `asetpts=PTS-STARTPTS,${atempoChain(clip.speed)},` +
+        `atrim=start=0:end=${vDur},apad=whole_dur=${vDur}[ab${idx}]`,
+    );
+  } else if (segments.length === 1) {
     const seg = segments[0];
     chains.push(
       `[${audioInputIdx}:a]atrim=start=${clip.in + seg.start}:end=${clip.in + seg.end},` +
@@ -993,6 +1025,10 @@ export function buildFilterGraph(
 ): FilterGraph {
   const n = project.clips.length;
   if (n === 0) throw new Error('project has no clips');
+  // Timeline markers / adjustment layers (P3): fail fast on an
+  // out-of-range marker or layer span instead of rendering a project
+  // whose chapters point past the end.
+  validateTimelineProject(project);
   // A compound clip that reaches the graph unresolved is a caller bug:
   // export.ts resolves them (rendering the child first) before the graph
   // build. Fail here with a clear message instead of emitting a graph
@@ -1154,6 +1190,26 @@ export function buildFilterGraph(
       acc = acc + clipDuration(project.clips[k + 1]);
     }
   });
+  }
+  // Adjustment layers (P3): each layer's colour adjustment is gated
+  // to its span with enable=between on the assembled timeline.
+  // Applied here, after assembly and before subtitles/HDR, so the
+  // layer covers everything underneath it in that span.
+  if ((project.adjustmentLayers ?? []).length > 0) {
+    project.adjustmentLayers?.forEach((layer, n) => {
+      const out = `[vadj${n}]`;
+      chains.push(`${videoOut}${adjustmentLayerFilter(layer)}${out}`);
+      videoOut = out;
+    });
+  }
+  // Smart frame interpolation (P3): raise the assembled timeline to
+  // targetFps with minterpolate (motion-compensated). Duration does
+  // not change; the encoder's -r (preset fps) should match the
+  // target, or the extra frames are dropped again at encode time.
+  const frameInterp = validateFrameInterp(project.frameInterp, project.fps);
+  if (frameInterp) {
+    chains.push(`${videoOut}${minterpolateFilter(frameInterp.targetFps)}[vint]`);
+    videoOut = '[vint]';
   }
   // Audio assembly (mix): same offsets as the video xfade chain.
   chains.push(
