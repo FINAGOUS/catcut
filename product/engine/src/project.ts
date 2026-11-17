@@ -16,13 +16,17 @@ import type { RoleConfig } from './roles.js';
 import type { ProxyRef } from './proxy.js';
 import type { AudioFx } from './audiofx.js';
 import type { DualSubtitles, HdrMode, QueueItem, SubtitleSidecarFormat } from './deliver.js';
+import type { BeautyOptions } from './beauty.js';
+import type { BeatFlashOptions, BeatSpeedOptions } from './beat.js';
 
 export type { CompoundRef } from './compound.js';
 export type { Multicam, MulticamCut, MulticamSegment } from './multicam.js';
 export type { RoleConfig, ResolvedRoleConfig } from './roles.js';
 export type { ProxyRef, ProxyInfo, GenerateProxyOptions } from './proxy.js';
 
-export type { AdvancedColor, Curves, CurvePoint, HslZoneAdjust, HueZoneName, WhiteBalance } from './color.js';
+export type { AdvancedColor, ColorWheels, ColorWheelZone, Curves, CurvePoint, HslCurves, HslZoneAdjust, HueZoneName, WhiteBalance } from './color.js';
+export type { BeautyOptions, BeautyMode } from './beauty.js';
+export type { BeatFlashOptions, BeatSpeedOptions } from './beat.js';
 
 /** Shape-mask (PiP) geometry. All fractions are of the frame (0..1). */
 export type MaskShape = 'circle' | 'ellipse' | 'rect' | 'roundedRect';
@@ -260,6 +264,15 @@ export interface FollowZoomOptions {
   maxRate?: number;
 }
 
+/** Video denoise (P3, M4 §8.6 — "视频降噪", FFmpeg hqdn3d).
+ *  Separate from Clip.denoise, which is AUDIO noise reduction
+ *  (afftdn, P0) — the two must not be merged. Strength 0..100
+ *  (default 50); 0 = no filter in the graph. */
+export interface VideoDenoiseOptions {
+  /** Denoise strength 0..100 (default 50). */
+  strength?: number;
+}
+
 export interface Clip {
   id: string;
   /** Path to the source media file. */
@@ -379,6 +392,31 @@ export interface Clip {
    */
   followZoom?: FollowZoomOptions;
   /**
+   * Face beautify (P3, M4 §8.7 + direction doc): skin smoothing +
+   * slight brightening, masked to the ONNX person mask (see
+   * beauty.ts). Requires speed 1, no reverse/freeze; strength 0 =
+   * the stage is skipped (bit-identical to no beauty).
+   */
+  beauty?: BeautyOptions;
+  /**
+   * Video denoise (P3, M4 §8.6): hqdn3d spatio-temporal denoise,
+   * strength 0..100. NOT the audio `denoise` (afftdn) above.
+   */
+  videoDenoise?: VideoDenoiseOptions;
+  /**
+   * Beat-speed (P3, M4 §8.1): alternate slow/fast speeds at the
+   * given source-time beats (see beat.ts). Cannot combine with a
+   * manual speedCurve, reverse, freeze, portraitCutout, reframe or
+   * followZoom.
+   */
+  beatSpeed?: BeatSpeedOptions;
+  /**
+   * Beat-flash (P3, M4 §8.1): white the frame for `frames` frames
+   * at each output-time beat (see beat.ts). Independent of beatSpeed
+   * — the two can combine.
+   */
+  beatFlash?: BeatFlashOptions;
+  /**
    * Compound clip / nested timeline (P2, M4): this clip IS a whole
    * child project, rendered first to an intermediate MP4 (see
    * compound.ts + resolveCompoundClips in export.ts). `source` is
@@ -494,7 +532,14 @@ export interface SpeedSegment {
 /** Split a clip into constant-speed source segments from its speed curve. */
 export function speedCurveSegments(clip: Clip): SpeedSegment[] {
   const srcDur = clip.out - clip.in;
-  const curve = (clip.speedCurve ?? []).slice().sort((a, b) => a.t - b.t);
+  // Beat-speed (P3): the beats ARE the speed curve — the nodes are
+  // derived here so clipDuration/projectDuration account for them
+  // (a beat-speed clip's output is longer/shorter than its source;
+  // without this the export's durationError is the whole speed
+  // difference, measured 2.500 s on a 4 s clip in probe 2026-11-18).
+  const curve = clip.beatSpeed
+    ? beatSpeedNodes(clip.beatSpeed.beats, clip.beatSpeed.slowSpeed ?? 0.5, clip.beatSpeed.fastSpeed ?? 2, clip.beatSpeed.startWith ?? 'slow')
+    : (clip.speedCurve ?? []).slice().sort((a, b) => a.t - b.t);
   if (curve.length === 0) return [{ start: 0, end: srcDur, speed: clip.speed }];
   const segments: SpeedSegment[] = [];
   let prevT = 0;
@@ -508,6 +553,27 @@ export function speedCurveSegments(clip: Clip): SpeedSegment[] {
   }
   if (prevT < srcDur) segments.push({ start: prevT, end: srcDur, speed: prevSpeed });
   return segments.length > 0 ? segments : [{ start: 0, end: srcDur, speed: clip.speed }];
+}
+
+/** Beat-speed curve nodes (pure): alternate slow/fast at each beat,
+ *  starting with `startWith` at t=0. The first node is always at
+ *  t=0; each beat flips the speed. beat.ts's beatSpeedCurve is a
+ *  thin wrapper over this — the nodes live here so
+ *  speedCurveSegments (and therefore clipDuration) can use them
+ *  without a project.ts -> beat.ts import cycle. */
+export function beatSpeedNodes(
+  beats: number[],
+  slow: number,
+  fast: number,
+  startWith: 'slow' | 'fast',
+): SpeedCurvePoint[] {
+  const nodes: SpeedCurvePoint[] = [{ t: 0, speed: startWith === 'slow' ? slow : fast }];
+  let cur = startWith;
+  for (const b of beats) {
+    cur = cur === 'slow' ? 'fast' : 'slow';
+    nodes.push({ t: b, speed: cur === 'slow' ? slow : fast });
+  }
+  return nodes;
 }
 
 /** Clip-local duration after speed (or speed curve) is applied. */
