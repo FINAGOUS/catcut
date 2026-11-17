@@ -755,3 +755,4 @@ namespace DogSC.Replica {
    return "[" + sysIdx + ":a]volume=" + vol + "[s];[" + micIdx + ":a][s]amix=inputs=2:duration=first:normalize=0[aout]";
   }
  }
+}
