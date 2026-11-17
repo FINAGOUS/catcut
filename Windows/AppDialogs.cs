@@ -42,6 +42,7 @@ namespace DogSC.Replica {
   public static void Notice(Window owner,string title,string message){new AppDialogWindow(owner,title,message,new[]{new DialogAction("ok","知道了",true)}).ShowDialog();}
   public static string Unsaved(Window owner,string name){var dialog=new AppDialogWindow(owner,"保存项目修改？","保存后可继续编辑，也可以放弃本次修改。",new[]{new DialogAction("cancel","取消"),new DialogAction("discard","不保存",false,false,true),new DialogAction("save","保存",true)},name);dialog.ShowDialog();return dialog.Result;}
   public static string Rename(Window owner,string name){var dialog=new AppDialogWindow(owner,"项目名称","为这个作品取一个名字。",new[]{new DialogAction("cancel","取消"),new DialogAction("save","保存",true,true)},null,name);dialog.ShowDialog();return dialog.Result=="save"?dialog.Input.Text.Trim():null;}
+  public static bool CrashRecovery(Window owner,string backup){var dialog=new AppDialogWindow(owner,"上次异常退出","检测到上次没有正常关闭，已找到最近的自动保存备份。可以恢复它继续编辑，或放弃（备份文件会保留在原目录）。",new[]{new DialogAction("cancel","放弃"),new DialogAction("restore","恢复备份",true)},backup);dialog.ShowDialog();return dialog.Result=="restore";}
  }
  sealed class FormsWindowOwner:System.Windows.Forms.IWin32Window {
   public IntPtr Handle {get;private set;}public FormsWindowOwner(Window window){Handle=new WindowInteropHelper(window).Handle;}
