@@ -3,8 +3,8 @@
 // 时间线吸附线 + 媒体拖进时间线。模型与滤镜逻辑见 FeaturePanels.cs。
 // 控件全部复用现有检查器助手（Section/Note/Slider/Number/Toggle/Buttons/
 // Choices/InspectorAction），不抄任何闭源软件的界面。
-// 诚实说明写在各面板的 Note 里；没接的（自动识别字幕、HSL 曲线编辑器、
-// RGB/主曲线、电平表）只写“未接”，不画假控件。
+// 诚实说明写在各面板的 Note 里；没接的（RGB/主曲线）只写“未接”，不画假控件。
+// W5 已接：自动识别字幕（Whisper）、HSL 曲线编辑器、电平表（W5UI.cs）。
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -41,12 +41,13 @@ namespace DogSC.Replica {
     Slider(ColorGrade.HslZoneNames[zone]+" · 饱和度",0,3,g.HslSat[zone],"×",v=>g.HslSat[zone]=v);
     Slider(ColorGrade.HslZoneNames[zone]+" · 明度",-1,1,g.HslLum[zone],"",v=>g.HslLum[zone]=v);
    }
+   BuildHslCurveSection();
    Section("预设");
    var presets=new UniformGrid {Columns=3,Margin=new Thickness(0,0,0,8)};
    foreach(var name in new[]{"原片","冷调","暖调","黑白","电影感","高饱和"}){string p=name;var b=UI.Button(p,()=>ApplyColorPreset(p));b.FontSize=12;b.Padding=new Thickness(4,6,4,6);b.Margin=new Thickness(2);presets.Children.Add(b);}
    inspector.Children.Add(presets);
    inspector.Children.Add(UI.Button("重置调色",()=>{Checkpoint();g.Reset();Changed();BuildInspector();}));
-   Note("基础调节走 eq / colorbalance（与 TS 引擎 filtergraph.ts 同款滤镜串）；色轮、HSL 分区、白平衡色调烘进 17³ .cube，经 lut3d 应用到解码帧，预览与导出一致。HSL 曲线编辑器与 RGB/主曲线本批未接。");
+   Note("基础调节走 eq / colorbalance（与 TS 引擎 filtergraph.ts 同款滤镜串）；色轮、HSL 分区、HSL 曲线、白平衡色调烘进 17³ .cube，经 lut3d 应用到解码帧，预览与导出一致。RGB/主曲线仍未接。");
   }
   void ApplyColorPreset(string name){
    if(Doc==null)return;Checkpoint();var g=Doc.Grade;g.Reset();
@@ -63,10 +64,11 @@ namespace DogSC.Replica {
    Toggle("烧录进画面",Doc.SubtitleBurnIn,v=>{Doc.SubtitleBurnIn=v;BuildInspector();});
    Choices("边车格式",Doc.SubtitleSidecar,new[]{new[]{"不导出边车","none"},new[]{"SRT","srt"},new[]{"VTT","vtt"},new[]{"ASS（双语双样式）","ass"}},v=>Doc.SubtitleSidecar=v);
    Note("边车在导出成片时写在视频旁边（同名 .srt/.vtt/.ass）；双语时 SRT/VTT 合并为双行，ASS 用 Sub/Sub2 双样式。");
+   BuildWhisperSection();
    inspector.Children.Add(InspectorAction("plus","添加字幕（从播放头起 2 秒）",AddSubtitleAtPlayhead));
    inspector.Children.Add(InspectorAction("folder","导入字幕文件…（.srt/.vtt/.ass）",()=>ImportSubtitles(null)));
    if(Doc.Subtitles.Count>0)inspector.Children.Add(InspectorAction("export","导出边车到项目目录",ExportSidecarNow));
-   if(Doc.Subtitles.Count==0){Note("还没有字幕。自动识别（Whisper 转写）本批未接：需要 Whisper 可执行文件与模型，未随包分发；先用导入或手动添加。");return;}
+   if(Doc.Subtitles.Count==0){Note("还没有字幕。先用自动识别转写，或导入/手动添加。");return;}
    Section("字幕列表（"+Doc.Subtitles.Count+" 条）");
    for(int i=0;i<Doc.Subtitles.Count;i++){int index=i;var c=Doc.Subtitles[i];
     var b=UI.Button(UI.Time(c.Start)+" – "+UI.Time(c.End)+"  "+(string.IsNullOrWhiteSpace(c.Text)?"（空）":c.Text),()=>{selectedSubtitle=index;BuildInspector();});
@@ -86,7 +88,6 @@ namespace DogSC.Replica {
    var t2=new TextBox {Text=cue.Text2,AcceptsReturn=true,MinHeight=44,TextWrapping=TextWrapping.Wrap,FontSize=13,Margin=new Thickness(0,4,0,9)};
    t2.LostKeyboardFocus+=(s,e)=>{if(t2.Text!=cue.Text2){Checkpoint();cue.Text2=t2.Text;Changed();}};inspector.Children.Add(t2);
    inspector.Children.Add(InspectorAction("trash","删除这条字幕",()=>{Checkpoint();Doc.Subtitles.RemoveAt(selectedSubtitle);selectedSubtitle=-1;Changed();BuildInspector();RefreshMediaLibrary();},true));
-   Note("自动识别（Whisper 转写）本批未接：需要 Whisper 可执行文件与模型，未随包分发。");
   }
   void AddSubtitleAtPlayhead(){
    if(Doc==null)return;Checkpoint();
@@ -129,7 +130,8 @@ namespace DogSC.Replica {
     if(!string.IsNullOrEmpty(channel.SourcePath))inspector.Children.Add(InspectorAction("trash","移除这条音乐轨",()=>{Checkpoint();Doc.Mixer.Remove(channel);Changed();BuildInspector();RefreshMediaLibrary();},true));
    }
    inspector.Children.Add(InspectorAction("plus","添加音乐轨…（本地音频）",()=>AddMusicChannel(null)));
-   Note("推子/静音/独奏实时进预览；导出按角色混音（对话/音乐，roles.ts 的 pan/volume 规则：声像 lg=min(1,1-p)、rg=min(1,1+p)）。电平表本批未接。");
+   BuildLevelMeterSection();
+   Note("推子/静音/独奏实时进预览；导出按角色混音（对话/音乐，roles.ts 的 pan/volume 规则：声像 lg=min(1,1-p)、rg=min(1,1+p)）。");
   }
   void AddMusicChannel(string path){
    if(Doc==null)return;
@@ -324,6 +326,7 @@ namespace DogSC.Replica {
    foreach(var z in Doc.Zooms){list.Add(z.Start);list.Add(z.End);}
    foreach(var o in Doc.Overlays){list.Add(o.Start);list.Add(o.End);}
    if(Doc.MulticamSwitches!=null)foreach(var s in Doc.MulticamSwitches)list.Add(s.Time);
+   if(Doc.RecordingMarkers!=null)foreach(var m in Doc.RecordingMarkers)list.Add(m.Time);
    list.Sort();return list.Distinct().ToList();
   }
   // 拖动中的边离某个候选点够近（0.12s）就吸过去并亮线；否则按帧取整（老行为）。
