@@ -336,7 +336,7 @@ namespace DogSC.Replica {
    doc.Validate();if(File.Exists(output))throw new Exception("请选择一个新的导出文件名。");
    var size=SceneLayout.OutputSize(doc,height);int width=size[0];height=size[1];
    string work=Path.Combine(Path.GetDirectoryName(output),".dogsc-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(work);
-   Process decoder=null,encoder=null;
+   Process decoder=null,encoder=null;CameraFrameStream cameraStream=null;
    try {
     string timeline=Path.Combine(work,"timeline.mp4"),filter=Path.Combine(work,"timeline.txt"),result=Path.Combine(work,"result.mp4");
     progress(0,"整理时间线");bool direct=doc.Cuts.Count==1&&Math.Abs(doc.Cuts[0].Speed-1)<.000001&&!doc.Cuts[0].Gap&&!MulticamModel.Active(doc);string media=direct?doc.Source:timeline;string selection=direct?"-ss "+Media.N(doc.Cuts[0].Start)+" -t "+Media.N(doc.Cuts[0].End-doc.Cuts[0].Start)+" ":"";
@@ -353,8 +353,7 @@ namespace DogSC.Replica {
      g.InterpolationMode=InterpolationMode.HighQualityBicubic;g.SmoothingMode=SmoothingMode.AntiAlias;
      using(var bg=Graphics.FromImage(background)){bg.InterpolationMode=g.InterpolationMode;bg.SmoothingMode=g.SmoothingMode;DrawBackground(bg,doc,width,height,wall);}
      var input=new byte[dw*dh*4];var bytes=new byte[width*height*4];int frame=0;long drawTicks=0,writeTicks=0;
-     // W4：画中画开时用一条顺序流解码摄像头文件（与主画面逐帧对齐；失败只关画中画，不拦导出）。
-     CameraFrameStream cameraStream=null;
+     // W4：画中画开时用一条顺序流解码摄像头文件（与主画面逐帧对齐；失败只关画中画，不拦导出）。声明在 try 外，catch/finally 也能看见。
      try{if(doc.Camera!=null&&doc.Camera.Enabled&&File.Exists(doc.Camera.SourcePath))cameraStream=new CameraFrameStream(doc.Camera.SourcePath,fps);}catch{}
      using(var motion=new MotionEvaluator(doc)){
      while(true){token.ThrowIfCancellationRequested();int filled=0,count;while(filled<input.Length&&(count=decoder.StandardOutput.BaseStream.Read(input,filled,input.Length-filled))>0)filled+=count;
