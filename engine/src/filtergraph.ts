@@ -57,6 +57,11 @@ import {
   validateRoles,
   type ResolvedRoleConfig,
 } from './roles.js';
+import {
+  audioFxFilter,
+  validateAudioFx,
+  validateMasterGainDb,
+} from './audiofx.js';
 
 export interface FilterGraph {
   filterComplex: string;
@@ -687,13 +692,19 @@ function atempoChain(speed: number): string {
 /**
  * Audio chains for one clip. Final audio label is [a<idx>].
  * Order: segment trim/speed (+areverse) -> freeze stage (silent span)
- * -> afade in/out -> afftdn -> loudnorm -> sidechaincompress (ducking)
- * -> volume.
+ * -> audio-shift -> afade in/out -> audioFx (voice -> beautify -> EQ
+ * -> compressor) -> afftdn -> loudnorm -> sidechaincompress (ducking)
+ * -> volume -> gainDb (clip trim).
  * The freeze span is silence built from a muted 10 ms slice of the clip
  * itself (apad), so sample rate / channel layout always match.
  * Ducking sits AFTER loudnorm on purpose: loudnorm after ducking would
  * re-normalise the ducked passages and undo the effect. The sidechain
  * source is a control signal only (never mixed into the output).
+ * gainDb (-30..+30 dB, audiofx.ts) also sits after loudnorm/ducking,
+ * next to the static volume: it is a trim, and loudnorm before it
+ * would eat it. Voice pitch sits after the speed/reverse segment
+ * stage (the audioFx block is downstream of it), so asetrate/atempo
+ * never sees a mid-chain sample-rate change.
  */
 function clipAudioChains(clip: Clip, idx: number, ctx?: MaskCtx): string[] {
   const chains: string[] = [];
@@ -771,6 +782,15 @@ function clipAudioChains(clip: Clip, idx: number, ctx?: MaskCtx): string[] {
     const d = Math.min(clip.audioFadeOut, dur);
     preDuck.push(`afade=t=out:st=${Math.max(0, dur - d)}:d=${d}`);
   }
+  // P3 audio effects (audiofx.ts): voice effects first (after
+  // speed/reverse by construction), then beautify, EQ, compressor —
+  // all before denoise/loudnorm, so the EQ band ratios survive
+  // loudnorm (measured 2026-11-17: +6 dB @3000 Hz reads +5.86 dB
+  // after loudnorm). gainDb is applied after ducking, with volume.
+  const fx = validateAudioFx(clip.audioFx, clip.id);
+  const fxChain = fx ? audioFxFilter(fx) : '';
+  if (fxChain) preDuck.push(fxChain);
+  const gainDb = fx?.gainDb;
   if (clip.denoise) preDuck.push('afftdn');
   // loudnorm single-pass (linear=true is the default); no two-pass measurement.
   if (clip.loudnorm) preDuck.push('loudnorm=I=-16:TP=-1.5:LRA=11:linear=true');
@@ -784,10 +804,13 @@ function clipAudioChains(clip: Clip, idx: number, ctx?: MaskCtx): string[] {
       `${audioBase}${preDuck.length > 0 ? preDuck.join(',') : 'anull'}[ad${idx}]`,
     );
     chains.push(`[ad${idx}][${scIdx}:a]${duckingFilter(duck)}[adc${idx}]`);
-    chains.push(`[adc${idx}]volume=${clip.volume}[a${idx}]`);
+    chains.push(
+      `[adc${idx}]volume=${clip.volume}${gainDb !== undefined ? `,volume=${gainDb}dB` : ''}[a${idx}]`,
+    );
     return chains;
   }
   const audioFilters = [...preDuck, `volume=${clip.volume}`];
+  if (gainDb !== undefined) audioFilters.push(`volume=${gainDb}dB`);
   chains.push(`${audioBase}${audioFilters.join(',')}[a${idx}]`);
   return chains;
 }
@@ -925,7 +948,7 @@ export function buildFilterGraph(
 
   const hasXfade = project.transitions.some((t) => t !== 'cut');
   let videoOut = '[vout]';
-  const audioOut = '[aout]';
+  let audioOut = '[aout]';
   const durations = project.clips.map((c) => clipDuration(c));
   // Mix inputs: role-processed audio when roles are in use — [arm<i>]
   // (the asplit mix branch) with stems, [ar<i>] without — else the
@@ -995,6 +1018,16 @@ export function buildFilterGraph(
         ),
       );
     });
+  }
+
+  // Master gain (P3, audiofx.ts): a trim on the final MIX only —
+  // role stems above are untouched. It sits after assembly (and
+  // therefore after loudnorm/ducking), so it cannot be eaten by
+  // loudnorm. Range -30..+30 dB, same as the clip gain trim.
+  validateMasterGainDb(project.masterGainDb);
+  if (project.masterGainDb !== undefined && project.masterGainDb !== 0) {
+    chains.push(`[aout]volume=${project.masterGainDb}dB[aoutm]`);
+    audioOut = '[aoutm]';
   }
 
   // Project-level subtitles: karaoke word highlight via the ASS filter,
