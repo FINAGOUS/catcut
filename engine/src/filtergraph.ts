@@ -18,6 +18,7 @@ import {
   type Clip,
   type Keyframe,
   type Project,
+  type TransitionType,
   type ZoomKeyframe,
 } from './project.js';
 import { subtitlesToTextOverlays } from './subtitles.js';
@@ -47,6 +48,15 @@ import {
   multicamSegments,
   validateMulticam,
 } from './multicam.js';
+import {
+  effectiveMute,
+  resolveRoleConfigs,
+  roleFilter,
+  roleOfClip,
+  rolesInUse,
+  validateRoles,
+  type ResolvedRoleConfig,
+} from './roles.js';
 
 export interface FilterGraph {
   filterComplex: string;
@@ -55,6 +65,59 @@ export interface FilterGraph {
   /** Still-image inputs (mask PNGs) appended AFTER the clip inputs;
    *  the caller must add them as `-i` args in this exact order. */
   extraInputs: string[];
+  /** Role stems (roleStems only): role name -> assembled stem label,
+   *  in first-appearance order. Each stem is the full timeline with
+   *  every other role replaced by silence. */
+  audioStems?: Map<string, string>;
+}
+
+/**
+ * Assemble one audio timeline from per-clip input labels, mirroring
+ * the mix: plain concat when there is no crossfade, otherwise the
+ * chained acrossfade/concat walk with the same offsets as the video
+ * xfade chain (offset of transition k = accumulated duration before
+ * clip k+1, minus the overlaps already applied). `inputs` are the
+ * per-clip labels in timeline order; `durations` are the per-clip
+ * durations (clipDuration). `tag` prefixes the intermediate labels
+ * ('a' for the mix, 's<j>' for a stem) so mix and stems never share a
+ * label. Produces byte-identical strings to the pre-refactor inline
+ * assembly when called with the mix inputs and tag 'a'.
+ */
+function audioAssemblyChains(
+  inputs: string[],
+  transitions: TransitionType[],
+  durations: number[],
+  transitionDuration: number,
+  outLabel: string,
+  tag: string,
+): string[] {
+  const chains: string[] = [];
+  const n = inputs.length;
+  const hasXfade = transitions.some((t) => t !== 'cut');
+  if (!hasXfade) {
+    chains.push(`${inputs.join('')}concat=n=${n}:v=0:a=1${outLabel}`);
+    return chains;
+  }
+  const d = transitionDuration;
+  let aPrev = inputs[0];
+  let acc = durations[0];
+  inputs.slice(1).forEach((next, k) => {
+    const type = transitions[k];
+    const isLast = k === n - 2;
+    if (type !== 'cut') {
+      const offset = Math.max(0, acc - d);
+      const aX = isLast ? outLabel : `[${tag}x${k}]`;
+      chains.push(`${aPrev}${next}acrossfade=d=${d}${aX}`);
+      aPrev = aX;
+      acc = acc + durations[k + 1] - d;
+    } else {
+      const aC = isLast ? outLabel : `[${tag}c${k}]`;
+      chains.push(`${aPrev}${next}concat=n=2:v=0:a=1${aC}`);
+      aPrev = aC;
+      acc = acc + durations[k + 1];
+    }
+  });
+  return chains;
 }
 
 /** Per-clip mask PNG files (segment order) + assigned input indexes. */
@@ -738,6 +801,11 @@ export function buildFilterGraph(
   stabilizeTrf?: Map<number, string>,
   portraitMasks?: Map<number, string>,
   colorLuts?: Map<number, string[]>,
+  /** clip index -> probed audio channel count (prepareRoleAudio);
+   *  only used when the project uses roles. Absent = stereo variant. */
+  roleAudioChannels?: Map<number, number>,
+  /** Also assemble one stem per role (in addition to the mix). */
+  roleStems?: boolean,
 ): FilterGraph {
   const n = project.clips.length;
   if (n === 0) throw new Error('project has no clips');
@@ -808,48 +876,125 @@ export function buildFilterGraph(
     chains.push(...clipAudioChains(clip, i, maskCtx));
   });
 
+  // Roles (P2): per-clip gain/pan/mute/solo on the clip audio
+  // ([a<i>] -> [ar<i>]), applied after the clip's own audio chain so
+  // fades/denoise/loudnorm/ducking/volume all still act first. When no
+  // role is used anywhere this whole block is skipped and the graph
+  // below is byte-identical to the pre-Roles build.
+  const useRoles = rolesInUse(project);
+  let roleConfigs: Map<string, ResolvedRoleConfig> | undefined;
+  if (useRoles) {
+    validateRoles(project);
+    roleConfigs = resolveRoleConfigs(project);
+    project.clips.forEach((clip, i) => {
+      const name = roleOfClip(clip);
+      const cfg = roleConfigs?.get(name);
+      if (!cfg) {
+        throw new Error(`clip ${clip.id}: no config resolved for role "${name}"`);
+      }
+      const muted = effectiveMute(name, roleConfigs as Map<string, ResolvedRoleConfig>);
+      chains.push(`[a${i}]${roleFilter(cfg, muted, roleAudioChannels?.get(i))}[ar${i}]`);
+    });
+  }
+  // Role stems (roleStems only): the role chain above already
+  // normalised every [ar<i>] to 48 kHz stereo (see roles.ts). The mix
+  // and the stems must NOT share [ar<i>] directly — a filter output
+  // feeding two downstream filters without an explicit split costs
+  // exactly 3 dB in the second consumer (measured 2026-11-17, see
+  // roles.ts header). So each [ar<i>] is split once: [arm<i>] for the
+  // mix + one [ars<i>_<j>] per stem. The stem order (first-appearance
+  // role order) is computed here because the split count depends on it.
+  if (roleStems) {
+    if (!useRoles) {
+      throw new Error('roleStems requested but the project uses no roles');
+    }
+    const stemRoles: string[] = [];
+    for (const clip of project.clips) {
+      const name = roleOfClip(clip);
+      if (!stemRoles.includes(name)) stemRoles.push(name);
+    }
+    project.clips.forEach((clip, i) => {
+      // Each clip feeds exactly two consumers: the mix and its own
+      // role's stem (other stems use silence for this clip), so the
+      // split has exactly 2 outputs — every asplit output must be
+      // consumed, or FFmpeg rejects the graph.
+      const j = stemRoles.indexOf(roleOfClip(clip));
+      chains.push(`[ar${i}]asplit=2[arm${i}][ars${i}_${j}]`);
+    });
+  }
+
   const hasXfade = project.transitions.some((t) => t !== 'cut');
   let videoOut = '[vout]';
-  let audioOut = '[aout]';
+  const audioOut = '[aout]';
+  const durations = project.clips.map((c) => clipDuration(c));
+  // Mix inputs: role-processed audio when roles are in use — [arm<i>]
+  // (the asplit mix branch) with stems, [ar<i>] without — else the
+  // plain clip audio [a<i>] (unchanged from before Roles).
+  const mixInputs = project.clips.map((_, i) =>
+    useRoles ? (roleStems ? `[arm${i}]` : `[ar${i}]`) : `[a${i}]`,
+  );
 
   if (!hasXfade) {
     const vInputs = project.clips.map((_, i) => `[v${i}]`).join('');
-    const aInputs = project.clips.map((_, i) => `[a${i}]`).join('');
     chains.push(`${vInputs}concat=n=${n}:v=1:a=0[vout]`);
-    chains.push(`${aInputs}concat=n=${n}:v=0:a=1[aout]`);
   } else {
-  // Chained xfade / acrossfade. Offset of the k-th transition (0-based) is the
+  // Chained xfade. Offset of the k-th transition (0-based) is the
   // accumulated timeline duration before clip k+1, minus the overlaps already
   // applied (each non-cut transition overlaps transitionDuration).
   const d = project.transitionDuration;
   let vPrev = '[v0]';
-  let aPrev = '[a0]';
   let acc = clipDuration(project.clips[0]);
   project.clips.slice(1).forEach((_, k) => {
     const type = project.transitions[k];
     const vNext = `[v${k + 1}]`;
-    const aNext = `[a${k + 1}]`;
     if (type !== 'cut') {
       const offset = Math.max(0, acc - d);
       const vX = k === project.clips.length - 2 ? '[vout]' : `[vx${k}]`;
-      const aX = k === project.clips.length - 2 ? '[aout]' : `[ax${k}]`;
       chains.push(
         `${vPrev}${vNext}xfade=transition=${XFADE_TRANSITIONS[type]}:duration=${d}:offset=${offset}${vX}`,
       );
-      chains.push(`${aPrev}${aNext}acrossfade=d=${d}${aX}`);
       vPrev = vX;
-      aPrev = aX;
       acc = acc + clipDuration(project.clips[k + 1]) - d;
     } else {
       const vC = k === project.clips.length - 2 ? '[vout]' : `[vc${k}]`;
-      const aC = k === project.clips.length - 2 ? '[aout]' : `[ac${k}]`;
       chains.push(`${vPrev}${vNext}concat=n=2:v=1:a=0${vC}`);
-      chains.push(`${aPrev}${aNext}concat=n=2:v=0:a=1${aC}`);
       vPrev = vC;
-      aPrev = aC;
       acc = acc + clipDuration(project.clips[k + 1]);
     }
   });
+  }
+  // Audio assembly (mix): same offsets as the video xfade chain.
+  chains.push(
+    ...audioAssemblyChains(mixInputs, project.transitions, durations, project.transitionDuration, '[aout]', 'a'),
+  );
+
+  // Role stems (roleStems only): one assembled timeline per role, in
+  // first-appearance order, with every other role replaced by silence
+  // (anullsrc, 48 kHz stereo, same length as the clip it replaces).
+  // Silence is emitted per (clip, stem) pair so each label is consumed
+  // exactly once.
+  let audioStems: Map<string, string> | undefined;
+  if (roleStems) {
+    audioStems = new Map<string, string>();
+    const stemRoles: string[] = [];
+    for (const clip of project.clips) {
+      const name = roleOfClip(clip);
+      if (!stemRoles.includes(name)) stemRoles.push(name);
+    }
+    stemRoles.forEach((roleName, j) => {
+      const stemLabel = `[stem${j}]`;
+      audioStems?.set(roleName, stemLabel);
+      const inputs = project.clips.map((clip, i) => {
+        if (roleOfClip(clip) === roleName) return `[ars${i}_${j}]`;
+        chains.push(`anullsrc=r=48000:cl=stereo:d=${durations[i]}[sil${i}_${j}]`);
+        return `[sil${i}_${j}]`;
+      });
+      chains.push(
+        ...audioAssemblyChains(
+          inputs, project.transitions, durations, project.transitionDuration, stemLabel, `s${j}`,
+        ),
+      );
+    });
   }
 
   // Project-level subtitles: karaoke word highlight via the ASS filter,
@@ -859,5 +1004,5 @@ export function buildFilterGraph(
     chains.push(`[vout]ass=${quoted}[vsub]`);
     videoOut = '[vsub]';
   }
-  return { filterComplex: chains.join(';'), videoOut, audioOut, extraInputs: maskCtx.extraInputs };
+  return { filterComplex: chains.join(';'), videoOut, audioOut, extraInputs: maskCtx.extraInputs, audioStems };
 }
