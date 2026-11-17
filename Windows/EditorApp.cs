@@ -124,7 +124,7 @@ namespace DogSC.Replica {
   void Error(Exception ex){Status("操作失败："+ex.Message);AppDialogs.Notice(Window,"操作失败",ex.Message);}
   bool MayDiscard(){if(!dirty)return true;var r=AppDialogs.Unsaved(Window,Doc==null?"未命名项目":Doc.Name);return r=="save"?Save():r=="discard";}
   void Checkpoint(){if(Doc==null)return;Pause();undo.Push(Doc.Serialize());redo.Clear();dirty=true;}
-  void Changed(){if(Doc==null)return;cachedFrame=null;cachedTime=-100;RefreshInspectorSummaries();dirty=true;Doc.ScreenMotions.RemoveAll(c=>c.Start>=Doc.Length);foreach(var c in Doc.ScreenMotions)c.End=Math.Min(c.End,Doc.Length);if(selectedScreen>=Doc.ScreenMotions.Count)selectedScreen=-1;Doc.Zooms.RemoveAll(z=>z.Start>=Doc.Length);foreach(var z in Doc.Zooms)z.End=Math.Min(z.End,Doc.Length);Doc.Overlays.RemoveAll(o=>o.Start>=Doc.Length);foreach(var o in Doc.Overlays)o.End=Math.Min(o.End,Doc.Length);if(selectedOverlay>=Doc.Overlays.Count)selectedOverlay=-1;if(motion!=null)motion.Dispose();motion=new MotionEvaluator(Doc);position=Math.Min(position,Math.Max(0,Doc.Length-.001));Update();DrawTimeline();RefreshPreview();DrawEffectGuides();}
+  void Changed(){if(Doc==null)return;cachedFrame=null;cachedTime=-100;RefreshInspectorSummaries();dirty=true;Doc.ScreenMotions.RemoveAll(c=>c.Start>=Doc.Length);foreach(var c in Doc.ScreenMotions)c.End=Math.Min(c.End,Doc.Length);if(selectedScreen>=Doc.ScreenMotions.Count)selectedScreen=-1;Doc.Zooms.RemoveAll(z=>z.Start>=Doc.Length);foreach(var z in Doc.Zooms)z.End=Math.Min(z.End,Doc.Length);Doc.Overlays.RemoveAll(o=>o.Start>=Doc.Length);foreach(var o in Doc.Overlays)o.End=Math.Min(o.End,Doc.Length);if(selectedOverlay>=Doc.Overlays.Count)selectedOverlay=-1;if(Doc.RecordingMarkers==null)Doc.RecordingMarkers=new List<RecordingMarker>();Doc.RecordingMarkers.RemoveAll(m=>m.Time>=Doc.Length);if(motion!=null)motion.Dispose();motion=new MotionEvaluator(Doc);position=Math.Min(position,Math.Max(0,Doc.Length-.001));Update();DrawTimeline();RefreshPreview();DrawEffectGuides();}
   void History(bool forward){var from=forward?redo:undo;var to=forward?undo:redo;if(Doc==null||from.Count==0)return;Pause();to.Push(Doc.Serialize());Doc=EditDocument.Deserialize(from.Pop());selectedCut=selectedZoom=selectedOverlay=selectedScreen=-1;Changed();BuildInspector();}
   public async Task Load(string path){
    if(!MayDiscard())return;Pause();Status("正在打开…");try{
@@ -171,7 +171,7 @@ namespace DogSC.Replica {
   void Menu(Button target,string[] items,Action<int> action){var menu=UI.PopupMenu(Window,target);for(int i=0;i<items.Length;i++){int n=i;var item=new MenuItem {Header=items[i]};if(target.Name=="ProjectMenu"){item.InputGestureText=i==0?"Ctrl+O":i==1?"Ctrl+S":"";item.IsEnabled=Doc!=null||i==0||i==3||i==5;}if(target.Name=="Ratio"){item.IsCheckable=true;item.IsChecked=Doc!=null&&Doc.Style.Ratio==items[i];}item.Click+=(s,e)=>{try{action(n);}catch(Exception ex){Error(ex);}};menu.Items.Add(item);}target.ContextMenu=menu;menu.IsOpen=true;}
   void Rename(){if(Doc==null)return;string name=AppDialogs.Rename(Window,Doc.Name);if(name!=null&&name!=Doc.Name){Checkpoint();Doc.Name=name;Changed();}}
   void Record(){Pause();if(recorder!=null){recorder.Activate();return;}recorder=new RecorderWindow(this);recorder.Closed+=(s,e)=>recorder=null;recorder.Show();}
-  public async Task Recorded(string path,List<PointerSample> points){string project=Path.Combine(Path.GetDirectoryName(path),"project.dogscwin");await Task.Run(()=>{var doc=StudioMedia.Import(path);doc.Pointer=points;doc.IndependentCursor=true;doc.GenerateZooms();doc.Save(project);});await Load(project);if(Doc==null||Doc.Source!=path)Status("新录制已保存 · "+project);else{string cam=Path.Combine(Path.GetDirectoryName(path),"camera.mp4");if(File.Exists(cam)){string device="";try{string devFile=Path.Combine(Path.GetDirectoryName(path),"camera-device.txt");if(File.Exists(devFile))device=File.ReadAllText(devFile).Trim();}catch{}Doc.Camera=new CameraClip {Enabled=true,SourcePath=cam,Device=device};dirty=true;Update();Status("新录制已保存 · "+project+"（摄像头画中画已挂接）");}}}
+  public async Task Recorded(string path,List<PointerSample> points,List<RecordingMarker> markers=null){string project=Path.Combine(Path.GetDirectoryName(path),"project.dogscwin");await Task.Run(()=>{var doc=StudioMedia.Import(path);doc.Pointer=points;doc.IndependentCursor=true;doc.GenerateZooms();if(markers!=null)doc.RecordingMarkers=markers;doc.Save(project);});await Load(project);if(Doc==null||Doc.Source!=path)Status("新录制已保存 · "+project);else{string cam=Path.Combine(Path.GetDirectoryName(path),"camera.mp4");if(File.Exists(cam)){string device="";try{string devFile=Path.Combine(Path.GetDirectoryName(path),"camera-device.txt");if(File.Exists(devFile))device=File.ReadAllText(devFile).Trim();}catch{}Doc.Camera=new CameraClip {Enabled=true,SourcePath=cam,Device=device};dirty=true;Update();Status("新录制已保存 · "+project+"（摄像头画中画已挂接）");}}}
   void Update(){bool has=Doc!=null;Find<TextBlock>("ProjectTitle").Text=(has?Doc.Name:"未命名项目")+(dirty?" ·":"");Window.Title="DogSC · "+(has?Doc.Name:"Windows");Find<StackPanel>("EmptyState").Visibility=has?Visibility.Collapsed:Visibility.Visible;
    foreach(string key in new[]{"Export","Presets","Ratio","FitCanvas","AddZoom","Play","Previous","Next","Split","Delete","MoveLeft","MoveRight","Rename"})Find<Button>(key).IsEnabled=has;
    Find<Button>("Waveforms").IsEnabled=has&&Doc.Audio;Find<Button>("Undo").IsEnabled=undo.Count>0;Find<Button>("Redo").IsEnabled=redo.Count>0;
@@ -206,9 +206,12 @@ namespace DogSC.Replica {
    if(tab=="摄像头"){BuildCameraInspector();return;}
    if(tab=="备份"){BuildAutosaveInspector();return;}
    if(tab=="缓存"){BuildRenderCacheInspector();return;}
+   // W5 新增面板。
+   if(tab=="美颜"){BuildBeautyInspector();return;}
+   if(tab=="标记"){BuildMarkerInspector();return;}
    if(selectedCut>=0&&selectedCut<Doc.Cuts.Count){var c=Doc.Cuts[selectedCut];
     if(c.Gap){Section("空隙片段");Number("空隙时长 / 秒",c.GapDuration,v=>{c.GapDuration=EditDocument.Clamp(v,.05,Doc.Length);});Note("空隙是黑场 + 静音；波纹关闭时删除片段会留空隙。");inspector.Children.Add(UI.Button("删除空隙",()=>{Delete();}));inspector.Children.Add(UI.Button("返回画面设置",()=>{selectedCut=-1;tab="画面";BuildInspector();}));return;}
-    Section("片段范围");Number("素材起点 / 秒",c.Start,v=>{c.Start=EditDocument.Clamp(v,0,c.End-.05);Doc.GenerateZooms();});Number("素材终点 / 秒",c.End,v=>{c.End=EditDocument.Clamp(v,c.Start+.05,Doc.Duration);Doc.GenerateZooms();});Section("播放速度");Buttons(new[]{"0.5×","1×","1.5×","2×"},c.Speed+"×",v=>{Checkpoint();c.Speed=double.Parse(v.TrimEnd('×'),CultureInfo.InvariantCulture);Doc.GenerateZooms();Changed();BuildInspector();});Note("拖动时间线片段两端可裁短；分割后可删除或左右重排。");inspector.Children.Add(UI.Button("返回画面设置",()=>{selectedCut=-1;tab="画面";BuildInspector();}));return;}
+    Section("片段范围");Number("素材起点 / 秒",c.Start,v=>{c.Start=EditDocument.Clamp(v,0,c.End-.05);Doc.GenerateZooms();});Number("素材终点 / 秒",c.End,v=>{c.End=EditDocument.Clamp(v,c.Start+.05,Doc.Duration);Doc.GenerateZooms();});Section("播放速度");Buttons(new[]{"0.5×","1×","1.5×","2×"},c.Speed+"×",v=>{Checkpoint();c.Speed=double.Parse(v.TrimEnd('×'),CultureInfo.InvariantCulture);Doc.GenerateZooms();Changed();BuildInspector();});BuildSpeedSection(c);Note("拖动时间线片段两端可裁短；分割后可删除或左右重排。");inspector.Children.Add(UI.Button("返回画面设置",()=>{selectedCut=-1;tab="画面";BuildInspector();}));return;}
    if(tab=="画面"){
     Buttons(new[]{"背景","布局","样机","调色"},frameTab,v=>{frameTab=v;BuildInspector();});
     if(frameTab=="布局"){Section("画面留白");Slider("边距",0,180,a.Padding,"",v=>a.Padding=v);Section("位置与大小");PositionPad(a.X,a.Y,SetStylePosition);Slider("素材缩放",.5,1.5,a.Scale,"×",v=>a.Scale=v);InspectorResetLayout(()=>{Checkpoint();SetStylePosition(.5,.5);a.Scale=1;Changed();BuildInspector();});Section("圆角、描边与阴影");Slider("内容圆角",0,60,a.Radius,"",v=>a.Radius=v);Slider("外描边",0,8,a.Border,"",v=>a.Border=v);Slider("阴影强度",0,60,a.Shadow,"",v=>a.Shadow=v);}
@@ -238,7 +241,7 @@ namespace DogSC.Replica {
   void AddZoom(){if(Doc==null)return;Checkpoint();double start=Math.Min(position,Math.Max(0,Doc.Length-.2));Doc.Zooms.Add(new Zoom {Start=start,End=Math.Min(Doc.Length,start+3),Scale=1.6});selectedZoom=Doc.Zooms.Count-1;position=start+Math.Min(1,(Doc.Zooms.Last().End-start)/2);selectedCut=selectedScreen=selectedOverlay=-1;motionTab="缩放";tab="运镜";Changed();BuildRail();BuildInspector();}
   void Seek(double t){Pause();if(Doc==null)return;position=EditDocument.Clamp(t,0,Math.Max(0,Doc.Length-.001));Update();DrawTimeline();RefreshPreview();}
   async void RefreshPreview(){await RequestPreview();}
-  void Pause(){if(playback!=null){playback.Cancel();playback=null;}playing=false;audio.Pause();musicPlayer.Pause();Find<Button>("Play").Content=UI.Icon("play",16);if(Doc!=null)RefreshPreview();}
+  void Pause(){if(playback!=null){playback.Cancel();playback=null;}playing=false;audio.Pause();musicPlayer.Pause();try{levelMeter.Stop();}catch{}Find<Button>("Play").Content=UI.Icon("play",16);if(Doc!=null)RefreshPreview();}
   public Task PreviewNow(){return RequestPreview();}
   D.Size PreviewSize(EditDocument doc){var stage=Find<Grid>("Stage");var source=PresentationSource.FromVisual(stage);var transform=source!=null&&source.CompositionTarget!=null?source.CompositionTarget.TransformToDevice:Matrix.Identity;return PreviewPixels(SceneLayout.Aspect(doc),Math.Max(1,stage.ActualWidth)*transform.M11,Math.Max(1,stage.ActualHeight)*transform.M22);}
   internal static D.Size PreviewPixels(double ratio,double availableWidth,double availableHeight){double width=Math.Min(availableWidth,availableHeight*ratio);return new D.Size(Math.Max(2,(int)Math.Ceiling(width*1.25/2)*2),Math.Max(2,(int)Math.Ceiling(width/ratio*1.25/2)*2));}
@@ -259,6 +262,10 @@ namespace DogSC.Replica {
     double cutOffset;var cutAt=snapshot.CutAt(time,out cutOffset);
     string frameSource=MulticamModel.Active(snapshot)?MulticamModel.AngleSource(snapshot,MulticamModel.AngleAt(snapshot,time)):snapshot.EffectiveSource();
     string colorVf=snapshot.Grade.VideoFilter();
+    // W5：降噪拼进解码 vf；美颜有遮罩时走遮罩图（单帧预览按源时间取遮罩，
+    // 变速也不错位；多机位时遮罩与角度文件不对齐，回退未美颜）。
+    string effectVf="";bool masked=false;
+    try{effectVf=W5Effects.VideoFilter(snapshot);masked=BeautyFilter.IsMasked(snapshot)&&!MulticamModel.Active(snapshot);}catch(Exception ex){Status("美颜/降噪未生效："+ex.Message);}
     CameraStillProvider stillCam=null;
     try{if(snapshot.Camera!=null&&snapshot.Camera.Enabled&&File.Exists(snapshot.Camera.SourcePath))stillCam=new CameraStillProvider(snapshot.Camera.SourcePath);}catch{}
     var result=await Task.Run(()=>{
@@ -266,7 +273,13 @@ namespace DogSC.Replica {
      if(cutAt.Gap)frameBytes=BlackFrame(snapshot.Width,snapshot.Height);
      else{
       // Keep the native source pixels for paused inspection and zoomed text.
-      if(cachedFrame==null||cachedSource!=frameSource||Math.Abs(cachedTime-source)>.015){cachedFrame=StudioMedia.Frame(frameSource,Math.Min(source,snapshot.Duration-.03),snapshot.Width,token,colorVf);cachedSource=frameSource;cachedTime=source;}
+      if(cachedFrame==null||cachedSource!=frameSource||Math.Abs(cachedTime-source)>.015){
+       if(masked){
+        try{cachedFrame=W5Media.FrameMasked(frameSource,Math.Min(source,snapshot.Duration-.03),snapshot.Width,token,"scale="+snapshot.Width+":-2"+effectVf,snapshot);}
+        catch(Exception ex){Status("遮罩预览失败，已回退未美颜画面："+ex.Message);masked=false;cachedFrame=StudioMedia.Frame(frameSource,Math.Min(source,snapshot.Duration-.03),snapshot.Width,token,colorVf+effectVf);}
+       }else cachedFrame=StudioMedia.Frame(frameSource,Math.Min(source,snapshot.Duration-.03),snapshot.Width,token,colorVf+effectVf);
+       cachedSource=frameSource;cachedTime=source;
+      }
       frameBytes=cachedFrame;
      }
      token.ThrowIfCancellationRequested();using(var stream=new MemoryStream(frameBytes))using(var frame=new D.Bitmap(stream))using(var composed=ComposeBitmap(frame,snapshot,time,size,null,null,null,stillCam==null?(Func<double,D.Bitmap>)null:(t=>stillCam.FrameAt(t))))return Tuple.Create(PreviewSurface.BitmapBytes(composed),size.Width,size.Height);
@@ -289,6 +302,11 @@ namespace DogSC.Replica {
     var segs=MulticamModel.BuildSegments(doc);
     int firstSeg=segs.Count-1;for(int s=0;s<segs.Count;s++)if(start>=segs[s].TimelineStart&&start<segs[s].TimelineEnd){firstSeg=s;break;}
     string colorVf=doc.Grade.VideoFilter();
+    // W5：降噪拼进播放解码 vf；美颜有遮罩时走遮罩图。遮罩按源帧算，变速
+    // （setpts 会改时间映射）或多机位（角度文件与源遮罩不对齐）时不生效，
+    // 回退未美颜播放并报状态，不拦播放。
+    string effectVf="";bool masked=false;
+    try{effectVf=W5Effects.VideoFilter(doc);masked=BeautyFilter.IsMasked(doc)&&doc.Cuts.All(c=>c.Gap||Math.Abs(c.Speed-1)<.000001)&&!MulticamModel.Active(doc);if(BeautyFilter.IsMasked(doc)&&!masked)Status("美颜在变速/多机位片段上不生效（遮罩按源帧算），已回退未美颜播放。");}catch(Exception ex){Status("美颜/降噪未生效："+ex.Message);}
     string mainFile=MulticamModel.Active(doc)?doc.Source:doc.EffectiveSource();
     using(var evaluator=new MotionEvaluator(doc))using(var wallpaper=doc.Style.Background=="image"&&File.Exists(doc.Style.ImagePath)?D.Image.FromFile(doc.Style.ImagePath):null)using(var cache=new StudioRenderer.SceneCache(doc,size.Width,size.Height,wallpaper)){
     if(gpuPath){
@@ -312,7 +330,17 @@ namespace DogSC.Replica {
       continue;
      }
      string segFile=seg.File==doc.Source?mainFile:seg.File;
-     using(var p=Media.Start("ffmpeg","-v error -ss "+Media.N(from)+" -t "+Media.N(seg.SourceEnd-from)+" -i "+Media.Q(segFile)+" -an -vf setpts=(PTS-STARTPTS)/"+Media.N(seg.Speed)+",fps="+playbackFps+",scale="+dw+":"+dh+":flags=lanczos"+colorVf+" -pix_fmt bgra -f rawvideo pipe:1",true))using(token.Register(()=>{try{p.Kill();}catch{}}))using(var frame=new D.Bitmap(dw,dh,Imaging.PixelFormat.Format32bppArgb)){
+     Process p;
+     if(masked){
+      // 遮罩图：第二输入是遮罩文件，两路同裁（遮罩按源帧算，变速/多机位已在上头排除）。
+      string graph=W5Media.MaskedFilterComplex("setpts=(PTS-STARTPTS)/"+Media.N(seg.Speed)+",fps="+playbackFps+",scale="+dw+":"+dh+":flags=lanczos"+effectVf,doc.FrameRate,dw.ToString(CultureInfo.InvariantCulture),dh.ToString(CultureInfo.InvariantCulture),doc);
+      p=Media.Start("ffmpeg","-v error -ss "+Media.N(from)+" -t "+Media.N(seg.SourceEnd-from)+" -i "+Media.Q(segFile)+" -ss "+Media.N(from)+" -t "+Media.N(seg.SourceEnd-from)+" -i "+Media.Q(doc.BeautyMaskPath)+" -filter_complex "+Media.Q(graph)+" -map [out] -an -pix_fmt bgra -f rawvideo pipe:1",true);
+     }else{
+      p=Media.Start("ffmpeg","-v error -ss "+Media.N(from)+" -t "+Media.N(seg.SourceEnd-from)+" -i "+Media.Q(segFile)+" -an -vf setpts=(PTS-STARTPTS)/"+Media.N(seg.Speed)+",fps="+playbackFps+",scale="+dw+":"+dh+":flags=lanczos"+colorVf+effectVf+" -pix_fmt bgra -f rawvideo pipe:1",true);
+     }
+     using(p)using(token.Register(()=>{try{p.Kill();}catch{}}))using(var frame=new D.Bitmap(dw,dh,Imaging.PixelFormat.Format32bppArgb)){
+      // W5：混音台电平表打开时，电平跟随本段播放（-re 实时解码，段尾/暂停/取消时停）。
+      if(levelSubscribed)try{levelMeter.Start(segFile,from,seg.SourceEnd-from);}catch{}
       var errors=p.StandardError.ReadToEndAsync();var bytes=new byte[dw*dh*4];int n=0;var clock=new Stopwatch();double remaining=seg.TimelineEnd-time;
       while(true){token.ThrowIfCancellationRequested();int filled=0,count;while(filled<bytes.Length&&(count=p.StandardOutput.BaseStream.Read(bytes,filled,bytes.Length-filled))>0)filled+=count;if(filled==0)break;if(filled!=bytes.Length)throw new Exception("预览帧不完整。");
        if(!clock.IsRunning){Window.Dispatcher.Invoke(new Action(()=>{if(!token.IsCancellationRequested){audio.Position=TimeSpan.FromSeconds(from);audio.SpeedRatio=seg.Speed;var srcCh=MixerAudio.SourceChannel(doc);audio.Volume=srcCh==null?0:Math.Max(0,Math.Min(1,doc.Style.Volume*MixerAudio.DbToLinear(doc.MasterGainDb+srcCh.GainDb)));audio.Balance=srcCh==null?0:srcCh.Pan;audio.Play();}}));clock.Start();}
@@ -340,10 +368,10 @@ namespace DogSC.Replica {
         }
        }
        double now=Math.Min(seg.TimelineEnd,time+clock.Elapsed.TotalSeconds);Window.Dispatcher.Invoke(new Action(()=>{if(!token.IsCancellationRequested){position=now;Update();DrawPlayhead();}}));n++;
-      }try{if(!p.HasExited)p.Kill();p.WaitForExit();}catch{}if(clock.IsRunning){int wait=(int)((remaining-clock.Elapsed.TotalSeconds)*1000);if(wait>0&&token.WaitHandle.WaitOne(wait))token.ThrowIfCancellationRequested();double end=Math.Min(doc.Length-.001,seg.TimelineEnd);Window.Dispatcher.Invoke(new Action(()=>{if(!token.IsCancellationRequested){position=end;Update();DrawPlayhead();}}));}
+      }try{levelMeter.Stop();}catch{}try{if(!p.HasExited)p.Kill();p.WaitForExit();}catch{}if(clock.IsRunning){int wait=(int)((remaining-clock.Elapsed.TotalSeconds)*1000);if(wait>0&&token.WaitHandle.WaitOne(wait))token.ThrowIfCancellationRequested();double end=Math.Min(doc.Length-.001,seg.TimelineEnd);Window.Dispatcher.Invoke(new Action(()=>{if(!token.IsCancellationRequested){position=end;Update();DrawPlayhead();}}));}
      }
     }}
-   });}catch(OperationCanceledException){}catch(Exception ex){if(!token.IsCancellationRequested)Status("播放失败："+ex.Message);}finally{playbackJobs--;if(playback==tokenSource){playback=null;playing=false;audio.Pause();musicPlayer.Pause();Find<Button>("Play").Content=UI.Icon("play",16);RefreshPreview();}if(playCam!=null)playCam.Dispose();tokenSource.Dispose();}
+   });}catch(OperationCanceledException){}catch(Exception ex){if(!token.IsCancellationRequested)Status("播放失败："+ex.Message);}finally{playbackJobs--;if(playback==tokenSource){playback=null;playing=false;audio.Pause();musicPlayer.Pause();Find<Button>("Play").Content=UI.Icon("play",16);RefreshPreview();}try{levelMeter.Stop();}catch{}if(playCam!=null)playCam.Dispose();tokenSource.Dispose();}
   }
   double TimelineWidth {get {return Math.Max(600,Find<ScrollViewer>("TimelineScroll").ActualWidth-8)*Find<Slider>("TimelineScale").Value;}}
   Line playhead;Ellipse head;
@@ -361,6 +389,8 @@ namespace DogSC.Replica {
    for(int i=0;i<Doc.Zooms.Count;i++){int index=i;var z=Doc.Zooms[i];var b=new Border {Width=Math.Max(4,(z.End-z.Start)*px),Height=32,CornerRadius=new CornerRadius(7),Background=UI.Brush(dark?(z.Automatic?"#665641":"#594832"):(z.Automatic?"#E7D7B9":"#D9C7A6")),BorderThickness=new Thickness(selectedZoom==i?2:1),BorderBrush=UI.Brush(selectedZoom==i?"#AE8F5C":"#D9C7A6"),Child=new TextBlock {Text="缩放 "+z.Scale.ToString("0.0")+"× · "+(z.Automatic?"自动":"手动"),FontSize=10,Foreground=UI.Brush(dark?"#F3EADF":"#5D5140"),VerticalAlignment=VerticalAlignment.Center,HorizontalAlignment=HorizontalAlignment.Center,TextTrimming=TextTrimming.CharacterEllipsis}};Canvas.SetLeft(b,z.Start*px);Canvas.SetTop(b,110);timeline.Children.Add(b);b.MouseLeftButtonDown+=(s,e)=>{selectedZoom=index;selectedCut=selectedOverlay=selectedScreen=-1;tab="运镜";motionTab="缩放";Seek(z.Start+e.GetPosition(b).X/px);BuildRail();BuildInspector();e.Handled=true;};AddHandle(z.Start*px,110,32,d=>z.Start=EditDocument.Clamp(z.Start+d,0,z.End-.1),selectedZoom==i,()=>Doc.Zooms[index].Start);AddHandle(z.End*px-5,110,32,d=>z.End=EditDocument.Clamp(z.End+d,z.Start+.1,Doc.Length),selectedZoom==i,()=>Doc.Zooms[index].End);}
    // W3：多机位切换点标记（时间线时间 + 角度号）。
    if(MulticamModel.Active(Doc)&&Doc.MulticamSwitches!=null)foreach(var sw in Doc.MulticamSwitches){timeline.Children.Add(new Line {X1=sw.Time*px,X2=sw.Time*px,Y1=24,Y2=170,Stroke=UI.Brush("#AE8F5C"),StrokeThickness=1.5,IsHitTestVisible=false});var tag=UI.Text("机位"+(sw.Angle+1),10,"#8C6D2F");Canvas.SetLeft(tag,sw.Time*px+3);Canvas.SetTop(tag,24);timeline.Children.Add(tag);}
+   // W5：录制标记（红线 + 可点标签，点标签跳到标记点；拖动红线可改时间）。
+   if(Doc.RecordingMarkers!=null)foreach(var m in Doc.RecordingMarkers){var mark=m;timeline.Children.Add(new Line {X1=mark.Time*px,X2=mark.Time*px,Y1=24,Y2=170,Stroke=UI.Brush("#DE5E57"),StrokeThickness=1.5,IsHitTestVisible=false});var tag=new Border {Background=UI.Brush("#AADE5E57"),CornerRadius=new CornerRadius(4),Padding=new Thickness(5,2,5,2),Child=UI.Text(mark.Label,10,"#FFFFFF"),Cursor=Cursors.Hand};Canvas.SetLeft(tag,mark.Time*px+3);Canvas.SetTop(tag,24);timeline.Children.Add(tag);tag.MouseLeftButtonDown+=(s,e)=>{Seek(mark.Time);e.Handled=true;};AddHandle(mark.Time*px,24,146,d=>{mark.Time=EditDocument.Clamp(mark.Time+d,0,Doc.Length);},true);}
    AddEffectTracks(px);foreach(var gridLine in timeline.Children.OfType<Line>())gridLine.Y2=timeline.Height-8;playhead=new Line {X1=0,X2=0,Y1=20,Y2=timeline.Height-9,Stroke=UI.Brush(dark?"#F3F5F4":"#34393B"),StrokeThickness=1.2,IsHitTestVisible=false};head=new Ellipse {Width=6,Height=6,Fill=playhead.Stroke,IsHitTestVisible=false};Canvas.SetTop(head,19);timeline.Children.Add(playhead);timeline.Children.Add(head);
    // W3：吸附线（拖动中吸到候选点时亮起，平时隐藏）。
    snapLine=new Line {X1=0,X2=0,Y1=20,Y2=timeline.Height-9,Stroke=UI.Brush("#DE5E57"),StrokeThickness=1.5,IsHitTestVisible=false,Visibility=Visibility.Collapsed};timeline.Children.Add(snapLine);
