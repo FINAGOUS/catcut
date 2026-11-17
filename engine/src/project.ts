@@ -10,6 +10,11 @@
 import type { SubtitleItem } from './subtitles.js';
 import type { TextStylePreset } from './presets.js';
 import type { AdvancedColor } from './color.js';
+import type { CompoundRef } from './compound.js';
+import type { Multicam } from './multicam.js';
+
+export type { CompoundRef } from './compound.js';
+export type { Multicam, MulticamCut, MulticamSegment } from './multicam.js';
 
 export type { AdvancedColor, Curves, CurvePoint, HslZoneAdjust, HueZoneName, WhiteBalance } from './color.js';
 
@@ -302,6 +307,23 @@ export interface Clip {
    * be 1, no reverse/freeze, and it cannot combine with chromaKey.
    */
   portraitCutout?: PortraitCutout;
+  /**
+   * Compound clip / nested timeline (P2, M4): this clip IS a whole
+   * child project, rendered first to an intermediate MP4 (see
+   * compound.ts + resolveCompoundClips in export.ts). `source` is
+   * ignored for compound clips — pass ''. `in`/`out` select a window
+   * on the child timeline. Nesting depth is at most 2
+   * (parent -> child -> grandchild).
+   */
+  compound?: CompoundRef;
+  /**
+   * Multicam clip (P2, M4): N synchronised angle files, cut between
+   * them on the timeline (see multicam.ts). `source` is angle 0 — the
+   * main angle — and angles[0] must equal it. Audio comes from one
+   * angle only (audioAngle, default 0). v1: 2–4 angles, all the same
+   * duration, speed 1, no reverse/freeze/stabilisation/portrait.
+   */
+  multicam?: Multicam;
 }
 
 export type TransitionType =
