@@ -4,9 +4,9 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { buildFilterGraph } from './filtergraph.js';
-import { projectDuration, type Project } from './project.js';
+import { projectDuration, type Clip, type Project } from './project.js';
 import { prepareClipMaskFiles } from './mask.js';
 import {
   cleanupStabilization,
@@ -17,6 +17,16 @@ import {
 } from './portrait.js';
 import { dirname } from 'node:path';
 import { prepareColorLuts } from './color.js';
+import {
+  compoundChildDuration,
+  compoundIntermediatePath,
+  compoundRenderDir,
+  MAX_COMPOUND_DEPTH,
+  validateCompoundClip,
+} from './compound.js';
+import {
+  prepareMulticam,
+} from './multicam.js';
 import {
   DEFAULT_ASS_STYLE,
   subtitlesToASS,
@@ -117,6 +127,22 @@ export {
   writeColorLutFile,
 } from './color.js';
 export type { AdvancedColor, BuiltLut, Curves, CurvePoint, HslZoneAdjust, HueZoneName, ParsedCube, WhiteBalance } from './color.js';
+export {
+  compoundChildDuration,
+  compoundIntermediatePath,
+  compoundRenderDir,
+  MAX_COMPOUND_DEPTH,
+  validateCompoundClip,
+} from './compound.js';
+export type { CompoundRef } from './compound.js';
+export {
+  MULTICAM_DURATION_TOLERANCE,
+  multicamSegments,
+  prepareMulticam,
+  probeAngleDuration,
+  validateMulticam,
+} from './multicam.js';
+export type { Multicam, MulticamCut, MulticamSegment } from './multicam.js';
 
 export interface ExportPreset {
   name: string;
@@ -217,16 +243,83 @@ export async function exportProject(
   output: string,
   opts: ExportOptions,
 ): Promise<ExportReport> {
-  const ffmpeg = opts.ffmpeg ?? 'ffmpeg';
+  return renderProjectWithStab(project, output, opts, opts.ffmpeg ?? 'ffmpeg', 0);
+}
+
+/**
+ * Resolve compound clips: render each child project to its own
+ * intermediate MP4 (in its own subdirectory — see compound.ts) and
+ * return a new project with the compound clip's source replaced by
+ * that file (compound stripped). Clips without compound pass through
+ * unchanged. The child is rendered at the PARENT's width/height/fps
+ * (resampling rule) and the child render recurses through
+ * renderProjectWithStab at depth+1, so grandchildren resolve the same
+ * way and a 3rd level throws in validateCompoundClip. Idempotent: a
+ * project with no compound clips is returned as-is.
+ */
+export async function resolveCompoundClips(
+  project: Project,
+  dir: string,
+  opts: ExportOptions,
+  ffmpeg: string,
+  depth: number,
+): Promise<Project> {
+  if (!project.clips.some((c) => c.compound)) return project;
+  const clips: Clip[] = [];
+  for (let i = 0; i < project.clips.length; i++) {
+    const clip = project.clips[i];
+    if (!clip.compound) {
+      clips.push(clip);
+      continue;
+    }
+    const child = clip.compound.project;
+    const childDuration = compoundChildDuration(child);
+    validateCompoundClip(clip, child, childDuration, depth);
+    const childProject: Project = {
+      ...child,
+      width: project.width,
+      height: project.height,
+      fps: project.fps,
+    };
+    const renderDir = compoundRenderDir(dir, depth, i);
+    mkdirSync(renderDir, { recursive: true });
+    const intermediate = compoundIntermediatePath(dir, depth, i);
+    // The child render inherits the export preset (including any preset
+    // LUT) but its output fps is forced to the parent's fps, so the
+    // intermediate's frame rate matches the parent's timeline.
+    const childOpts: ExportOptions = {
+      ...opts,
+      preset: { ...opts.preset, fps: project.fps },
+    };
+    await renderProjectWithStab(childProject, intermediate, childOpts, ffmpeg, depth + 1);
+    clips.push({ ...clip, source: intermediate, compound: undefined });
+  }
+  return { ...project, clips };
+}
+
+/**
+ * Render one project with its own vidstab pass. Compound clips are
+ * resolved FIRST (their child renders recurse through this same
+ * function at depth+1), so prepareStabilization only ever sees
+ * ordinary clips with real source files.
+ */
+async function renderProjectWithStab(
+  project: Project,
+  output: string,
+  opts: ExportOptions,
+  ffmpeg: string,
+  depth: number,
+): Promise<ExportReport> {
+  const outDir = dirname(output);
+  const resolved = await resolveCompoundClips(project, outDir, opts, ffmpeg, depth);
   // Vidstab pass 1: run vidstabdetect for every vidstab clip BEFORE the
   // main export, writing one .trf per clip next to the output. The .trf
   // files are deleted after a successful export; on failure they are kept
   // and their paths logged, so the failed run can be debugged/re-run.
-  const outDir = dirname(output);
-  const stabTrf = await prepareStabilization(project, outDir, ffmpeg);
+  const stabTrf = await prepareStabilization(resolved, outDir, ffmpeg);
   let ok = false;
   try {
-    const report = await exportProjectInner(project, output, opts, ffmpeg, stabTrf);
+    const report = await exportProjectInner(resolved, output, opts, ffmpeg, stabTrf);
     ok = true;
     return report;
   } catch (e) {
@@ -249,6 +342,11 @@ async function exportProjectInner(
   ffmpeg: string,
   stabTrf: Map<number, string>,
 ): Promise<ExportReport> {
+  // Multicam angles: validate durations BEFORE the graph build (async
+  // ffprobe; a mismatched/short angle throws instead of truncating).
+  // Compound clips are already resolved by renderProjectWithStab, so
+  // every clip here has a real source file.
+  await prepareMulticam(project, opts.ffprobe);
   // Project-level subtitles: write the .ass karaoke file next to the output
   // and burn it with the ASS filter; clip-level subtitles are already in
   // the per-clip chains (drawtext). Keep the .ass file: it is the audit
