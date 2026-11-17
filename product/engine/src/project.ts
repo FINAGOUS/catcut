@@ -18,6 +18,17 @@ import type { AudioFx } from './audiofx.js';
 import type { DualSubtitles, HdrMode, QueueItem, SubtitleSidecarFormat } from './deliver.js';
 import type { BeautyOptions } from './beauty.js';
 import type { BeatFlashOptions, BeatSpeedOptions } from './beat.js';
+import type { TimelineMarker, AdjustmentLayer, AlternateClip } from './timeline.js';
+import type { SilenceCutOptions } from './silencecut.js';
+import type { TextCutOptions } from './textcut.js';
+import type { RemixOptions } from './remix.js';
+import type { FrameInterpOptions } from './frameinterp.js';
+
+export type { TimelineMarker, AdjustmentLayer, AlternateClip } from './timeline.js';
+export type { SilenceCutOptions } from './silencecut.js';
+export type { TextCutOptions } from './textcut.js';
+export type { RemixOptions } from './remix.js';
+export type { FrameInterpOptions } from './frameinterp.js';
 
 export type { CompoundRef } from './compound.js';
 export type { Multicam, MulticamCut, MulticamSegment } from './multicam.js';
@@ -442,6 +453,40 @@ export interface Clip {
    */
   role?: string;
   /**
+   * J/L edit (P3, M4 §8.2): audio in/out in SOURCE seconds,
+   * independent of the video in/out. audioIn < in = J cut (audio
+   * starts before the video), audioOut > out = L cut (audio runs
+   * past the video). Unset = audio follows the video window.
+   * Rendered in filtergraph.ts (one trim on the audio window, then
+   * trim/pad to the video duration); validated by validateJLClip
+   * (timeline.ts). v1: constant speed only.
+   */
+  audioIn?: number;
+  /** J/L audio out (source seconds); see audioIn. */
+  audioOut?: number;
+  /**
+   * Audition alternates (P3, M4 §8.2): replacement sources for this
+   * slot. switchAlternate (timeline.ts) swaps one in without
+   * rebuilding the edit; the current source is parked in its slot.
+   */
+  alternates?: AlternateClip[];
+  /**
+   * Audio-only clip (P3, M4 §8.2): the video was removed with linked
+   * selection off (deleteClip, timeline.ts) — the audio keeps its
+   * timeline position and the video renders black.
+   */
+  audioOnly?: boolean;
+  /**
+   * Music Remix (P3, M4 §8.3): stretch/shrink this clip's music to
+   * `targetDuration` by beat-aware splicing (remix.ts). Applied at
+   * export prep: the remixed audio is muxed with the clip's video
+   * into an intermediate file (video re-encoded libx264 CRF 20) and
+   * the clip is re-pointed at it. targetDuration must equal the
+   * clip's output duration within 0.05 s (the clip IS the target
+   * length — the music is fitted to it, not the other way round).
+   */
+  remix?: RemixOptions;
+  /**
    * Proxy editing (P2, M4): low-resolution stand-in for this clip's
    * source (see proxy.ts). The timeline / preview renders against
    * proxy.file; EXPORT always renders from `source` (the relink) but
@@ -520,6 +565,44 @@ export interface Project {
   exportPreset?: string;
   /** Batch export queue for this project (deliver.ts runExportQueue). */
   queue?: QueueItem[];
+  /**
+   * Timeline markers (P3, M4 §8.2): time + colour + label; chapter
+   * markers are written to the MP4 as chapters on export
+   * (markersToFfmetadata, timeline.ts). Validated by
+   * validateTimelineProject.
+   */
+  markers?: TimelineMarker[];
+  /**
+   * Adjustment layers (P3, M4 §8.2): blank spans carrying a colour
+   * adjustment applied to everything underneath in that span
+   * (adjustmentLayerFilter, timeline.ts; rendered in filtergraph.ts
+   * after assembly).
+   */
+  adjustmentLayers?: AdjustmentLayer[];
+  /**
+   * Linked selection (P3, M4 §8.2): true (default) = moving/deleting
+   * a video clip moves/deletes its audio with it; false = the video
+   * can be deleted on its own (deleteClip leaves an audio-only clip).
+   */
+  linkSelection?: boolean;
+  /**
+   * One-click silence cut (P3, M4 §8.6): applied at export prep —
+   * silences in each clip are deleted or compressed per these
+   * options (silencecut.ts). Subtitles/markers are NOT re-timed by
+   * the cut; that is a documented limit.
+   */
+  silenceCut?: SilenceCutOptions;
+  /**
+   * Text cut (P3, M4 §8.3): applied at export prep — the listed
+   * words/sentences are cut from the named clip (textcut.ts).
+   */
+  textCut?: TextCutOptions;
+  /**
+   * Smart frame interpolation (P3, M4 §8.7): raise the assembled
+   * timeline to targetFps with minterpolate (frameinterp.ts).
+   * targetFps must exceed the project fps.
+   */
+  frameInterp?: FrameInterpOptions;
 }
 
 export interface SpeedSegment {
