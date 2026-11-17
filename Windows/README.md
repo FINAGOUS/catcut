@@ -15,7 +15,7 @@
 |界面|原版浅银／石墨配色、随附字体、左侧工具栏、中央预览、右侧属性面板、底部独立轨道；明暗切换|
 |录制浮条|显示器、窗口、指定显示器上的区域框选；30／60／90 FPS 自选并记住设置，默认 60 FPS；3 秒倒计时；选择 DirectShow 麦克风；暂停／继续、暂停时直接停止保存；保存后进入编辑器|
 |录制性能|显示器／区域优先桌面复制（静止补帧）；窗口持续捕获；NVIDIA／AMD／Intel 硬件编码探测；独立高精度光标采样、后台任务停止、编码并行队列及兼容回退，状态显示实际编码方式|
-|备忘录|原版银白悬浮面板、编辑／阅读、字号 16–40、背景不透明度 55%–100%、自动保存、拖动与调整大小；录制排除与区域选择时收起|
+|备忘录|已删除（W1）：原版银白悬浮面板不再提供，录制浮条与项目菜单均已移除备忘录入口|
 |预览|播放／暂停、拖动定位、逐帧前后；暂停读取素材原始像素，播放按显示区域与缩放倍率解码，合成画布适配屏幕实际像素（含 DPI）；画面与导出共用合成逻辑|
 |时间线|真实缩略图、分割、两端裁剪、删除、左右重排、0.5／1／1.5／2 倍速；撤销／重做|
 |运镜|自动缩放轨道、鼠标跟随、手动缩放片段、范围／倍率／焦点／过渡时长编辑|
@@ -45,10 +45,6 @@
 录制状态显示「显卡编码」或「CPU 编码」，悬停可查看完整后端。每次录制目录里有 `capture-backend.txt` 和 `capture-performance.txt`，记录实际后端、目标帧率、重复／丢弃帧数与录制进程 CPU 用时。重复帧也可能只是屏幕内容未更新，不能单凭该数字认定卡顿。若后端启动失败，`capture-attempts.txt` 保留失败原因。
 
 原始视频采用分段 MP4，每 0.5 秒提交一段；异常结束时，完整提交的片段通常仍可读取，未提交的尾段可能丢失。停止录制的并发请求共用一次保存任务，文件校验通过后才进入编辑器。编码器停止超时会终止进程并校验已提交的素材；失败时保留素材和诊断，不把失败当作成功。`capture-stop.txt` 记录停止过程，`capture-save-error.txt` 记录保存错误。已实测 30／60／90 FPS 录制、保存、重新打开和导出，以及强制中断编码后的素材解码；长时间与高负载稳定性仍需后续验证。
-
-备忘录从录制浮条右侧便笺按钮，或编辑器的项目菜单 →「备忘录」打开。显示时不抢输入焦点；点击正文后可输入、粘贴和撤销，阅读模式仍能选中复制。拖动标题移动，拖动右下角改变大小；关闭按钮或 Esc 仅收起窗口。文稿、字号、背景不透明度和位置自动保存到 `%LOCALAPPDATA%/DogSC.Windows/memo.json`，独立于视频项目；输入停止 300 ms 后保存，收起、失去焦点和退出时立即保存。保存时保留上一份 `.bak`。
-
-Windows 10 2004 及以上使用系统窗口捕获排除；本机已用实际 GDI 捕获验证：备忘录在本机可见，但不进入视频。系统不支持或排除设置失败时，开始录制自动收起，停止后恢复；框选区域时也暂时收起。不同系统／显示驱动、混合 DPI 尚未逐一验证。此机制与原版按录制应用过滤窗口的实现不同，Windows 的捕获排除也可能影响其他录屏工具。
 
 ## 与原版的差异
 
@@ -86,7 +82,7 @@ Windows 10 2004 及以上使用系统窗口捕获排除；本机已用实际 GDI
 - `Sources/RecorderCore/CursorRenderGeometry.swift`、`Sources/DogSCApp/SharedFrameOverlayRenderer.swift`：点击反馈几何与叠加合成
 - `Sources/DogSCApp/EditorOverlayInspector.swift`：效果属性与层级操作
 
-Windows 主要代码：`Editor.xaml`（界面）、`EditorApp.cs`（交互）、`EditorCore.cs`（模型／运镜／共享合成和导出）、`EditorWindows.cs`（录制、导出、测试入口）、`RecorderMemo.cs`（备忘录与专用验证）、`CaptureEngine.cs`（硬件捕获／编码、回退和性能验证）、`EditorEffects.cs`（独立光标／贴图／柔化模型与渲染）、`EditorEffectsUI.cs`（效果属性、分层轨道与画布交互）。`DogSC.Windows.cs` 保留前版 FFmpeg／区域选择等基础实现，旧表单不再是入口。
+Windows 主要代码：`Editor.xaml`（界面）、`EditorApp.cs`（交互）、`EditorCore.cs`（模型／运镜／共享合成和导出）、`EditorWindows.cs`（录制、导出、测试入口）、`GpuPreview.cs`（GPU 预览：D3DImage + Direct3D9Ex，WriteableBitmap 回退）、`CaptureEngine.cs`（硬件捕获／编码、回退和性能验证）、`EditorEffects.cs`（独立光标／贴图／柔化模型与渲染）、`EditorEffectsUI.cs`（效果属性、分层轨道与画布交互）。`DogSC.Windows.cs` 保留前版 FFmpeg／区域选择等基础实现，旧表单不再是入口。
 
 ## 构建与验证
 
@@ -104,10 +100,6 @@ Start-Process .\Windows\bin\DogSC.Windows.exe -ArgumentList '--ui-test' -WindowS
 Get-Content .\Windows\bin\editor-test\interface-results.txt
 Get-Content .\Windows\bin\editor-test\preview-quality-results.txt
 
-# 备忘录保存／恢复／阅读／字号／透明度／区域收起／实际捕获排除
-Start-Process .\Windows\bin\DogSC.Windows.exe -ArgumentList '--memo-test' -WindowStyle Hidden -Wait
-Get-Content .\Windows\bin\memo-results.txt
-
 # 三个档位的实际窗口录制、项目帧率保存和 720p 成片导出
 Start-Process .\Windows\bin\DogSC.Windows.exe -ArgumentList '--fps-test' -WindowStyle Hidden -Wait
 Get-Content .\Windows\bin\fps-results.txt
@@ -123,11 +115,9 @@ Get-Content .\Windows\bin\capture-performance-results.txt
 
 测试视频由仓库自带 `Resources/Onboarding/SoftLight.png` 生成。录制验证只捕获独立文字测试窗口，不录制桌面或麦克风。界面图为 `Windows/bin/editor-preview.png`、`recorder-preview.png`、`export-preview-v2.png`。
 
-备忘录测试使用 `Windows/bin/memo-test/随机目录/` 中的独立文稿，不改动真实文稿。捕获测试仅框住自建不透明测试窗口，先确认未排除的备忘录能被录到，再验证排除后的像素与背景一致。预览图为 `Windows/bin/memo-preview.png`；捕获结果位于测试目录的 `capture-results.txt`。
-
 代码沿用原项目 MIT License，保留神烦老狗的版权声明。字体遵循 `Resources/Fonts/LICENSE.txt`；FFmpeg 及其包含组件遵循自身许可，见 `Windows/tools/FFmpeg-LICENSE.txt` 与保留的构建压缩包。这不是原作者官方 Windows 发行版。
 
-安装与更新（Windows Beta 3）：`Windows/build-installer.ps1` 使用 Inno Setup 6 生成当前版本安装程序，安装到当前用户目录。安装版在启动时检查更新，也可从项目菜单手动检查；选择下载后校验 GitHub 发布的文件大小和 SHA-256，确认保存项目后关闭应用并启动安装。旧 ZIP 版录屏和项目不会自动迁移或删除，安装版的新录屏存放于“文档/DogSC/recordings”，备忘录和帧率偏好继续使用当前用户的本地设置目录。下载和校验失败会保留现有版本。更新文件目前无独立代码签名，SHA-256 用于校验下载内容与 GitHub 发布信息一致，不能替代发布者签名；GitHub 不可访问时无法检查或下载更新。完整的跨版本在线升级还需在下一版发布后实测。
+安装与更新（Windows Beta 3）：`Windows/build-installer.ps1` 使用 Inno Setup 6 生成当前版本安装程序，安装到当前用户目录。安装版在启动时检查更新，也可从项目菜单手动检查；选择下载后校验 GitHub 发布的文件大小和 SHA-256，确认保存项目后关闭应用并启动安装。旧 ZIP 版录屏和项目不会自动迁移或删除，安装版的新录屏存放于“文档/DogSC/recordings”，帧率偏好继续使用当前用户的本地设置目录。下载和校验失败会保留现有版本。更新文件目前无独立代码签名，SHA-256 用于校验下载内容与 GitHub 发布信息一致，不能替代发布者签名；GitHub 不可访问时无法检查或下载更新。完整的跨版本在线升级还需在下一版发布后实测。
 
 预览与文字调整：播放按真实时间推进，渲染跟不上时跳过过期预览帧，保留片段手动变速；录制浮条的阴影独立于内容，弹窗、菜单和浮条使用适合各自背景的文字绘制与像素对齐。`--playback-rate-test` 使用合成视频、静音音频和 70 毫秒模拟逐帧延迟验证默认速度及手动 0.5 倍速。
 
