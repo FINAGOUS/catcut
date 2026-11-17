@@ -157,6 +157,29 @@ namespace DogSC.Replica {
    else if(a.Background=="image"&&wallpaper!=null){double s=Math.Max((double)width/wallpaper.Width,(double)height/wallpaper.Height);g.DrawImage(wallpaper,new RectangleF((float)((width-wallpaper.Width*s)/2),(float)((height-wallpaper.Height*s)/2),(float)(wallpaper.Width*s),(float)(wallpaper.Height*s)));}
    if(a.Background=="dots"){float step=Math.Max(8,width/80f);using(var dot=new SolidBrush(Color.FromArgb(48,80,85,88)))for(float x=step/2;x<width;x+=step)for(float y=step/2;y<height;y+=step)g.FillEllipse(dot,x,y,1.2f,1.2f);}
   }
+  // W1 GPU 预览：静态铬层（与时间无关的部分），与 DrawScreen 的静态部分保持一致。
+  // 播放时 GPU 把解码帧贴在铬层之下（视频区已抠成透明）；导出仍走 DrawCore/DrawScreen，不用这里。
+  // 只在无贴图/柔化/聚光、无光标、无开场、无屏幕 3D 时可用（见 EditorApp.IsGpuEligible）。
+  public static Bitmap RenderChrome(EditDocument doc,int width,int height,Image wallpaper){
+   var a=doc.Style;var canvas=new Bitmap(width,height,PixelFormat.Format32bppArgb);
+   using(var g=Graphics.FromImage(canvas)){
+    g.InterpolationMode=InterpolationMode.HighQualityBicubic;g.SmoothingMode=SmoothingMode.AntiAlias;
+    DrawBackground(g,doc,width,height,wallpaper);
+    var layout=SceneLayout.Make(doc,width,height,new Pose());float unit=Math.Min(width,height)/720f;
+    if(a.Shadow>0)DrawShadow(g,layout.Frame,layout.Radius,unit,a.Shadow,1.0);
+    using(var outline=Round(layout.Frame,layout.Radius)){
+     var state=g.Save();g.SetClip(outline);
+     using(var b=new SolidBrush(Color.FromArgb(255,a.Frame=="dark"?Color.FromArgb(42,43,45):Color.FromArgb(243,243,245))))g.FillRectangle(b,layout.Frame);
+     if(layout.Header>0){Color[] colors={Color.FromArgb(255,96,86),Color.FromArgb(255,188,46),Color.FromArgb(40,200,64)};for(int i=0;i<3;i++)using(var dot=new SolidBrush(colors[i]))g.FillEllipse(dot,layout.Frame.X+(9+10*i)*unit,layout.Frame.Y+layout.Header/2-3*unit,6*unit,6*unit);
+      using(var font=new Font("Microsoft YaHei UI",8*unit,GraphicsUnit.Pixel))using(var text=new SolidBrush(Color.FromArgb(255,130,132,136)))using(var format=new StringFormat {Alignment=StringAlignment.Center,LineAlignment=StringAlignment.Center})g.DrawString(doc.Name,font,text,new RectangleF(layout.Frame.X,layout.Frame.Y,layout.Frame.Width,layout.Header),format);}
+     g.Restore(state);
+     if(a.Border>0)using(var pen=new Pen(Color.FromArgb(100,90,90,95),(float)(a.Border*unit)))g.DrawPath(pen,outline);
+    }
+    // 把视频可见区抠成透明（与圆角框取交集，圆角处仍由框面盖住视频方角）。
+    using(var region=new Region(Round(layout.Frame,layout.Radius))){region.Intersect(layout.Video);g.Clip=region;g.Clear(Color.Transparent);}
+   }
+   return canvas;
+  }
   internal sealed class SceneCache:IDisposable {
    readonly Bitmap background;readonly ShadowCache shadow=new ShadowCache();
    public SceneCache(EditDocument doc,int width,int height,Image wallpaper){background=new Bitmap(width,height,PixelFormat.Format32bppArgb);using(var g=Graphics.FromImage(background)){g.InterpolationMode=InterpolationMode.HighQualityBicubic;g.SmoothingMode=SmoothingMode.AntiAlias;DrawBackground(g,doc,width,height,wallpaper);}}

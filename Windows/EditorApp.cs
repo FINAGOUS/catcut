@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -70,16 +71,16 @@ namespace DogSC.Replica {
   public static object IconLabel(string kind,string text="",double size=16){var panel=new StackPanel {Orientation=Orientation.Horizontal};panel.Children.Add(Icon(kind,size));if(text!="")panel.Children.Add(new TextBlock {Text=text,Margin=new Thickness(7,0,0,0),VerticalAlignment=VerticalAlignment.Center});return panel;}
  }
  public partial class Studio {
-  public Window Window; public EditDocument Doc; public string FilePath;public readonly MemoController Memo;
+  public Window Window; public EditDocument Doc; public string FilePath;
+  PreviewSurface previewSurface;
   readonly Stack<string> undo=new Stack<string>(),redo=new Stack<string>();
   readonly System.Windows.Controls.Image preview;readonly StackPanel inspector;readonly Canvas timeline;
   readonly List<BitmapSource> thumbs=new List<BitmapSource>(); readonly MediaPlayer audio=new MediaPlayer();
   double position;int selectedCut=-1,selectedZoom=-1;string tab="画面",frameTab="布局";bool dirty,dark,playing,snap=true,closing;
   CancellationTokenSource playback;RecorderWindow recorder;MotionEvaluator motion;
   int renderVersion;bool rendering;byte[] cachedFrame;double cachedTime=-100;string cachedSource="";internal int playbackTestDelay;
-  public Studio(string memoFile=null) {
+  public Studio() {
    string interfaceFile=Path.GetFullPath(Path.Combine(Media.Root,"Editor.xaml"));using(var source=File.OpenRead(interfaceFile))Window=(Window)XamlReader.Load(source,new ParserContext {BaseUri=new Uri(interfaceFile)});
-   Memo=new MemoController(memoFile);
    try {var fonts=Fonts.GetFontFamilies(new Uri(Path.GetFullPath(Path.Combine(Media.Root,"../Resources/Fonts"))+"/"));var font=fonts.FirstOrDefault();if(font!=null)Window.FontFamily=font;}catch{}
    preview=Find<System.Windows.Controls.Image>("Preview");inspector=Find<StackPanel>("Inspector");timeline=Find<Canvas>("TimelineHost");
    InitializeEffects();
@@ -98,7 +99,7 @@ namespace DogSC.Replica {
     if((Keyboard.Modifiers&ModifierKeys.Control)!=0){if(e.Key==Key.O)Open();else if(e.Key==Key.S)Save();else if(e.Key==Key.Z)History(false);else if(e.Key==Key.Y)History(true);else if(e.Key==Key.B)Split();else return;e.Handled=true;}
     else if(e.Key==Key.Space){if(playing)Pause();else Play();e.Handled=true;}else if(e.Key==Key.Delete){Delete();e.Handled=true;}else if(e.Key==Key.Left){Seek(position-1.0/30);e.Handled=true;}else if(e.Key==Key.Right){Seek(position+1.0/30);e.Handled=true;}
    };
-   Window.Closing+=(s,e)=>{if(closing)return;if(recorder!=null&&recorder.IsRecording){e.Cancel=true;AppDialogs.Notice(Window,"正在录制","请先停止录制，素材保存完成后再关闭。 ");return;}if(!MayDiscard()){e.Cancel=true;return;}Pause();audio.Close();Memo.Shutdown();if(recorder!=null)recorder.Close();closing=true;};
+   Window.Closing+=(s,e)=>{if(closing)return;if(recorder!=null&&recorder.IsRecording){e.Cancel=true;AppDialogs.Notice(Window,"正在录制","请先停止录制，素材保存完成后再关闭。 ");return;}if(!MayDiscard()){e.Cancel=true;return;}Pause();audio.Close();if(previewSurface!=null)previewSurface.Dispose();if(recorder!=null)recorder.Close();closing=true;};
    foreach(string name in new[]{"ProjectMenu","Ratio","Presets"})UI.MenuKeyboardEntry(Find<Button>(name));
    Find<Button>("ProjectMenu").Content=UI.IconLabel("folder");Find<Button>("Undo").Content=UI.IconLabel("undo");Find<Button>("Redo").Content=UI.IconLabel("redo");Find<Button>("Export").Content=UI.IconLabel("export","导出");Find<Button>("Split").Content=UI.IconLabel("cut");Find<Button>("Delete").Content=UI.IconLabel("trash");Find<Button>("Theme").Content=UI.IconLabel("sun");
    timeline.MouseMove+=(s,e)=>{if(Doc!=null&&e.LeftButton==MouseButtonState.Pressed&&Mouse.Captured==null){Pause();position=EditDocument.Clamp(e.GetPosition(timeline).X/TimelineWidth*Doc.Length,0,Math.Max(0,Doc.Length-.001));Update();DrawPlayhead();RefreshPreview();}};
@@ -129,8 +130,8 @@ namespace DogSC.Replica {
   async void LoadThumbnails(){if(Doc==null||recordingWorkSuspended)return;if(thumbnailWork!=null)thumbnailWork.Cancel();var work=new CancellationTokenSource();thumbnailWork=work;var token=work.Token;thumbnailJobs++;var doc=Doc;try{for(int i=thumbs.Count;i<8;i++){token.ThrowIfCancellationRequested();double t=Math.Min(doc.Duration-.05,doc.Duration*i/8);var b=await Task.Run(()=>UI.Image(StudioMedia.Frame(doc.Source,t,200,token)));token.ThrowIfCancellationRequested();if(Doc==null||Doc.Source!=doc.Source)return;thumbs.Add(b);DrawTimeline();}var wave=await Task.Run(()=>ReadWaveform(doc,token));token.ThrowIfCancellationRequested();if(Doc!=null&&Doc.Source==doc.Source){waveform=wave;DrawTimeline();}}catch{}finally{thumbnailJobs--;if(thumbnailWork==work)thumbnailWork=null;work.Dispose();}}
   async void Open(){var dlg=new Microsoft.Win32.OpenFileDialog {Filter="视频或 Windows 项目|*.mp4;*.mov;*.mkv;*.webm;*.dogscwin|所有文件|*.*"};if(dlg.ShowDialog(Window)==true)await Load(dlg.FileName);}
   bool Save(){if(Doc==null)return true;try{if(FilePath==null){var dlg=new Microsoft.Win32.SaveFileDialog {Filter="DogSC Windows 项目|*.dogscwin",FileName=Doc.Name+".dogscwin"};if(dlg.ShowDialog(Window)!=true)return false;FilePath=dlg.FileName;}Doc.Save(FilePath);dirty=false;Update();Status("项目已保存 · "+FilePath);return true;}catch(Exception ex){Error(ex);return false;}}
-  void ProjectMenu(){Menu(Find<Button>("ProjectMenu"),new[]{"打开视频或项目…","保存项目","另存为…","新建录制","打开项目目录","备忘录","检查更新…"},i=>{if(i==0)Open();if(i==1)Save();if(i==2){string old=FilePath;FilePath=null;if(!Save())FilePath=old;}if(i==3)Record();if(i==4&&Doc!=null)Process.Start("explorer.exe",Media.Q(Path.GetDirectoryName(FilePath??Doc.Source)));if(i==5)Memo.Toggle(Window);if(i==6)CheckUpdates();});}
-  void Menu(Button target,string[] items,Action<int> action){var menu=UI.PopupMenu(Window,target);for(int i=0;i<items.Length;i++){int n=i;var item=new MenuItem {Header=items[i]};if(target.Name=="ProjectMenu"){item.InputGestureText=i==0?"Ctrl+O":i==1?"Ctrl+S":"";item.IsEnabled=Doc!=null||i==0||i==3||i==5||i==6;}if(target.Name=="Ratio"){item.IsCheckable=true;item.IsChecked=Doc!=null&&Doc.Style.Ratio==items[i];}item.Click+=(s,e)=>{try{action(n);}catch(Exception ex){Error(ex);}};menu.Items.Add(item);}target.ContextMenu=menu;menu.IsOpen=true;}
+  void ProjectMenu(){Menu(Find<Button>("ProjectMenu"),new[]{"打开视频或项目…","保存项目","另存为…","新建录制","打开项目目录","检查更新…"},i=>{if(i==0)Open();if(i==1)Save();if(i==2){string old=FilePath;FilePath=null;if(!Save())FilePath=old;}if(i==3)Record();if(i==4&&Doc!=null)Process.Start("explorer.exe",Media.Q(Path.GetDirectoryName(FilePath??Doc.Source)));if(i==5)CheckUpdates();});}
+  void Menu(Button target,string[] items,Action<int> action){var menu=UI.PopupMenu(Window,target);for(int i=0;i<items.Length;i++){int n=i;var item=new MenuItem {Header=items[i]};if(target.Name=="ProjectMenu"){item.InputGestureText=i==0?"Ctrl+O":i==1?"Ctrl+S":"";item.IsEnabled=Doc!=null||i==0||i==3||i==5;}if(target.Name=="Ratio"){item.IsCheckable=true;item.IsChecked=Doc!=null&&Doc.Style.Ratio==items[i];}item.Click+=(s,e)=>{try{action(n);}catch(Exception ex){Error(ex);}};menu.Items.Add(item);}target.ContextMenu=menu;menu.IsOpen=true;}
   void Rename(){if(Doc==null)return;string name=AppDialogs.Rename(Window,Doc.Name);if(name!=null&&name!=Doc.Name){Checkpoint();Doc.Name=name;Changed();}}
   void Record(){Pause();if(recorder!=null){recorder.Activate();return;}recorder=new RecorderWindow(this);recorder.Closed+=(s,e)=>recorder=null;recorder.Show();}
   public async Task Recorded(string path,List<PointerSample> points){string project=Path.Combine(Path.GetDirectoryName(path),"project.dogscwin");await Task.Run(()=>{var doc=StudioMedia.Import(path);doc.Pointer=points;doc.IndependentCursor=true;doc.GenerateZooms();doc.Save(project);});await Load(project);if(Doc==null||Doc.Source!=path)Status("新录制已保存 · "+project);}
@@ -175,27 +176,66 @@ namespace DogSC.Replica {
   public Task PreviewNow(){return RequestPreview();}
   D.Size PreviewSize(EditDocument doc){var stage=Find<Grid>("Stage");var source=PresentationSource.FromVisual(stage);var transform=source!=null&&source.CompositionTarget!=null?source.CompositionTarget.TransformToDevice:Matrix.Identity;return PreviewPixels(SceneLayout.Aspect(doc),Math.Max(1,stage.ActualWidth)*transform.M11,Math.Max(1,stage.ActualHeight)*transform.M22);}
   internal static D.Size PreviewPixels(double ratio,double availableWidth,double availableHeight){double width=Math.Min(availableWidth,availableHeight*ratio);return new D.Size(Math.Max(2,(int)Math.Ceiling(width*1.25/2)*2),Math.Max(2,(int)Math.Ceiling(width/ratio*1.25/2)*2));}
+  PreviewSurface EnsurePreviewSurface(){
+   if(previewSurface!=null)return previewSurface;
+   IntPtr focus=new WindowInteropHelper(Window).Handle;
+   if(focus==IntPtr.Zero)focus=GpuPreviewNative.GetDesktopWindow();
+   previewSurface=new PreviewSurface(preview,focus);return previewSurface;
+  }
+  // W1：GPU 合成只接管静态铬层 + 视频四边形；时间相关的东西（贴图/柔化/聚光、光标、开场、屏幕 3D）
+  // 仍走 GDI+ Compose（合成好的帧再经 D3D/WriteableBitmap 呈现）。
+  static bool IsGpuEligible(EditDocument doc){
+   return doc.Overlays.Count==0&&!doc.IndependentCursor&&doc.Style.Opening==0&&doc.ScreenMotions.Count==0&&doc.ScreenBase==null;
+  }
   async Task RequestPreview(){renderVersion++;if(Doc==null||playing||rendering||recordingWorkSuspended)return;rendering=true;var work=new CancellationTokenSource();previewWork=work;var token=work.Token;try{int version;do{token.ThrowIfCancellationRequested();version=renderVersion;var snapshot=EditDocument.Deserialize(Doc.Serialize());var size=PreviewSize(snapshot);double time=position;int i;double source=snapshot.SourceTime(time,out i);var result=await Task.Run(()=>{
      // Keep the native source pixels for paused inspection and zoomed text.
      if(cachedFrame==null||cachedSource!=snapshot.Source||Math.Abs(cachedTime-source)>.015){cachedFrame=StudioMedia.Frame(snapshot.Source,Math.Min(source,snapshot.Duration-.03),snapshot.Width,token);cachedSource=snapshot.Source;cachedTime=source;}
-     token.ThrowIfCancellationRequested();using(var stream=new MemoryStream(cachedFrame))using(var frame=new D.Bitmap(stream))return Compose(frame,snapshot,time,size);
-    });token.ThrowIfCancellationRequested();if(version==renderVersion&&!playing&&!recordingWorkSuspended){preview.Source=result;DrawEffectGuides();}
+     token.ThrowIfCancellationRequested();using(var stream=new MemoryStream(cachedFrame))using(var frame=new D.Bitmap(stream))using(var composed=ComposeBitmap(frame,snapshot,time,size))return Tuple.Create(PreviewSurface.BitmapBytes(composed),size.Width,size.Height);
+    });token.ThrowIfCancellationRequested();if(version==renderVersion&&!playing&&!recordingWorkSuspended){EnsurePreviewSurface().PresentComposed(result.Item1,result.Item2,result.Item3);DrawEffectGuides();}
    }while(version!=renderVersion&&!playing&&!closing&&!recordingWorkSuspended);}catch(OperationCanceledException){}catch(Exception ex){Status("预览暂不可用："+ex.Message);}finally{rendering=false;if(previewWork==work)previewWork=null;work.Dispose();}}
-  static BitmapSource Compose(D.Bitmap frame,EditDocument doc,double time,D.Size size,MotionEvaluator evaluator=null,D.Image loadedWallpaper=null,StudioRenderer.SceneCache cache=null){int w=size.Width,h=size.Height;using(var own=evaluator==null?new MotionEvaluator(doc):null)using(var canvas=new D.Bitmap(w,h,Imaging.PixelFormat.Format32bppArgb))using(var g=D.Graphics.FromImage(canvas))using(var wallpaper=loadedWallpaper==null&&doc.Style.Background=="image"&&File.Exists(doc.Style.ImagePath)?D.Image.FromFile(doc.Style.ImagePath):null){g.InterpolationMode=D.Drawing2D.InterpolationMode.HighQualityBicubic;g.SmoothingMode=D.Drawing2D.SmoothingMode.AntiAlias;if(cache==null)StudioRenderer.Draw(g,frame,doc,evaluator??own,time,w,h,loadedWallpaper??wallpaper,canvas);else cache.Render(g,frame,doc,evaluator??own,time,w,h,loadedWallpaper??wallpaper,canvas);return UI.Image(canvas);}}
+  static BitmapSource Compose(D.Bitmap frame,EditDocument doc,double time,D.Size size,MotionEvaluator evaluator=null,D.Image loadedWallpaper=null,StudioRenderer.SceneCache cache=null){using(var canvas=ComposeBitmap(frame,doc,time,size,evaluator,loadedWallpaper,cache))return UI.Image(canvas);}
+  static D.Bitmap ComposeBitmap(D.Bitmap frame,EditDocument doc,double time,D.Size size,MotionEvaluator evaluator=null,D.Image loadedWallpaper=null,StudioRenderer.SceneCache cache=null){int w=size.Width,h=size.Height;var canvas=new D.Bitmap(w,h,Imaging.PixelFormat.Format32bppArgb);using(var own=evaluator==null?new MotionEvaluator(doc):null)using(var g=D.Graphics.FromImage(canvas))using(var wallpaper=loadedWallpaper==null&&doc.Style.Background=="image"&&File.Exists(doc.Style.ImagePath)?D.Image.FromFile(doc.Style.ImagePath):null){g.InterpolationMode=D.Drawing2D.InterpolationMode.HighQualityBicubic;g.SmoothingMode=D.Drawing2D.SmoothingMode.AntiAlias;if(cache==null)StudioRenderer.Draw(g,frame,doc,evaluator??own,time,w,h,loadedWallpaper??wallpaper,canvas);else cache.Render(g,frame,doc,evaluator??own,time,w,h,loadedWallpaper??wallpaper,canvas);}return canvas;}
   async void Play(){if(Doc==null||playing||recordingWorkSuspended)return;if(position>=Doc.Length-.05)position=0;playing=true;playbackJobs++;overlayGuides.Children.Clear();Find<Button>("Play").Content=UI.Icon("pause",16);var tokenSource=new CancellationTokenSource();playback=tokenSource;var token=tokenSource.Token;
-   try{var doc=EditDocument.Deserialize(Doc.Serialize());var size=PreviewSize(doc);int playbackFps=Math.Min(90,Math.Max(1,(int)Math.Round(doc.FrameRate)));double start=position;await Task.Run(()=>{
+   try{var doc=EditDocument.Deserialize(Doc.Serialize());var size=PreviewSize(doc);int playbackFps=Math.Min(90,Math.Max(1,(int)Math.Round(doc.FrameRate)));double start=position;
+    // W1：预览面在 UI 线程建一次（D3D 建不起来就 WriteableBitmap），GPU 合成资格按文档定。
+    var surface=EnsurePreviewSurface();bool gpuPath=surface.IsHardware&&IsGpuEligible(doc);
+    await Task.Run(()=>{
     int first;double src=doc.SourceTime(start,out first);double offset=doc.Cuts.Take(first).Sum(c=>c.Length);
     using(var evaluator=new MotionEvaluator(doc))using(var wallpaper=doc.Style.Background=="image"&&File.Exists(doc.Style.ImagePath)?D.Image.FromFile(doc.Style.ImagePath):null)using(var cache=new StudioRenderer.SceneCache(doc,size.Width,size.Height,wallpaper)){
+    if(gpuPath){
+     // 静态铬层只烤一次；烤失败/设备没了就回退到 GDI+ Compose 路径。
+     using(var chrome=StudioRenderer.RenderChrome(doc,size.Width,size.Height,wallpaper)){var bits=PreviewSurface.BitmapBytes(chrome);bool ok=false;Window.Dispatcher.Invoke(new Action(()=>{if(!token.IsCancellationRequested)ok=surface.SetChrome(bits,size.Width,size.Height)&&surface.IsHardware;}));if(!ok)gpuPath=false;}
+    }
     for(int i=first;i<doc.Cuts.Count;i++){token.ThrowIfCancellationRequested();var cut=doc.Cuts[i];double from=i==first?src:cut.Start,time=i==first?start:offset;
      double zoom=doc.Zooms.Count>0?doc.Zooms.Max(z=>z.Scale):1;int dw=Math.Min(doc.Width,(int)Math.Ceiling(size.Width*Math.Max(1,zoom*doc.Style.Scale)));dw=Math.Max(2,dw-dw%2);int dh=Math.Max(2,(int)Math.Round((double)dw*doc.Height/doc.Width/2)*2);
      using(var p=Media.Start("ffmpeg","-v error -ss "+Media.N(from)+" -t "+Media.N(cut.End-from)+" -i "+Media.Q(doc.Source)+" -an -vf setpts=(PTS-STARTPTS)/"+Media.N(cut.Speed)+",fps="+playbackFps+",scale="+dw+":"+dh+":flags=lanczos -pix_fmt bgra -f rawvideo pipe:1",true))using(token.Register(()=>{try{p.Kill();}catch{}}))using(var frame=new D.Bitmap(dw,dh,Imaging.PixelFormat.Format32bppArgb)){
       var errors=p.StandardError.ReadToEndAsync();var bytes=new byte[dw*dh*4];int n=0;var clock=new Stopwatch();double remaining=offset+cut.Length-time;
       while(true){token.ThrowIfCancellationRequested();int filled=0,count;while(filled<bytes.Length&&(count=p.StandardOutput.BaseStream.Read(bytes,filled,bytes.Length-filled))>0)filled+=count;if(filled==0)break;if(filled!=bytes.Length)throw new Exception("预览帧不完整。");
        if(!clock.IsRunning){Window.Dispatcher.Invoke(new Action(()=>{if(!token.IsCancellationRequested){audio.Position=TimeSpan.FromSeconds(from);audio.SpeedRatio=cut.Speed;audio.Volume=doc.Style.Volume;audio.Play();}}));clock.Start();}
-       double elapsed=clock.Elapsed.TotalSeconds;if(elapsed>=remaining)break;if((n+1.0)/playbackFps<elapsed){n++;continue;}
-       var data=frame.LockBits(new D.Rectangle(0,0,dw,dh),Imaging.ImageLockMode.WriteOnly,Imaging.PixelFormat.Format32bppArgb);try{Marshal.Copy(bytes,0,data.Scan0,bytes.Length);}finally{frame.UnlockBits(data);}
-       double t=time+n/(double)playbackFps;if(t>=offset+cut.Length)break;var image=Compose(frame,doc,t,size,evaluator,wallpaper,cache);if(playbackTestDelay>0&&token.WaitHandle.WaitOne(playbackTestDelay))token.ThrowIfCancellationRequested();int wait=(int)(n*1000.0/playbackFps-clock.Elapsed.TotalMilliseconds);if(wait>0&&token.WaitHandle.WaitOne(wait))token.ThrowIfCancellationRequested();
-       double now=Math.Min(offset+cut.Length,time+clock.Elapsed.TotalSeconds);Window.Dispatcher.Invoke(new Action(()=>{if(!token.IsCancellationRequested){position=now;preview.Source=image;Update();DrawPlayhead();}}));n++;
+       double elapsed=clock.Elapsed.TotalSeconds;if(elapsed>=remaining)break;
+       double t=time+n/(double)playbackFps;if(t>=offset+cut.Length)break;
+       // 先按帧时刻等一拍（原来是 Compose 之后等，效果相同：每帧在 n/fps 时刻呈现）。
+       int wait=(int)(n*1000.0/playbackFps-clock.Elapsed.TotalMilliseconds);if(wait>0&&token.WaitHandle.WaitOne(wait))token.ThrowIfCancellationRequested();
+       if(playbackTestDelay>0&&token.WaitHandle.WaitOne(playbackTestDelay))token.ThrowIfCancellationRequested();
+       // 旧逻辑：只要落后一帧就丢帧——60fps 下呈现稍慢就每帧都丢，画面抖。
+       // 新逻辑：只在落后超过 2 帧时跳过呈现（仍解码、仍计 n，音画同步不断），瞬时抖动不再丢帧。
+       elapsed=clock.Elapsed.TotalSeconds;
+       if(elapsed-(n+1.0)/playbackFps<=2.0/playbackFps){
+        bool shown=false;
+        if(gpuPath){
+         // 运镜裁剪与 DrawScreen 同一套数学，只是把裁剪区当 UV、把视频区当目标矩形交给 GPU。
+         var pose=evaluator.At(t);var layout=SceneLayout.Make(doc,size.Width,size.Height,pose);
+         float u0=(float)(pose.X-.5/pose.Zoom),v0=(float)(pose.Y-.5/pose.Zoom),u1=(float)(pose.X+.5/pose.Zoom),v1=(float)(pose.Y+.5/pose.Zoom);
+         Window.Dispatcher.Invoke(new Action(()=>{if(!token.IsCancellationRequested)shown=surface.TryPresentVideo(bytes,dw,dh,layout.Video.X,layout.Video.Y,layout.Video.Width,layout.Video.Height,u0,v0,u1,v1,(float)pose.Opacity);}));
+         if(!shown)gpuPath=false;
+        }
+        if(!shown&&!token.IsCancellationRequested){
+         // 回退：GDI+ Compose 逐帧合成，但合成帧仍经 D3D 纹理/WriteableBitmap 呈现，不再走 BitmapSource。
+         var data=frame.LockBits(new D.Rectangle(0,0,dw,dh),Imaging.ImageLockMode.WriteOnly,Imaging.PixelFormat.Format32bppArgb);try{Marshal.Copy(bytes,0,data.Scan0,bytes.Length);}finally{frame.UnlockBits(data);}
+         using(var composed=ComposeBitmap(frame,doc,t,size,evaluator,wallpaper,cache)){var bits=PreviewSurface.BitmapBytes(composed);Window.Dispatcher.Invoke(new Action(()=>{if(!token.IsCancellationRequested)surface.PresentComposed(bits,size.Width,size.Height);}));}
+        }
+       }
+       double now=Math.Min(offset+cut.Length,time+clock.Elapsed.TotalSeconds);Window.Dispatcher.Invoke(new Action(()=>{if(!token.IsCancellationRequested){position=now;Update();DrawPlayhead();}}));n++;
       }try{if(!p.HasExited)p.Kill();p.WaitForExit();}catch{}if(clock.IsRunning){int wait=(int)((remaining-clock.Elapsed.TotalSeconds)*1000);if(wait>0&&token.WaitHandle.WaitOne(wait))token.ThrowIfCancellationRequested();double end=Math.Min(doc.Length-.001,offset+cut.Length);Window.Dispatcher.Invoke(new Action(()=>{if(!token.IsCancellationRequested){position=end;Update();DrawPlayhead();}}));}
      }offset+=cut.Length;
     }}
