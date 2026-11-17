@@ -62,6 +62,11 @@ import {
   validateAudioFx,
   validateMasterGainDb,
 } from './audiofx.js';
+import {
+  reframeCropFilter,
+  validateSmartCut,
+  type SubjectTrack,
+} from './smartcut.js';
 
 export interface FilterGraph {
   filterComplex: string;
@@ -239,10 +244,18 @@ function drawtextFilter(
 /**
  * Video chains for one clip. Returns one or more filter_complex segments;
  * the clip's final video label is [v<idx>].
- * Order: segment trim/speed (+reverse) -> freeze stage -> scale/pad/fps ->
+ * Order: segment trim/speed (+reverse) -> freeze stage -> smart reframe
+ * (crop on the SOURCE stream, before scale/pad) -> scale/pad/fps ->
  * zoom -> rotation -> colour -> LUT -> opacity (split + black branch +
  * blend) -> text (+ clip subtitles).
  * freezeAt is clip-local OUTPUT time (after speed, after reverse).
+ * The reframe crop sits BEFORE scale/pad on purpose: scale/pad
+ * letterboxes a landscape source into a vertical project, so a crop
+ * after it would cut the padded bars, not the subject. The trajectory
+ * is in source fractions and clip-local time (speed 1, no
+ * reverse/freeze — enforced by validateSmartCut), so the crop
+ * expression uses the stream's t directly. Mask/zoom/colour still run
+ * after it, on the reframed frame.
  */
 function clipVideoChains(
   clip: Clip,
@@ -253,6 +266,8 @@ function clipVideoChains(
   maskCtx?: MaskCtx,
   stabTrf?: Map<number, string>,
   colorLuts?: Map<number, string[]>,
+  /** clipIdx -> smoothed subject track (prepareSubjectTracks output). */
+  tracks?: Map<number, SubjectTrack>,
 ): string[] {
   const { width, height, fps } = project;
   const chains: string[] = [];
@@ -364,6 +379,21 @@ function clipVideoChains(
     chains.push(`${parts.join('')}concat=n=${parts.length}:v=1:a=0[vbf${idx}]`);
     baseLabel = `[vbf${idx}]`;
   }
+  }
+
+  // Smart reframe (P3): crop the source to the target aspect,
+  // following the tracked subject. Runs on the source-resolution
+  // stream (see the order comment above) — before scale/pad.
+  if (clip.reframe) {
+    validateSmartCut(clip);
+    const track = tracks?.get(idx);
+    if (!track) {
+      throw new Error(
+        `clip ${clip.id}: reframe subject track not prepared; call prepareSubjectTracks first`,
+      );
+    }
+    chains.push(`${baseLabel}${reframeCropFilter(track, clip.reframe)}[vrf${idx}]`);
+    baseLabel = `[vrf${idx}]`;
   }
 
   const baseParts: string[] = [
@@ -829,6 +859,9 @@ export function buildFilterGraph(
   roleAudioChannels?: Map<number, number>,
   /** Also assemble one stem per role (in addition to the mix). */
   roleStems?: boolean,
+  /** clipIdx -> smoothed subject track (prepareSubjectTracks output);
+   *  required by any clip with reframe. */
+  smartcutTracks?: Map<number, SubjectTrack>,
 ): FilterGraph {
   const n = project.clips.length;
   if (n === 0) throw new Error('project has no clips');
@@ -895,7 +928,7 @@ export function buildFilterGraph(
   });
   const chains: string[] = [];
   project.clips.forEach((clip, i) => {
-    chains.push(...clipVideoChains(clip, i, project, fontfile, lut, maskCtx, stabilizeTrf, colorLuts));
+    chains.push(...clipVideoChains(clip, i, project, fontfile, lut, maskCtx, stabilizeTrf, colorLuts, smartcutTracks));
     chains.push(...clipAudioChains(clip, i, maskCtx));
   });
 
