@@ -88,6 +88,22 @@ import {
   surroundAudioCodec,
   validateSurroundLayout,
 } from './surround.js';
+import {
+  prepareClone,
+  prepareColorManagementLuts,
+  prepareColorMatchLuts,
+  prepareObjectTracks,
+  prepareOutputLut,
+  prepareTrackedWindow,
+  upscaleVideo,
+  validateProjectColorManagement,
+  validateUpscale,
+  writeGradeNodeFiles,
+  type GradeNodeStage,
+  type P3gGraphInputs,
+} from './p3g.js';
+import { renameSync } from 'node:fs';
+import { basename } from 'node:path';
 
 const execFileAsync = promisify(execFile);
 
@@ -95,7 +111,7 @@ export { TEXT_PRESETS, COLOR_PRESETS, TALK_PRESETS, applyTalkPreset, serializeTa
 export type { TextStylePreset, TalkPreset, SubtitleMode } from './presets.js';
 export { generateAutoZoom, generateAutoZoomWithSilences, detectSilences, zoomScaleAt, countScalePushes, emphasisPlateaus } from './autozoom.js';
 export type { AutoZoomOptions, SilenceInterval } from './autozoom.js';
-export { renderMaskPng, maskPixelSize, maskOverlayPos, maskSegments, maskAlpha, prepareClipMaskFiles, validateMask } from './mask.js';
+export { renderMaskPng, renderFrameMaskPng, maskPixelSize, maskOverlayPos, maskSegments, maskAlpha, prepareClipMaskFiles, validateMask } from './mask.js';
 export type { MaskSegment } from './mask.js';
 export type { MaskShape, MaskKeyframe, ClipMask } from './project.js';
 export { toSRT, parseSRT, subtitlesToASS, subtitlesToTextOverlays, countBoundaryErrors, validateWordTimes, formatSrtTime } from './subtitles.js';
@@ -310,6 +326,106 @@ export {
   surroundUpmixFilter,
   validateSurroundLayout,
 } from './surround.js';
+export {
+  UPSCALE_MODELS,
+  UPSCALE_SETUP,
+  addLutEntry,
+  bakeGradeNodes,
+  blendLuts,
+  buildAutoVideoProject,
+  buildColorMatchLut,
+  buildObjectTrackMaskBuffer,
+  buildTrackedWindowMaskBuffer,
+  buildTransferLut,
+  channelHistograms,
+  cloneLaneSize,
+  decodeFrameRgb24,
+  decodeVideoGray,
+  decodeVideoRgb24,
+  defaultUpscaleModelPath,
+  defaultUpscaleScriptPath,
+  filterLutLibrary,
+  generateLutThumbnail,
+  histogramMatchMaps,
+  inputColorConversion,
+  listReferenceStills,
+  loadReferenceStill,
+  lutLibraryCategories,
+  objectTrackDrawtextFilter,
+  outlineDilationFilter,
+  outputColorTag,
+  outputSpaceOf,
+  parseOutlineColor,
+  prepareClone,
+  prepareColorManagementLuts,
+  prepareColorMatchLuts,
+  prepareObjectTracks,
+  prepareOutputLut,
+  prepareTrackedWindow,
+  probeVideoInfo,
+  rec709Oetf,
+  rec709OetfInv,
+  renderComparisonFrame,
+  saveReferenceStill,
+  slog3Decode,
+  slog3Encode,
+  srgbOetf,
+  srgbOetfInv,
+  topoSortGradeNodes,
+  toggleLutFavorite,
+  trackAxisExpr,
+  trackObjectByColor,
+  trackObjectByTemplate,
+  upscaleScaleOf,
+  upscaleVideo,
+  validateAutoVideo,
+  validateClipColorManagement,
+  validateCloneEffect,
+  validateColorMatch,
+  validateGradeNodes,
+  validateKeyOutline,
+  validateLutLibraryEntry,
+  validateObjectTrack,
+  validateProjectColorManagement,
+  validateTrackedWindow,
+  validateUpscale,
+  workingSpaceOf,
+  writeBuiltLutFile,
+  writeGradeNodeFiles,
+  writeMaskVideoFromBuffer,
+} from './p3g.js';
+export type {
+  AutoVideo,
+  AutoVideoLine,
+  AutoVideoSegment,
+  BakedGradeNodes,
+  CloneEffect,
+  ColorManagement,
+  ColorMatch,
+  CompareMode,
+  GradeBlendMode,
+  GradeNode,
+  GradeNodeGraph,
+  GradeNodeStage,
+  GradeNodeStageFiles,
+  InputColorSpace,
+  KeyOutline,
+  LutLibrary,
+  LutLibraryEntry,
+  LutLibraryFilter,
+  ObjectTrack,
+  ObjectTrackPrep,
+  OutputColorSpace,
+  P3gGraphInputs,
+  ReferenceStill,
+  TrackedWindow,
+  TrackedWindowFiles,
+  UpscaleModel,
+  UpscaleOptions,
+  UpscaleResult,
+  VideoInfo,
+  WorkingColorSpace,
+} from './p3g.js';
 export type { SurroundLayout } from './surround.js';
 export {
   clearRenderCache,
@@ -844,7 +960,28 @@ async function renderProjectWithStab(
   const stabTrf = await prepareStabilization(prepped, outDir, ffmpeg);
   let ok = false;
   try {
-    const report = await exportProjectInner(prepped, output, opts, ffmpeg, stabTrf);
+    let report = await exportProjectInner(prepped, output, opts, ffmpeg, stabTrf);
+    // AI upscaling (P3, export-time option only, depth 0): the finished
+    // export is upscaled with the Real-ESRGAN ONNX model and the
+    // upscaled file replaces the export. A missing model throws here
+    // instead of shipping the un-upscaled file as "upscaled".
+    if (depth === 0 && project.upscale) {
+      const upscaled = join(outDir, `upscaled-${basename(output)}`);
+      await upscaleVideo(output, upscaled, {
+        ...project.upscale,
+        ffmpeg,
+        ffprobe: opts.ffprobe,
+        python: opts.python,
+      });
+      renameSync(upscaled, output);
+      const actual = await probe(output, opts.ffprobe);
+      report = {
+        ...report,
+        output,
+        actual,
+        durationError: Math.abs(actual.duration - report.expectedDuration),
+      };
+    }
     ok = true;
     return report;
   } catch (e) {
@@ -1068,6 +1205,73 @@ async function exportProjectInner(
     smartcutTracks = prep.tracks;
     smartProject = prep.project;
   }
+  // P3g prep (colour management / match / node graphs / tracked
+  // windows / object tracks / clone). All of it runs on smartProject
+  // (followZoom keys merged) and is keyed by clip index, like the
+  // colour/portrait/beauty preps above. A clip with both advancedColor
+  // and gradeNodes throws here, before any ffmpeg work starts.
+  if (project.upscale && exportOnly !== 'none') {
+    throw new Error('upscale cannot combine with an export-only switch');
+  }
+  if (project.upscale) validateUpscale(project.upscale, project.width, project.height);
+  if (project.colorManagement?.outputSpace !== undefined && hdrMode !== 'off') {
+    throw new Error('colorManagement.outputSpace cannot combine with hdrMode — pick one output transform');
+  }
+  validateProjectColorManagement(smartProject.colorManagement);
+  for (const clip of smartProject.clips) {
+    if (clip.advancedColor && clip.gradeNodes) {
+      throw new Error(
+        `clip ${clip.id}: advancedColor and gradeNodes are mutually exclusive — use one grading model per clip`,
+      );
+    }
+  }
+  const p3gInputs: P3gGraphInputs = {};
+  p3gInputs.colorMgmtLuts = prepareColorManagementLuts(smartProject, dirname(output));
+  const outputLut = prepareOutputLut(smartProject, dirname(output));
+  if (outputLut) {
+    p3gInputs.outputLut = outputLut;
+    p3gInputs.outputSpace = smartProject.colorManagement?.outputSpace ?? smartProject.colorManagement?.workingSpace ?? 'rec709';
+  } else if (smartProject.colorManagement?.outputSpace !== undefined || smartProject.colorManagement?.workingSpace === 'srgb') {
+    // No LUT needed (output == working) but the file still gets tagged
+    // with its space — ffprobe reads it back (probe-p3g).
+    p3gInputs.outputSpace = smartProject.colorManagement?.outputSpace ?? smartProject.colorManagement?.workingSpace ?? 'rec709';
+  }
+  const colorMatchLuts = await prepareColorMatchLuts(smartProject, dirname(output), { ffmpeg });
+  const extraLuts = new Map<number, string[]>();
+  const gradeNodeStages = new Map<number, GradeNodeStage[]>();
+  for (let i = 0; i < smartProject.clips.length; i++) {
+    const clip = smartProject.clips[i];
+    const merged: string[] = [...(colorMatchLuts.get(i) ?? [])];
+    if (clip.gradeNodes) {
+      const staged = writeGradeNodeFiles(clip.gradeNodes, i, dirname(output), smartProject.width, smartProject.height);
+      merged.push(staged.finalLut);
+      if (staged.masked.length > 0) gradeNodeStages.set(i, staged.masked);
+    }
+    if (merged.length > 0) extraLuts.set(i, merged);
+  }
+  if (extraLuts.size > 0) p3gInputs.extraLuts = extraLuts;
+  if (gradeNodeStages.size > 0) p3gInputs.gradeNodeStages = gradeNodeStages;
+  if (smartProject.clips.some((c) => c.trackedWindow)) {
+    const tw = new Map<number, { lut: string; mask: string }>();
+    for (let i = 0; i < smartProject.clips.length; i++) {
+      const clip = smartProject.clips[i];
+      if (!clip.trackedWindow) continue;
+      tw.set(i, await prepareTrackedWindow(clip, i, smartProject, dirname(output), { ffmpeg }));
+    }
+    p3gInputs.trackedWindows = tw;
+  }
+  if (smartProject.clips.some((c) => c.objectTrack)) {
+    const tracked = await prepareObjectTracks(smartProject, dirname(output), { ffmpeg, ffprobe: opts.ffprobe });
+    const tracks = new Map<number, import('./smartcut.js').SubjectTrack>();
+    const masks = new Map<number, string>();
+    for (const [i, prep] of tracked) {
+      tracks.set(i, prep.track);
+      if (prep.maskVideo) masks.set(i, prep.maskVideo);
+    }
+    p3gInputs.objectTracks = tracks;
+    if (masks.size > 0) p3gInputs.objectTrackMasks = masks;
+  }
+  await prepareClone(smartProject, { ffprobe: opts.ffprobe });
   const { filterComplex: graphComplex, videoOut, audioOut, extraInputs, audioStems } = buildFilterGraph(
     smartProject,
     opts.fontfile,
@@ -1086,6 +1290,7 @@ async function exportProjectInner(
     project.narration,
     project.surroundLayout,
     surroundInputChannels,
+    p3gInputs,
   );
   // Export-only switches: an output that is not mapped MUST still be
   // consumed, or FFmpeg rejects the graph ("output unconnected").
