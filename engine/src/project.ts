@@ -9,6 +9,9 @@
 
 import type { SubtitleItem } from './subtitles.js';
 import type { TextStylePreset } from './presets.js';
+import type { AdvancedColor } from './color.js';
+
+export type { AdvancedColor, Curves, CurvePoint, HslZoneAdjust, HueZoneName, WhiteBalance } from './color.js';
 
 /** Shape-mask (PiP) geometry. All fractions are of the frame (0..1). */
 export type MaskShape = 'circle' | 'ellipse' | 'rect' | 'roundedRect';
@@ -239,6 +242,14 @@ export interface Clip {
   loudnorm?: boolean;
   /** Colour adjustment (eq + colorbalance). */
   color?: ColorAdjust;
+  /**
+   * Advanced colour grading (P2, M4): HSL zone grading, RGB/master
+   * curves, white balance, imported .cube. Baked into a 3D LUT at
+   * export prep (prepareColorLuts) and applied with lut3d AFTER the
+   * P0 eq/colorbalance stage, so old and new fields compose. An
+   * imported .cube applies after the generated LUT.
+   */
+  advancedColor?: AdvancedColor;
   /** Play the whole clip backwards (video reverse + audio areverse). */
   reverse?: boolean;
   /**
