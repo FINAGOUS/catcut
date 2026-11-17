@@ -72,6 +72,22 @@ import {
 } from './silencecut.js';
 import { cutClipByText } from './textcut.js';
 import { remixAudio } from './remix.js';
+import {
+  separateVocals,
+  validateVocalsep,
+} from './vocalsep.js';
+import {
+  synthesizeSpeech,
+  validateTtsNarration,
+} from './tts.js';
+import {
+  validateOptimizedMedia,
+} from './optimized.js';
+import {
+  SURROUND_AC3_BITRATE,
+  surroundAudioCodec,
+  validateSurroundLayout,
+} from './surround.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -249,6 +265,86 @@ export {
   validateFrameInterp,
 } from './frameinterp.js';
 export type { FrameInterpOptions } from './frameinterp.js';
+export {
+  generateOptimizedMedia,
+  DNXHR_DEFAULT_PROFILE,
+  DNXHR_PROFILES,
+  OPTIMIZED_DURATION_TOLERANCE,
+  useOptimizedMedia,
+  validateOptimizedMedia,
+} from './optimized.js';
+export type { DnxhrProfile, GenerateOptimizedOptions, OptimizedInfo, OptimizedRef } from './optimized.js';
+export {
+  DEMUCS_DEFAULT_MODEL,
+  DEMUCS_MODELS,
+  DEMUCS_SETUP,
+  separateVocals,
+  validateVocalsep,
+  vocalsepStemDir,
+} from './vocalsep.js';
+export type { DemucsModel, SeparateVocalsOptions, VocalSepOptions, VocalsepResult } from './vocalsep.js';
+export {
+  synthesizeSpeech,
+  TTS_MAX_CHARS,
+  TTS_MAX_SEC_PER_CHAR,
+  TTS_MIN_SEC_PER_CHAR,
+  TTS_SETUP,
+  validateTtsNarration,
+} from './tts.js';
+export type { SynthesizeOptions, TtsNarration } from './tts.js';
+export {
+  repairFilter,
+  REPAIR_AFFTDN_NF_DB,
+  REPAIR_AFFTDN_NR,
+  REPAIR_HUM_CUTOFF_DEFAULT,
+  REPAIR_HUM_CUTOFF_MAX,
+  REPAIR_HUM_CUTOFF_MIN,
+  validateAudioRepair,
+} from './audiorepair.js';
+export type { AudioRepair } from './audiorepair.js';
+export {
+  SURROUND_AC3_BITRATE,
+  SURROUND_CHANNELS,
+  SURROUND_LAYOUTS,
+  surroundAudioCodec,
+  surroundUpmixFilter,
+  validateSurroundLayout,
+} from './surround.js';
+export type { SurroundLayout } from './surround.js';
+export {
+  clearRenderCache,
+  renderCacheFile,
+  renderCacheKey,
+  renderCacheSegment,
+  RENDER_CACHE_DURATION_TOLERANCE,
+  sliceProjectForCache,
+  validateCacheSegment,
+} from './rendercache.js';
+export type { RenderCacheOptions, RenderCacheResult, RenderCacheTask } from './rendercache.js';
+export {
+  aleTimecode,
+  archiveProject,
+  clearUncleanExit,
+  createSubclip,
+  detectCrashRecovery,
+  filterMediaLibrary,
+  ingestMedia,
+  latestAutosaveBackup,
+  markUncleanExit,
+  MEDIA_RATING_MAX,
+  MEDIA_RATING_MIN,
+  mediaLibraryDir,
+  mediaTypeOf,
+  readAutosaveBackup,
+  RELINK_DURATION_TOLERANCE,
+  relinkOfflineMedia,
+  scanWatchFolder,
+  toALE,
+  validateMediaItem,
+  validateMediaLibrary,
+  writeAutosaveBackup,
+} from './medialib.js';
+export type { IngestOptions, IngestResult, ArchiveResult, MediaFilterRule, MediaItem, MediaMetadata } from './medialib.js';
 export {
   beatSpeedNodes,
   clipBaseDuration,
@@ -472,6 +568,18 @@ export interface ExportOptions {
    * 'vtt', or 'ass'. Falls back to Project.subtitleSidecar when unset.
    */
   sidecarFormat?: SubtitleSidecarFormat;
+  /**
+   * Audio codec override (P3): 'aac' (default) or 'ac3'. A surround
+   * project (5.1/7.1) defaults to AC-3 unless this says otherwise
+   * (see surroundAudioCodec in surround.ts).
+   */
+  audioCodec?: 'aac' | 'ac3';
+  /** TTS helper script override (default scripts/tts.py). */
+  ttsScript?: string;
+  /** TTS model dir override (default test/models/vits-icefall-zh-aishell3). */
+  ttsModelDir?: string;
+  /** Vocal-separation helper script override (default scripts/vocalsep.py). */
+  vocalsepScript?: string;
 }
 
 export interface ExportReport {
@@ -674,6 +782,40 @@ async function applyTimelinePrep(
     const next: Clip = { ...clip, source: intermediate, in: 0, out: dur, remix: undefined };
     p = { ...p, clips: p.clips.map((c, j) => (j === i ? next : c)) };
   }
+  // Vocal separation (P3): each clip with vocalSep is separated with
+  // Demucs and re-pointed at an intermediate whose audio is the
+  // chosen stem (same pattern as the Remix intermediate above).
+  for (let i = 0; i < p.clips.length; i++) {
+    const clip = p.clips[i];
+    if (!clip.vocalSep) continue;
+    validateVocalsep(clip.vocalSep, clip.id);
+    if (clip.compound || clip.multicam) {
+      throw new Error(`clip ${clip.id}: vocalSep does not support compound/multicam clips yet`);
+    }
+    if (clip.speed !== 1 || clip.reverse || clip.freezeAt !== undefined ||
+      (clip.speedCurve ?? []).length > 0 || clip.beatSpeed) {
+      throw new Error(`clip ${clip.id}: vocalSep needs speed 1, no reverse/freeze/speedCurve/beatSpeed`);
+    }
+    const dur = clipDuration(clip);
+    const stems = await separateVocals(clip.source, join(dir, `vocalsep-c${i}`), {
+      python: opts.python,
+      model: clip.vocalSep.model,
+      script: opts.vocalsepScript,
+    });
+    const stemFile = clip.vocalSep.mode === 'vocals' ? stems.vocals : stems.accompaniment;
+    const intermediate = join(dir, `vocalsep-c${i}.mp4`);
+    await execFileAsync(ffmpeg, [
+      '-v', 'error',
+      '-ss', String(clip.in), '-i', clip.source,
+      '-ss', String(clip.in), '-i', stemFile,
+      '-t', String(dur),
+      '-map', '0:v', '-map', '1:a',
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac', '-b:a', '160k', '-shortest', '-y', intermediate,
+    ]);
+    const next: Clip = { ...clip, source: intermediate, in: 0, out: dur, vocalSep: undefined };
+    p = { ...p, clips: p.clips.map((c, j) => (j === i ? next : c)) };
+  }
   return p;
 }
 
@@ -776,6 +918,45 @@ async function exportProjectInner(
   // original in place of a lost proxy. The export itself always uses
   // clip.source (the relink); the proxy is only validated here.
   await validateProxies(project, opts.ffprobe);
+  // Optimized media (P3): a declared DNxHR file must exist and
+  // match its declaration, or the export is refused — never silently
+  // render the original in place of a lost intermediate. The export
+  // itself always uses clip.source; the optimized file is only
+  // validated here (same rule as proxies).
+  await validateOptimizedMedia(project, opts.ffprobe);
+  // Surround layout (P3): fail fast on a bad value, and probe the
+  // mix-bus channel count — the upmix mapping depends on it (a mono
+  // bus upmixed with the stereo mapping reads a non-existent c1 as
+  // silence: FC -6 dB, BR silent — measured 2026-11-18). All clips
+  // must agree (all mono or all stereo); a mixed timeline is
+  // rejected instead of silently dropping one side.
+  const surroundLayoutChecked = validateSurroundLayout(project.surroundLayout);
+  let surroundInputChannels: number | undefined;
+  if (surroundLayoutChecked && surroundLayoutChecked !== 'stereo') {
+    const channels = await prepareRoleAudio(project, opts.ffprobe);
+    const uniq = [...new Set(channels.values())];
+    if (uniq.length !== 1 || (uniq[0] !== 1 && uniq[0] !== 2)) {
+      throw new Error(
+        `surround ${surroundLayoutChecked}: all clips must have the same audio channel count (1 or 2), got ${[...channels.values()].join(', ')}`,
+      );
+    }
+    surroundInputChannels = uniq[0];
+  }
+  // TTS narration (P3): synthesize the voice-over BEFORE the graph
+  // build; the WAV is registered as an extra input and mixed over
+  // the assembled timeline. A missing sherpa-onnx/model throws here
+  // instead of exporting without the narration.
+  let narrationFile: string | undefined;
+  if (project.narration) {
+    validateTtsNarration(project.narration);
+    narrationFile = join(dirname(output), 'narration.wav');
+    await synthesizeSpeech(project.narration.text, narrationFile, {
+      python: opts.python,
+      speed: project.narration.speed,
+      script: opts.ttsScript,
+      modelDir: opts.ttsModelDir,
+    });
+  }
   // Roles: probe every clip's audio channel count BEFORE the graph
   // build (the pan variant depends on it — mono duplicates the single
   // channel, stereo pans two; see roles.ts).
@@ -901,6 +1082,10 @@ async function exportProjectInner(
     smartcutTracks,
     hdrMode,
     beautyMasks ? new Map([...beautyMasks].map(([k, v]) => [k, v.mask] as [number, string])) : undefined,
+    narrationFile,
+    project.narration,
+    project.surroundLayout,
+    surroundInputChannels,
   );
   // Export-only switches: an output that is not mapped MUST still be
   // consumed, or FFmpeg rejects the graph ("output unconnected").
@@ -959,7 +1144,15 @@ async function exportProjectInner(
     );
   }
   if (exportOnly !== 'video') {
-    args.push('-c:a', 'aac', '-b:a', opts.preset.audioBitrate);
+    // Audio codec (P3): surround layouts default to the built-in
+    // AC-3 encoder (patents expired); stereo stays AAC. An explicit
+    // opts.audioCodec wins. AC-3 bitrate follows the layout
+    // (384k for 5.1, 448k for 7.1); AAC keeps the preset bitrate.
+    const audioCodec = surroundAudioCodec(project.surroundLayout, opts.audioCodec);
+    const audioBitrate = audioCodec === 'ac3' && project.surroundLayout
+      ? SURROUND_AC3_BITRATE[project.surroundLayout]
+      : (project.surroundLayout && project.surroundLayout !== 'stereo' ? '320k' : opts.preset.audioBitrate);
+    args.push('-c:a', audioCodec, '-b:a', audioBitrate);
   }
   if (exportOnly === 'video') args.push('-an');
   if (exportOnly === 'audio') args.push('-vn');
