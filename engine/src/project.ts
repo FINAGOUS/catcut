@@ -14,6 +14,7 @@ import type { CompoundRef } from './compound.js';
 import type { Multicam } from './multicam.js';
 import type { RoleConfig } from './roles.js';
 import type { ProxyRef } from './proxy.js';
+import type { AudioFx } from './audiofx.js';
 
 export type { CompoundRef } from './compound.js';
 export type { Multicam, MulticamCut, MulticamSegment } from './multicam.js';
@@ -293,6 +294,16 @@ export interface Clip {
    */
   ducking?: DuckingOptions;
   /**
+   * Audio effects (P3, M4): built-in EQ (low/high cut + parametric
+   * bands), single-track compressor, voice effects (pitch / reverb /
+   * echo / chorus / tremolo / vibrato), one-key voice beautify, clip
+   * gain trim -30..+30 dB. See src/audiofx.ts for chain order and
+   * measured behaviour. The gain range here is NOT the Roles range
+   * (Roles gain stays -60..+12 dB, roles.ts) — the two must not be
+   * merged.
+   */
+  audioFx?: AudioFx;
+  /**
    * Audio-visual alignment (P1, M4): shift this clip's audio relative
    * to its video, in OUTPUT seconds (after speed). Positive = audio
    * plays later (delayed), negative = audio plays earlier. Set it from
@@ -381,6 +392,13 @@ export interface Project {
    * gain 0 / pan 0 / unmuted.
    */
   roles?: RoleConfig[];
+  /**
+   * Master output gain in dB, -30..+30 (same range as the clip gain
+   * trim, audiofx.ts CLIP_GAIN_DB_MIN/MAX; validated by
+   * validateMasterGainDb). Applied to the final mix after assembly
+   * and ducking — it is a trim, so it sits after loudnorm by design.
+   */
+  masterGainDb?: number;
 }
 
 export interface SpeedSegment {
