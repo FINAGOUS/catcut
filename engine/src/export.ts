@@ -83,6 +83,24 @@ export {
 } from './ducking.js';
 export type { DuckingOptions } from './project.js';
 export {
+  audioFxFilter,
+  BEAUTY_COMP_RATIO,
+  BEAUTY_COMP_THRESHOLD_DB,
+  BEAUTY_DEESSER_F,
+  BEAUTY_HIGHPASS_HZ,
+  BEAUTY_PRESENCE_DB,
+  BEAUTY_PRESENCE_HZ,
+  CLIP_GAIN_DB_MAX,
+  CLIP_GAIN_DB_MIN,
+  compressorFilter,
+  enhanceFilter,
+  eqFilter,
+  validateAudioFx,
+  validateMasterGainDb,
+  voiceFilter,
+} from './audiofx.js';
+export type { AudioCompressor, AudioEq, AudioFx, EqBand, VoiceEffect, VoiceEffectKind } from './audiofx.js';
+export {
   audioShiftFilter,
   estimateOffset,
   estimateOffsetFromSamples,
