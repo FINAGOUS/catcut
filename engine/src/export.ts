@@ -37,6 +37,10 @@ import {
   validateProxies,
 } from './proxy.js';
 import {
+  prepareSmartCut,
+  type SubjectTrack,
+} from './smartcut.js';
+import {
   DEFAULT_ASS_STYLE,
   subtitlesToASS,
   writeSRT,
@@ -198,6 +202,43 @@ export {
   validateProxies,
 } from './proxy.js';
 export type { GenerateProxyOptions, ProxyInfo, ProxyRef } from './proxy.js';
+export {
+  analyzeAudioSegments,
+  audioSegmentFeatures,
+  classifyFeatures,
+  decodeAudioMonoF32,
+  DEFAULT_SCENE_THRESHOLD,
+  detectScenes,
+  FOLLOW_ZOOM_MAX_SCALE,
+  followZoomKeys,
+  hasAudio,
+  MAX_REFRAME_KEYS,
+  prepareSmartCut,
+  prepareSubjectTracks,
+  reframeCropFilter,
+  scenesToSegments,
+  smartcutMaskVideoPath,
+  smoothTrack,
+  TRACK_MASS_MIN,
+  TRACK_SAMPLE_FPS,
+  trackCenterAt,
+  trackFromMaskVideo,
+  validateSceneThreshold,
+  validateSmartCut,
+} from './smartcut.js';
+export type {
+  AudioClass,
+  ClassifiedSegment,
+  DetectScenesOptions,
+  ReframeAspect,
+  SceneCut,
+  SceneSegment,
+  SmartCutPrepOptions,
+  SubjectTrack,
+  TrackFromMaskOptions,
+  TrackPoint,
+} from './smartcut.js';
+export type { FollowZoomOptions, ReframeOptions } from './project.js';
 
 export interface ExportPreset {
   name: string;
@@ -467,8 +508,29 @@ async function exportProjectInner(
   const colorLuts = project.clips.some((c) => c.advancedColor)
     ? prepareColorLuts(project, dirname(output))
     : undefined;
+  // Smart cut (P3): subject tracks (reframe/followZoom) + follow-zoom
+  // keyframe merge. Runs before the graph build; the tracking mask
+  // videos are kept next to the output as an audit trail. A clip that
+  // also has portraitCutout reuses that mask video for tracking
+  // (passed in as existingMasks) instead of running the model twice.
+  // The graph below is built from smartProject (followZoom clips carry
+  // their merged zoom keys); mask/portrait/colour preps above ran on
+  // `resolved` and stay valid — smart prep only adds zoom keys.
+  let smartcutTracks: Map<number, SubjectTrack> | undefined;
+  let smartProject = project;
+  if (project.clips.some((c) => c.reframe || c.followZoom)) {
+    const prep = await prepareSmartCut(project, dirname(output), {
+      python: opts.python,
+      script: opts.portraitScript,
+      model: opts.portraitModel,
+      ffmpeg,
+      ffprobe: opts.ffprobe,
+    }, portraitMasks);
+    smartcutTracks = prep.tracks;
+    smartProject = prep.project;
+  }
   const { filterComplex, videoOut, audioOut, extraInputs, audioStems } = buildFilterGraph(
-    project,
+    smartProject,
     opts.fontfile,
     opts.preset.lut,
     assFile,
@@ -478,6 +540,7 @@ async function exportProjectInner(
     colorLuts,
     roleAudioChannels,
     opts.roleStems,
+    smartcutTracks,
   );
   const args: string[] = [];
   project.clips.forEach((clip) => args.push('-i', clip.source));
