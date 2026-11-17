@@ -94,6 +94,25 @@ import {
   validateAudioRepair,
 } from './audiorepair.js';
 import {
+  cloneLaneSize,
+  inputColorConversion,
+  objectTrackDrawtextFilter,
+  outlineDilationFilter,
+  outputColorTag,
+  parseOutlineColor,
+  validateClipColorManagement,
+  validateCloneEffect,
+  validateColorMatch,
+  validateGradeNodes,
+  validateKeyOutline,
+  validateObjectTrack,
+  validateProjectColorManagement,
+  validateTrackedWindow,
+  type GradeNodeStage,
+  type P3gGraphInputs,
+  type TrackedWindowFiles,
+} from './p3g.js';
+import {
   surroundUpmixFilter,
   validateSurroundLayout,
   type SurroundLayout,
@@ -181,6 +200,12 @@ interface MaskCtx {
   /** `${clipIdx}:${angleIdx}` -> ffmpeg input index of a multicam angle
    *  (angle 0 rides on the clip's own input, so only angles 1.. are here). */
   multicamInputIndex: Map<string, number>;
+  /** clipIdx -> ffmpeg input index of its tracked-window mask video. */
+  trackedWindowInputIndex: Map<number, number>;
+  /** `${clipIdx}:${stageIdx}` -> ffmpeg input index of a masked node mask PNG. */
+  gradeNodeMaskIndex: Map<string, number>;
+  /** clipIdx -> ffmpeg input index of its object-track mosaic mask video. */
+  objectTrackMaskIndex: Map<number, number>;
 }
 
 /** ffmpeg input index for one multicam angle: angle 0 is the clip's own input. */
@@ -302,9 +327,28 @@ function clipVideoChains(
   colorLuts?: Map<number, string[]>,
   /** clipIdx -> smoothed subject track (prepareSubjectTracks output). */
   tracks?: Map<number, SubjectTrack>,
+  /** P3g wiring bundle (colour management / node LUTs / tracked
+   *  windows / object tracks / clone / outline). */
+  p3g?: P3gGraphInputs,
 ): string[] {
   const { width, height, fps } = project;
   const chains: string[] = [];
+
+  // P3g validation (fail fast, before any chain is built): a clip may
+  // use EITHER the P2a linear advancedColor stack OR a grade-node
+  // graph — mixing the two is a modelling error, not a blend.
+  if (clip.advancedColor && clip.gradeNodes) {
+    throw new Error(
+      `clip ${clip.id}: advancedColor and gradeNodes are mutually exclusive — use one grading model per clip`,
+    );
+  }
+  if (clip.colorManagement) validateClipColorManagement(clip.colorManagement, clip.id);
+  if (clip.colorMatch) validateColorMatch(clip.colorMatch, clip.id);
+  if (clip.gradeNodes) validateGradeNodes(clip.gradeNodes, clip.id);
+  if (clip.trackedWindow) validateTrackedWindow(clip.trackedWindow, clip.id);
+  if (clip.objectTrack) validateObjectTrack(clip.objectTrack, clip.id);
+  if (clip.clone) validateCloneEffect(clip.clone, clip);
+  if (clip.outline) validateKeyOutline(clip.outline, clip.id);
 
   // Beat-speed (P3): validate the block here; the nodes themselves
   // are derived inside speedCurveSegments (project.ts), so the
@@ -321,7 +365,29 @@ function clipVideoChains(
   // pad/fps stage below applies to it directly.
   const mc = validateMulticam(clip);
   let baseLabel: string;
-  if (clip.audioOnly) {
+  if (clip.clone) {
+    // Clone (P3): the same source duplicated into lanes, each lane a
+    // time-offset copy. Lanes are built from the RAW input (a trim on
+    // the assembled stream could not show different source times),
+    // scaled to lane size, then hstacked/vstacked to project size.
+    // The scale/pad stage below is then a no-op (already project size).
+    const { laneW, laneH } = cloneLaneSize(clip.clone, width, height);
+    const laneLabels = clip.clone.offsets.map((off, k) => {
+      chains.push(
+        `[${idx}:v]trim=start=${clip.in + off}:end=${clip.out + off},` +
+          `setpts=PTS-STARTPTS,scale=${laneW}:${laneH},fps=${fps}[vcl${idx}_${k}]`,
+      );
+      return `[vcl${idx}_${k}]`;
+    });
+    if (clip.clone.lanes === 2) {
+      chains.push(`${laneLabels.join('')}hstack=inputs=2[vb${idx}]`);
+    } else {
+      chains.push(`${laneLabels[0]}${laneLabels[1]}hstack=inputs=2[vclt${idx}_0]`);
+      chains.push(`${laneLabels[2]}${laneLabels[3]}hstack=inputs=2[vclt${idx}_1]`);
+      chains.push(`[vclt${idx}_0][vclt${idx}_1]vstack=inputs=2[vb${idx}]`);
+    }
+    baseLabel = `[vb${idx}]`;
+  } else if (clip.audioOnly) {
     // Linked selection off (P3): the video was deleted but the audio
     // kept — the video renders black for the clip's duration. No
     // visual effect can apply to a black frame, so they are rejected.
@@ -456,9 +522,26 @@ function clipVideoChains(
   ];
   chains.push(baseParts.join(',') + `[vbs${idx}]`);
 
+  // Colour management input conversion (P3): the clip's footage is
+  // brought into the project's working space FIRST, before beauty /
+  // mask / chroma / portrait see it (those stages assume working-space
+  // values). zscale path (log100/hlg/pq) and/or a baked transfer LUT
+  // (slog3/srgb) — both prepared by export.ts.
+  let picLabel = `[vbs${idx}]`;
+  if (clip.colorManagement?.inputSpace) {
+    const working = project.colorManagement?.workingSpace ?? 'rec709';
+    const conv = inputColorConversion(clip.colorManagement.inputSpace, working);
+    const cmFilters: string[] = [];
+    if (conv.filter) cmFilters.push(conv.filter);
+    for (const lutPath of p3g?.colorMgmtLuts?.get(idx) ?? []) cmFilters.push(lut3dFilter(lutPath));
+    if (cmFilters.length > 0) {
+      chains.push(`${picLabel}${cmFilters.join(',')}[vcm${idx}]`);
+      picLabel = `[vcm${idx}]`;
+    }
+  }
+
   // Shape-mask PiP (P1): composite first, then zoom/rotation/colour act as
   // camera effects on the composited frame. Without a mask this is a no-op.
-  let picLabel = `[vbs${idx}]`;
   // Face beautify (P3): retouch the person region before the mask /
   // chroma / portrait stages (they all still see a normal picture).
   // Strength 0 skips the stage (bit-identical to no beauty) but the
@@ -546,8 +629,27 @@ function clipVideoChains(
     }
     for (const p of luts) parts.push(lut3dFilter(p));
   }
+  // P3g extra LUTs: colour-match LUT, then the baked node-graph final
+  // LUT (unmasked graph). The project preset LUT still applies last.
+  for (const p of p3g?.extraLuts?.get(idx) ?? []) parts.push(lut3dFilter(p));
   if (lut) parts.push(`lut3d=${lut}`);
   const textFilters = (clip.text ?? []).map((t) => drawtextFilter(t, fontfile));
+  // Object-tracking sticker (P3): a text that follows the tracked
+  // centre (drawtext x/y re-evaluate per frame — probe-p3g2).
+  const objTrack = p3g?.objectTracks?.get(idx);
+  if (objTrack && clip.objectTrack?.stickerText) {
+    textFilters.push(
+      objectTrackDrawtextFilter(
+        objTrack,
+        clip.objectTrack.stickerText,
+        fontfile,
+        width,
+        height,
+        40,
+        'white',
+      ),
+    );
+  }
   // Clip-level subtitles (clip-local output time, lower-third style unless
   // the clip carries its own subtitleStyle, e.g. from a talk preset).
   if (clip.subtitles && clip.subtitles.length > 0) {
@@ -583,6 +685,7 @@ function clipVideoChains(
   }
 
   const opacity = clip.opacity ?? [];
+  let cur: string;
   if (opacity.length >= 1) {
     // Single video track: there is nothing underneath to reveal, so opacity
     // is a fade toward black. Implemented with split + black branch + blend:
@@ -598,16 +701,37 @@ function clipVideoChains(
     chains.push(
       `[va${idx}][blk${idx}]blend=all_expr='A*(${oExpr})+B*(1-(${oExpr}))'[vop${idx}]`,
     );
-    if (textFilters.length > 0 || flashFilters.length > 0) {
-      chains.push(`[vop${idx}]${[...textFilters, ...flashFilters].join(',')}[v${idx}]`);
-    } else {
-      chains.push(`[vop${idx}]null[v${idx}]`);
-    }
-    return chains;
+    cur = `[vop${idx}]`;
+  } else {
+    chains.push(picChain + `[vpic${idx}]`);
+    cur = `[vpic${idx}]`;
   }
-  chains.push(
-    picChain + (textFilters.length > 0 || flashFilters.length > 0 ? `,${[...textFilters, ...flashFilters].join(',')}` : '') + `[v${idx}]`,
-  );
+  // P3g post stages (in order): tracked grading window -> object mosaic
+  // -> masked node stages -> key outline. Each consumes its input label
+  // exactly once (split where a label feeds two filters). Text and
+  // beat-flash are applied last, on top of all of them.
+  const twFiles = p3g?.trackedWindows?.get(idx);
+  if (twFiles) {
+    if (!maskCtx) throw new Error(`clip ${clip.id}: tracked window needs the graph context`);
+    cur = applyTrackedWindowStage(chains, cur, idx, twFiles, maskCtx);
+  }
+  const objMaskIdx = maskCtx?.objectTrackMaskIndex.get(idx);
+  if (objMaskIdx !== undefined && clip.objectTrack?.mosaicSize) {
+    cur = applyMosaicStage(chains, cur, idx, objMaskIdx, clip.objectTrack.mosaicSize, width);
+  }
+  const nodeStages = p3g?.gradeNodeStages?.get(idx);
+  if (nodeStages && nodeStages.length > 0) {
+    if (!maskCtx) throw new Error(`clip ${clip.id}: grade node stages need the graph context`);
+    cur = applyGradeNodeStages(chains, cur, idx, nodeStages, maskCtx);
+  }
+  if (clip.outline) {
+    cur = applyOutlineStage(chains, cur, clip, idx, project, maskCtx);
+  }
+  if (textFilters.length > 0 || flashFilters.length > 0) {
+    chains.push(`${cur}${[...textFilters, ...flashFilters].join(',')}[v${idx}]`);
+  } else {
+    chains.push(`${cur}null[v${idx}]`);
+  }
   return chains;
 }
 
@@ -836,6 +960,146 @@ function applyMaskStage(
   return `[vmkc${idx}]`;
 }
 
+/**
+ * Tracked grading window stage (P3). The graded copy (lut3d) is
+ * merged back through the moving mask video with maskedmerge — the
+ * mask video's framesync repeats its last frame, so a 5 fps mask
+ * covers a 30 fps timeline (same pattern as the P1e portrait masks).
+ */
+function applyTrackedWindowStage(
+  chains: string[],
+  input: string,
+  idx: number,
+  files: TrackedWindowFiles,
+  ctx: MaskCtx,
+): string {
+  const maskIdx = ctx.trackedWindowInputIndex.get(idx);
+  if (maskIdx === undefined) {
+    throw new Error(`clip ${idx}: tracked-window mask input not registered`);
+  }
+  chains.push(`${input}split[twb${idx}][twg${idx}]`);
+  chains.push(`[twg${idx}]${lut3dFilter(files.lut)}[twgl${idx}]`);
+  chains.push(`[twb${idx}][twgl${idx}][${maskIdx}:v]maskedmerge,format=yuv420p[twout${idx}]`);
+  return `[twout${idx}]`;
+}
+
+/**
+ * Object-tracking mosaic stage (P3). The blurred copy is merged back
+ * through the moving mask video — same maskedmerge pattern as the
+ * tracked window. Radius scales with the mosaic size.
+ */
+function applyMosaicStage(
+  chains: string[],
+  input: string,
+  idx: number,
+  maskIdx: number,
+  mosaicSize: number,
+  projectWidth: number,
+): string {
+  const radius = Math.max(2, Math.round((mosaicSize * projectWidth) / 8));
+  chains.push(`${input}split[omb${idx}][omg${idx}]`);
+  chains.push(`[omg${idx}]boxblur=luma_radius=${radius}:luma_power=2[ombl${idx}]`);
+  chains.push(`[omb${idx}][ombl${idx}][${maskIdx}:v]maskedmerge,format=yuv420p[omout${idx}]`);
+  return `[omout${idx}]`;
+}
+
+/**
+ * Masked node-graph stages (P3). Each masked node: split the stream
+ * into three (base for the blend, base for the merge, graded copy),
+ * apply the node's baked LUT, blend with its blend mode / opacity,
+ * then maskedmerge through the node's mask PNG. Every label is
+ * consumed exactly once.
+ */
+function applyGradeNodeStages(
+  chains: string[],
+  input: string,
+  idx: number,
+  stages: GradeNodeStage[],
+  ctx: MaskCtx,
+): string {
+  let cur = input;
+  stages.forEach((st, k) => {
+    const maskIdx = ctx.gradeNodeMaskIndex.get(`${idx}:${k}`);
+    if (maskIdx === undefined) {
+      throw new Error(`clip ${idx}: grade-node mask ${k} input not registered`);
+    }
+    // Split outputs by role, in order: [gna] base for the mode blend,
+    // [gnb] graded copy, [gnc] base for the maskedmerge, [gnd] base
+    // for the opacity blend (only when both blends run). Every output
+    // is consumed exactly once.
+    const needMode = st.blend !== 'normal';
+    const needOpacity = st.opacity < 1;
+    const outs =
+      needMode && needOpacity ? ['gna', 'gnb', 'gnc', 'gnd']
+      : needMode || needOpacity ? ['gna', 'gnb', 'gnc']
+      : ['gnb', 'gnc'];
+    chains.push(`${cur}split=${outs.length}${outs.map((o) => `[${o}${idx}_${k}]`).join('')}`);
+    chains.push(`[gnb${idx}_${k}]${lut3dFilter(st.lut)}[gnl${idx}_${k}]`);
+    let graded = `[gnl${idx}_${k}]`;
+    if (needMode) {
+      chains.push(`[gna${idx}_${k}]${graded}blend=all_mode=${st.blend}[gnbl${idx}_${k}]`);
+      graded = `[gnbl${idx}_${k}]`;
+    }
+    if (needOpacity) {
+      const o = st.opacity;
+      const base = needMode ? `[gnd${idx}_${k}]` : `[gna${idx}_${k}]`;
+      chains.push(
+        `${base}${graded}blend=all_expr='A*(${1 - o})+B*(${o})'[gno${idx}_${k}]`,
+      );
+      graded = `[gno${idx}_${k}]`;
+    }
+    // The node mask is an RGBA PNG (mask in ALPHA, RGB white — same
+    // as the P1 clip masks): maskedmerge reads luma, so extract the
+    // alpha first, or the grade leaks to the whole frame (verify-p3g:
+    // corner G 49 instead of 0 with the mask applied everywhere).
+    chains.push(`[${maskIdx}:v]alphaextract[gnm${idx}_${k}]`);
+    chains.push(`[gnc${idx}_${k}]${graded}[gnm${idx}_${k}]maskedmerge,format=yuv420p[gnout${idx}_${k}]`);
+    cur = `[gnout${idx}_${k}]`;
+  });
+  return cur;
+}
+
+/**
+ * Key outline stage (P3). The ring is the portrait mask dilated by
+ * `width` minus the mask itself (blend difference — the dilated mask
+ * is a superset, so |D-M| = D-M). The ring becomes the alpha of a
+ * solid-colour frame, overlaid on the cut-out composite. Requires
+ * portraitCutout — the outline is drawn from the P1e mask alpha.
+ */
+function applyOutlineStage(
+  chains: string[],
+  input: string,
+  clip: Clip,
+  idx: number,
+  project: Project,
+  ctx?: MaskCtx,
+): string {
+  const outline = clip.outline as NonNullable<Clip['outline']>;
+  validateKeyOutline(outline, clip.id);
+  if (!clip.portraitCutout) {
+    throw new Error(`clip ${clip.id}: outline needs portraitCutout (no alpha to stroke)`);
+  }
+  const maskIdx = ctx?.portraitInputIndex.get(idx);
+  if (maskIdx === undefined) {
+    throw new Error(
+      `clip ${clip.id}: portrait mask video not prepared; call preparePortraitMasks first`,
+    );
+  }
+  const { width, height, fps } = project;
+  const [r, g, b] = parseOutlineColor(outline.color);
+  const hex = `0x${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+  const dur = clipDuration(clip);
+  chains.push(
+    `[${maskIdx}:v]fps=fps=${fps},format=gray,${outlineDilationFilter(outline.width)}[odil${idx}]`,
+  );
+  chains.push(`[${maskIdx}:v]fps=fps=${fps},format=gray[omsk${idx}]`);
+  chains.push(`[odil${idx}][omsk${idx}]blend=all_mode=difference[oring${idx}]`);
+  chains.push(`color=c=${hex}:s=${width}x${height}:r=${fps}:d=${dur},format=yuva420p[ocol${idx}]`);
+  chains.push(`[ocol${idx}][oring${idx}]alphamerge[ocolm${idx}]`);
+  chains.push(`${input}[ocolm${idx}]overlay=0:0,format=yuv420p[olout${idx}]`);
+  return `[olout${idx}]`;
+}
+
 function atempoChain(speed: number): string {
   // atempo accepts 0.5..100 per filter; chain for values outside that.
   const factors: number[] = [];
@@ -1053,9 +1317,16 @@ export function buildFilterGraph(
   /** Mix-bus input channel count for the surround upmix (1 = mono,
    *  2 = stereo; probed by export.ts). Defaults to 2 (stereo). */
   surroundInputChannels?: number,
+  /** P3g wiring bundle (colour management / node LUTs / tracked
+   *  windows / object tracks / clone / outline). */
+  p3g?: P3gGraphInputs,
 ): FilterGraph {
   const n = project.clips.length;
   if (n === 0) throw new Error('project has no clips');
+  // Project colour management: inputSpace belongs on clips, not the
+  // project — fail here so a direct graph build (not just the export
+  // prep) rejects it.
+  validateProjectColorManagement(project.colorManagement);
   // Timeline markers / adjustment layers (P3): fail fast on an
   // out-of-range marker or layer span instead of rendering a project
   // whose chapters point past the end.
@@ -1083,6 +1354,9 @@ export function buildFilterGraph(
     portraitInputIndex: new Map(),
     beautyInputIndex: new Map(),
     multicamInputIndex: new Map(),
+    trackedWindowInputIndex: new Map(),
+    gradeNodeMaskIndex: new Map(),
+    objectTrackMaskIndex: new Map(),
   };
   project.clips.forEach((clip, i) => {
     if (!clip.mask) return;
@@ -1117,6 +1391,27 @@ export function buildFilterGraph(
     maskCtx.beautyInputIndex.set(i, n + maskCtx.extraInputs.length);
     maskCtx.extraInputs.push(file);
   });
+  // P3g inputs: tracked-window mask videos, masked node-graph mask
+  // PNGs, object-track mosaic mask videos — same registration pattern.
+  project.clips.forEach((clip, i) => {
+    const f = p3g?.trackedWindows?.get(i);
+    if (!f) return;
+    maskCtx.trackedWindowInputIndex.set(i, n + maskCtx.extraInputs.length);
+    maskCtx.extraInputs.push(f.mask);
+  });
+  project.clips.forEach((clip, i) => {
+    const stages = p3g?.gradeNodeStages?.get(i) ?? [];
+    stages.forEach((st, k) => {
+      maskCtx.gradeNodeMaskIndex.set(`${i}:${k}`, n + maskCtx.extraInputs.length);
+      maskCtx.extraInputs.push(st.mask);
+    });
+  });
+  project.clips.forEach((clip, i) => {
+    const m = p3g?.objectTrackMasks?.get(i);
+    if (!m) return;
+    maskCtx.objectTrackMaskIndex.set(i, n + maskCtx.extraInputs.length);
+    maskCtx.extraInputs.push(m);
+  });
   // Multicam angles: angle 0 is the clip's own input (clip.source), so
   // only angles 1.. are registered here as extra inputs. Shape errors
   // fail fast here, before any chain is built.
@@ -1147,7 +1442,7 @@ export function buildFilterGraph(
   }
   const chains: string[] = [];
   project.clips.forEach((clip, i) => {
-    chains.push(...clipVideoChains(clip, i, project, fontfile, lut, maskCtx, stabilizeTrf, colorLuts, smartcutTracks));
+    chains.push(...clipVideoChains(clip, i, project, fontfile, lut, maskCtx, stabilizeTrf, colorLuts, smartcutTracks, p3g));
     chains.push(...clipAudioChains(clip, i, maskCtx));
   });
 
@@ -1348,6 +1643,17 @@ export function buildFilterGraph(
   if (hdrFilter) {
     chains.push(`[${videoOut.slice(1, -1)}]${hdrFilter}[vhdr]`);
     videoOut = '[vhdr]';
+  }
+  // Colour management output conversion (P3): working -> delivery
+  // space, applied last (after subtitle burn and HDR, like the HDR
+  // block), with a setparams tag so the file carries the space.
+  if (p3g?.outputLut) {
+    chains.push(`[${videoOut.slice(1, -1)}]${lut3dFilter(p3g.outputLut)}[voutc]`);
+    videoOut = '[voutc]';
+  }
+  if (p3g?.outputSpace) {
+    chains.push(`[${videoOut.slice(1, -1)}]${outputColorTag(p3g.outputSpace)}[voutt]`);
+    videoOut = '[voutt]';
   }
   return { filterComplex: chains.join(';'), videoOut, audioOut, extraInputs: maskCtx.extraInputs, audioStems };
 }
