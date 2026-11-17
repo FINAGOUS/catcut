@@ -16,6 +16,7 @@ import {
   preparePortraitMasks,
 } from './portrait.js';
 import { dirname } from 'node:path';
+import { prepareColorLuts } from './color.js';
 import {
   DEFAULT_ASS_STYLE,
   subtitlesToASS,
@@ -93,6 +94,29 @@ export {
   validatePortraitCutout,
 } from './portrait.js';
 export type { PortraitCutout, PortraitRunSummary, PreparePortraitOptions } from './portrait.js';
+export {
+  analyzeFrame,
+  analyzeFrames,
+  analyzeRgbFrame,
+  renderScopeImage,
+} from './scopes.js';
+export type { AnalyzeFrameOptions, ChannelStats, LumaStats, ScopeAggregate, ScopeImageKind, ScopeResult } from './scopes.js';
+export {
+  applyAdvancedColorToRgb,
+  applyCurve,
+  buildColorLut,
+  hslToRgb,
+  HSL_ZONE_HALF_WIDTH,
+  HUE_ZONE_CENTER,
+  lut3dFilter,
+  lutToCube,
+  parseCube,
+  prepareColorLuts,
+  rgbToHsl,
+  validateAdvancedColor,
+  writeColorLutFile,
+} from './color.js';
+export type { AdvancedColor, BuiltLut, Curves, CurvePoint, HslZoneAdjust, HueZoneName, ParsedCube, WhiteBalance } from './color.js';
 
 export interface ExportPreset {
   name: string;
@@ -262,6 +286,13 @@ async function exportProjectInner(
         ffprobe: opts.ffprobe,
       })
     : undefined;
+  // Advanced colour (P2): bake HSL/curves/white-balance into a .cube
+  // per clip BEFORE the main export; the .cube files are kept next to
+  // the output as an audit trail (like the mask PNGs). Imported .cube
+  // files are validated here too — a bad file throws at prep time.
+  const colorLuts = project.clips.some((c) => c.advancedColor)
+    ? prepareColorLuts(project, dirname(output))
+    : undefined;
   const { filterComplex, videoOut, audioOut, extraInputs } = buildFilterGraph(
     project,
     opts.fontfile,
@@ -270,6 +301,7 @@ async function exportProjectInner(
     maskFiles,
     stabTrf,
     portraitMasks,
+    colorLuts,
   );
   const args: string[] = [];
   project.clips.forEach((clip) => args.push('-i', clip.source));
