@@ -28,6 +28,15 @@ import {
   prepareMulticam,
 } from './multicam.js';
 import {
+  prepareRoleAudio,
+  rolesInUse,
+} from './roles.js';
+import {
+  generateProxy,
+  useProxies,
+  validateProxies,
+} from './proxy.js';
+import {
   DEFAULT_ASS_STYLE,
   subtitlesToASS,
   writeSRT,
@@ -143,6 +152,34 @@ export {
   validateMulticam,
 } from './multicam.js';
 export type { Multicam, MulticamCut, MulticamSegment } from './multicam.js';
+export {
+  BUILTIN_ROLES,
+  DEFAULT_ROLE,
+  effectiveMute,
+  panGains,
+  prepareRoleAudio,
+  probeAudioChannels,
+  resolveRoleConfigs,
+  ROLE_GAIN_DB_MAX,
+  ROLE_GAIN_DB_MIN,
+  ROLE_PAN_MAX,
+  ROLE_PAN_MIN,
+  roleFilter,
+  roleOfClip,
+  rolesInUse,
+  validateRoles,
+} from './roles.js';
+export type { ResolvedRoleConfig, RoleConfig, RoleName } from './roles.js';
+export {
+  generateProxy,
+  PROXY_DEFAULT_CRF,
+  PROXY_DEFAULT_HEIGHT,
+  PROXY_DEFAULT_WIDTH,
+  PROXY_DURATION_TOLERANCE,
+  useProxies,
+  validateProxies,
+} from './proxy.js';
+export type { GenerateProxyOptions, ProxyInfo, ProxyRef } from './proxy.js';
 
 export interface ExportPreset {
   name: string;
@@ -228,6 +265,13 @@ export interface ExportOptions {
   portraitModel?: string;
   /** Portrait helper script override (default: scripts/portrait_segment.py). */
   portraitScript?: string;
+  /**
+   * Role stems (P2): also write one audio stem per used role after the
+   * mix (output stream order: video, mix, stem 1..N in first-appearance
+   * role order; see ExportReport.audioStems). Throws when the project
+   * uses no roles.
+   */
+  roleStems?: boolean;
 }
 
 export interface ExportReport {
@@ -235,6 +279,9 @@ export interface ExportReport {
   expectedDuration: number;
   actual: ProbeResult;
   durationError: number;
+  /** Role stem names in output stream order (roleStems only): the mix
+   *  is audio stream 0, stems are streams 1..N in this order. */
+  audioStems?: string[];
 }
 
 /** Render a project to an MP4 file and verify the result with ffprobe. */
@@ -347,6 +394,17 @@ async function exportProjectInner(
   // Compound clips are already resolved by renderProjectWithStab, so
   // every clip here has a real source file.
   await prepareMulticam(project, opts.ffprobe);
+  // Proxy editing: a declared proxy must exist and match its
+  // declaration, or the export is refused — never silently render the
+  // original in place of a lost proxy. The export itself always uses
+  // clip.source (the relink); the proxy is only validated here.
+  await validateProxies(project, opts.ffprobe);
+  // Roles: probe every clip's audio channel count BEFORE the graph
+  // build (the pan variant depends on it — mono duplicates the single
+  // channel, stereo pans two; see roles.ts).
+  const roleAudioChannels = rolesInUse(project)
+    ? await prepareRoleAudio(project, opts.ffprobe)
+    : undefined;
   // Project-level subtitles: write the .ass karaoke file next to the output
   // and burn it with the ASS filter; clip-level subtitles are already in
   // the per-clip chains (drawtext). Keep the .ass file: it is the audit
@@ -391,7 +449,7 @@ async function exportProjectInner(
   const colorLuts = project.clips.some((c) => c.advancedColor)
     ? prepareColorLuts(project, dirname(output))
     : undefined;
-  const { filterComplex, videoOut, audioOut, extraInputs } = buildFilterGraph(
+  const { filterComplex, videoOut, audioOut, extraInputs, audioStems } = buildFilterGraph(
     project,
     opts.fontfile,
     opts.preset.lut,
@@ -400,6 +458,8 @@ async function exportProjectInner(
     stabTrf,
     portraitMasks,
     colorLuts,
+    roleAudioChannels,
+    opts.roleStems,
   );
   const args: string[] = [];
   project.clips.forEach((clip) => args.push('-i', clip.source));
@@ -407,6 +467,17 @@ async function exportProjectInner(
   args.push(
     '-filter_complex', filterComplex,
     '-map', videoOut, '-map', audioOut,
+  );
+  // Role stems (roleStems only): one extra audio stream per role, in
+  // first-appearance order (mix is audio stream 0, stems are 1..N).
+  const stemRoles: string[] = [];
+  if (audioStems) {
+    for (const [roleName, label] of audioStems) {
+      args.push('-map', label);
+      stemRoles.push(roleName);
+    }
+  }
+  args.push(
     '-c:v', 'libx264', '-preset', opts.preset.preset, '-crf', String(opts.preset.crf),
     '-pix_fmt', 'yuv420p', '-r', String(opts.preset.fps),
     '-c:a', 'aac', '-b:a', opts.preset.audioBitrate,
@@ -420,5 +491,6 @@ async function exportProjectInner(
     expectedDuration,
     actual,
     durationError: Math.abs(actual.duration - expectedDuration),
+    ...(stemRoles.length > 0 ? { audioStems: stemRoles } : {}),
   };
 }
