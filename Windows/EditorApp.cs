@@ -78,6 +78,7 @@ namespace DogSC.Replica {
   readonly List<BitmapSource> thumbs=new List<BitmapSource>(); readonly MediaPlayer audio=new MediaPlayer(); readonly MediaPlayer musicPlayer=new MediaPlayer();
   double position;int selectedCut=-1,selectedZoom=-1;string tab="画面",frameTab="布局";bool dirty,dark,playing,snap=true,ripple=true,closing;
   CancellationTokenSource playback;RecorderWindow recorder;MotionEvaluator motion;
+  readonly DispatcherTimer autosaveTimer=new DispatcherTimer();bool recoveryChecked;
   int renderVersion;bool rendering;byte[] cachedFrame;double cachedTime=-100;string cachedSource="";internal int playbackTestDelay;
   public Studio() {
    string interfaceFile=Path.GetFullPath(Path.Combine(Media.Root,"Editor.xaml"));using(var source=File.OpenRead(interfaceFile))Window=(Window)XamlReader.Load(source,new ParserContext {BaseUri=new Uri(interfaceFile)});
@@ -103,11 +104,18 @@ namespace DogSC.Replica {
     if((Keyboard.Modifiers&ModifierKeys.Control)!=0){if(e.Key==Key.O)Open();else if(e.Key==Key.S)Save();else if(e.Key==Key.Z)History(false);else if(e.Key==Key.Y)History(true);else if(e.Key==Key.B)Split();else return;e.Handled=true;}
     else if(e.Key==Key.Space){if(playing)Pause();else Play();e.Handled=true;}else if(e.Key==Key.Delete){Delete();e.Handled=true;}else if(e.Key==Key.Left){Seek(position-1.0/30);e.Handled=true;}else if(e.Key==Key.Right){Seek(position+1.0/30);e.Handled=true;}
    };
-   Window.Closing+=(s,e)=>{if(closing)return;if(recorder!=null&&recorder.IsRecording){e.Cancel=true;AppDialogs.Notice(Window,"正在录制","请先停止录制，素材保存完成后再关闭。 ");return;}if(!MayDiscard()){e.Cancel=true;return;}Pause();audio.Close();if(previewSurface!=null)previewSurface.Dispose();if(recorder!=null)recorder.Close();closing=true;};
+   Window.Closing+=(s,e)=>{if(closing)return;if(recorder!=null&&recorder.IsRecording){e.Cancel=true;AppDialogs.Notice(Window,"正在录制","请先停止录制，素材保存完成后再关闭。 ");return;}if(!MayDiscard()){e.Cancel=true;return;}Pause();audio.Close();if(previewSurface!=null)previewSurface.Dispose();if(recorder!=null)recorder.Close();AutoSave.ClearUnclean();closing=true;};
    foreach(string name in new[]{"ProjectMenu","Ratio","Presets"})UI.MenuKeyboardEntry(Find<Button>(name));
    Find<Button>("ProjectMenu").Content=UI.IconLabel("folder");Find<Button>("Undo").Content=UI.IconLabel("undo");Find<Button>("Redo").Content=UI.IconLabel("redo");Find<Button>("Export").Content=UI.IconLabel("export","导出");Find<Button>("Split").Content=UI.IconLabel("cut");Find<Button>("Delete").Content=UI.IconLabel("trash");Find<Button>("Theme").Content=UI.IconLabel("sun");
    timeline.MouseMove+=(s,e)=>{if(Doc!=null&&e.LeftButton==MouseButtonState.Pressed&&Mouse.Captured==null){Pause();position=EditDocument.Clamp(e.GetPosition(timeline).X/TimelineWidth*Doc.Length,0,Math.Max(0,Doc.Length-.001));Update();DrawPlayhead();RefreshPreview();}};
    InitializePolish();BuildRail();BuildInspector();Update();
+   // W4：自动保存定时器 + 崩溃标记（启动时写、正常退出时清）+ 启动恢复检查。
+   AutoSave.LoadSettings();
+   autosaveTimer.Interval=TimeSpan.FromMinutes(AutoSave.IntervalMinutes);
+   autosaveTimer.Tick+=(s,e)=>AutoSaveTick();
+   autosaveTimer.Start();
+   AutoSave.MarkUnclean();
+   Window.Loaded+=(s,e)=>CheckCrashRecovery();
   }
   public T Find<T>(string name) where T:class{return Window.FindName(name) as T;}
   void Bind(string name,Action action){Find<Button>(name).Click+=(s,e)=>{try{action();}catch(Exception ex){Error(ex);}};}
@@ -127,18 +135,43 @@ namespace DogSC.Replica {
     }else d=await Task.Run(()=>StudioMedia.Import(path));
     Doc=d;FilePath=saved;undo.Clear();redo.Clear();dirty=false;position=0;selectedCut=selectedZoom=selectedOverlay=selectedScreen=-1;cachedFrame=null;thumbs.Clear();waveform=null;waveformView=false;if(motion!=null)motion.Dispose();motion=new MotionEvaluator(Doc);
     audio.Open(new Uri(Doc.Source));audio.Volume=Doc.Style.Volume;audio.MediaFailed+=(s,e)=>Status("音频预览不可用；视频预览与导出仍可使用。");
-    Update();BuildInspector();RefreshMediaLibrary();DrawTimeline();await RequestPreview();Status("已打开 · "+Doc.Width+" × "+Doc.Height+" · "+UI.Time(Doc.Duration));LoadThumbnails();
+    Update();BuildInspector();RefreshMediaLibrary();DrawTimeline();await RequestPreview();Status("已打开 · "+Doc.Width+" × "+Doc.Height+" · "+UI.Time(Doc.Duration));try{AutoSave.NoteSession(AutoSave.BackupDirFor(FilePath,Doc));}catch{}LoadThumbnails();
    }catch(Exception ex){Error(ex);}
   }
   public void SetDocument(EditDocument d){Doc=d;motion=new MotionEvaluator(d);position=0;dirty=false;thumbs.Clear();waveform=null;waveformView=false;musicPlayer.Close();Update();BuildInspector();RefreshMediaLibrary();DrawTimeline();RefreshPreview();LoadThumbnails();}
   async void LoadThumbnails(){if(Doc==null||recordingWorkSuspended)return;if(thumbnailWork!=null)thumbnailWork.Cancel();var work=new CancellationTokenSource();thumbnailWork=work;var token=work.Token;thumbnailJobs++;var doc=Doc;try{for(int i=thumbs.Count;i<8;i++){token.ThrowIfCancellationRequested();double t=Math.Min(doc.Duration-.05,doc.Duration*i/8);var b=await Task.Run(()=>UI.Image(StudioMedia.Frame(doc.EffectiveSource(),t,200,token,doc.Grade.VideoFilter())));token.ThrowIfCancellationRequested();if(Doc==null||Doc.Source!=doc.Source)return;thumbs.Add(b);DrawTimeline();}var wave=await Task.Run(()=>ReadWaveform(doc,token));token.ThrowIfCancellationRequested();if(Doc!=null&&Doc.Source==doc.Source){waveform=wave;DrawTimeline();}}catch{}finally{thumbnailJobs--;if(thumbnailWork==work)thumbnailWork=null;work.Dispose();}}
   async void Open(){var dlg=new Microsoft.Win32.OpenFileDialog {Filter="视频或 Windows 项目|*.mp4;*.mov;*.mkv;*.webm;*.dogscwin|所有文件|*.*"};if(dlg.ShowDialog(Window)==true)await Load(dlg.FileName);}
-  bool Save(){if(Doc==null)return true;try{if(FilePath==null){var dlg=new Microsoft.Win32.SaveFileDialog {Filter="DogSC Windows 项目|*.dogscwin",FileName=Doc.Name+".dogscwin"};if(dlg.ShowDialog(Window)!=true)return false;FilePath=dlg.FileName;}Doc.Save(FilePath);dirty=false;Update();Status("项目已保存 · "+FilePath);return true;}catch(Exception ex){Error(ex);return false;}}
+  bool Save(){if(Doc==null)return true;try{if(FilePath==null){var dlg=new Microsoft.Win32.SaveFileDialog {Filter="DogSC Windows 项目|*.dogscwin",FileName=Doc.Name+".dogscwin"};if(dlg.ShowDialog(Window)!=true)return false;FilePath=dlg.FileName;}Doc.Save(FilePath);dirty=false;Update();try{AutoSave.NoteSession(AutoSave.BackupDirFor(FilePath,Doc));}catch{}Status("项目已保存 · "+FilePath);return true;}catch(Exception ex){Error(ex);return false;}}
+  static bool HeadlessArgs(){foreach(var a in Environment.GetCommandLineArgs())if(a.StartsWith("--")&&(a.Contains("test")||a.Contains("snapshot")))return true;return false;}
+  void AutoSaveTick(){
+   if(Doc==null||!dirty)return;
+   try{
+    string path=AutoSave.WriteBackup(Doc,FilePath);
+    AutoSave.Prune(AutoSave.BackupDirFor(FilePath,Doc),AutoSave.KeepCount);
+    Status("已自动保存 · "+DateTime.Now.ToString("HH:mm:ss")+" · 备份在项目目录");
+    if(tab=="备份")BuildInspector();
+   }catch(Exception ex){Status("自动保存失败："+ex.Message);}
+  }
+  void CheckCrashRecovery(){
+   if(recoveryChecked||HeadlessArgs())return;recoveryChecked=true;
+   CrashInfo info;
+   try{info=AutoSave.DetectCrash();}catch{return;}
+   if(info==null||!info.Crashed)return;
+   bool restore=false;
+   try{restore=AppDialogs.CrashRecovery(Window,info.Backup);}catch{return;}
+   if(!restore){try{AutoSave.ClearUnclean();}catch{}Status("已放弃崩溃恢复；自动保存备份仍保留在原目录。");return;}
+   try{
+    var d=EditDocument.Deserialize(File.ReadAllText(info.Backup));d.Validate();
+    SetDocument(d);FilePath=null;dirty=true;Update();
+    AutoSave.ClearUnclean();
+    Status("已从自动保存恢复 · "+Path.GetFileName(info.Backup)+"（请另存为新项目）");
+   }catch(Exception ex){try{AutoSave.ClearUnclean();}catch{}Error(ex);}
+  }
   void ProjectMenu(){Menu(Find<Button>("ProjectMenu"),new[]{"打开视频或项目…","保存项目","另存为…","新建录制","打开项目目录","检查更新…"},i=>{if(i==0)Open();if(i==1)Save();if(i==2){string old=FilePath;FilePath=null;if(!Save())FilePath=old;}if(i==3)Record();if(i==4&&Doc!=null)Process.Start("explorer.exe",Media.Q(Path.GetDirectoryName(FilePath??Doc.Source)));if(i==5)CheckUpdates();});}
   void Menu(Button target,string[] items,Action<int> action){var menu=UI.PopupMenu(Window,target);for(int i=0;i<items.Length;i++){int n=i;var item=new MenuItem {Header=items[i]};if(target.Name=="ProjectMenu"){item.InputGestureText=i==0?"Ctrl+O":i==1?"Ctrl+S":"";item.IsEnabled=Doc!=null||i==0||i==3||i==5;}if(target.Name=="Ratio"){item.IsCheckable=true;item.IsChecked=Doc!=null&&Doc.Style.Ratio==items[i];}item.Click+=(s,e)=>{try{action(n);}catch(Exception ex){Error(ex);}};menu.Items.Add(item);}target.ContextMenu=menu;menu.IsOpen=true;}
   void Rename(){if(Doc==null)return;string name=AppDialogs.Rename(Window,Doc.Name);if(name!=null&&name!=Doc.Name){Checkpoint();Doc.Name=name;Changed();}}
   void Record(){Pause();if(recorder!=null){recorder.Activate();return;}recorder=new RecorderWindow(this);recorder.Closed+=(s,e)=>recorder=null;recorder.Show();}
-  public async Task Recorded(string path,List<PointerSample> points){string project=Path.Combine(Path.GetDirectoryName(path),"project.dogscwin");await Task.Run(()=>{var doc=StudioMedia.Import(path);doc.Pointer=points;doc.IndependentCursor=true;doc.GenerateZooms();doc.Save(project);});await Load(project);if(Doc==null||Doc.Source!=path)Status("新录制已保存 · "+project);}
+  public async Task Recorded(string path,List<PointerSample> points){string project=Path.Combine(Path.GetDirectoryName(path),"project.dogscwin");await Task.Run(()=>{var doc=StudioMedia.Import(path);doc.Pointer=points;doc.IndependentCursor=true;doc.GenerateZooms();doc.Save(project);});await Load(project);if(Doc==null||Doc.Source!=path)Status("新录制已保存 · "+project);else{string cam=Path.Combine(Path.GetDirectoryName(path),"camera.mp4");if(File.Exists(cam)){string device="";try{string devFile=Path.Combine(Path.GetDirectoryName(path),"camera-device.txt");if(File.Exists(devFile))device=File.ReadAllText(devFile).Trim();}catch{}Doc.Camera=new CameraClip {Enabled=true,SourcePath=cam,Device=device};dirty=true;Update();Status("新录制已保存 · "+project+"（摄像头画中画已挂接）");}}}
   void Update(){bool has=Doc!=null;Find<TextBlock>("ProjectTitle").Text=(has?Doc.Name:"未命名项目")+(dirty?" ·":"");Window.Title="DogSC · "+(has?Doc.Name:"Windows");Find<StackPanel>("EmptyState").Visibility=has?Visibility.Collapsed:Visibility.Visible;
    foreach(string key in new[]{"Export","Presets","Ratio","FitCanvas","AddZoom","Play","Previous","Next","Split","Delete","MoveLeft","MoveRight","Rename"})Find<Button>(key).IsEnabled=has;
    Find<Button>("Waveforms").IsEnabled=has&&Doc.Audio;Find<Button>("Undo").IsEnabled=undo.Count>0;Find<Button>("Redo").IsEnabled=redo.Count>0;
@@ -170,6 +203,9 @@ namespace DogSC.Replica {
    if(tab=="混音"){BuildMixerInspector();return;}
    if(tab=="代理"){BuildProxyInspector();return;}
    if(tab=="多机位"){BuildMulticamInspector();return;}
+   if(tab=="摄像头"){BuildCameraInspector();return;}
+   if(tab=="备份"){BuildAutosaveInspector();return;}
+   if(tab=="缓存"){BuildRenderCacheInspector();return;}
    if(selectedCut>=0&&selectedCut<Doc.Cuts.Count){var c=Doc.Cuts[selectedCut];
     if(c.Gap){Section("空隙片段");Number("空隙时长 / 秒",c.GapDuration,v=>{c.GapDuration=EditDocument.Clamp(v,.05,Doc.Length);});Note("空隙是黑场 + 静音；波纹关闭时删除片段会留空隙。");inspector.Children.Add(UI.Button("删除空隙",()=>{Delete();}));inspector.Children.Add(UI.Button("返回画面设置",()=>{selectedCut=-1;tab="画面";BuildInspector();}));return;}
     Section("片段范围");Number("素材起点 / 秒",c.Start,v=>{c.Start=EditDocument.Clamp(v,0,c.End-.05);Doc.GenerateZooms();});Number("素材终点 / 秒",c.End,v=>{c.End=EditDocument.Clamp(v,c.Start+.05,Doc.Duration);Doc.GenerateZooms();});Section("播放速度");Buttons(new[]{"0.5×","1×","1.5×","2×"},c.Speed+"×",v=>{Checkpoint();c.Speed=double.Parse(v.TrimEnd('×'),CultureInfo.InvariantCulture);Doc.GenerateZooms();Changed();BuildInspector();});Note("拖动时间线片段两端可裁短；分割后可删除或左右重排。");inspector.Children.Add(UI.Button("返回画面设置",()=>{selectedCut=-1;tab="画面";BuildInspector();}));return;}
@@ -216,13 +252,15 @@ namespace DogSC.Replica {
   // 仍走 GDI+ Compose（合成好的帧再经 D3D/WriteableBitmap 呈现）。
   // W3：烧录字幕也是 GDI+ 画的，有字幕时同样不能走 GPU 直通，否则字幕会被跳过。
   static bool IsGpuEligible(EditDocument doc){
-   return doc.Overlays.Count==0&&!doc.IndependentCursor&&doc.Style.Opening==0&&doc.ScreenMotions.Count==0&&doc.ScreenBase==null&&!(doc.SubtitleBurnIn&&doc.Subtitles!=null&&doc.Subtitles.Count>0);
+   return doc.Overlays.Count==0&&!doc.IndependentCursor&&doc.Style.Opening==0&&doc.ScreenMotions.Count==0&&doc.ScreenBase==null&&!(doc.SubtitleBurnIn&&doc.Subtitles!=null&&doc.Subtitles.Count>0)&&(doc.Camera==null||!doc.Camera.Enabled);
   }
   async Task RequestPreview(){renderVersion++;if(Doc==null||playing||rendering||recordingWorkSuspended)return;rendering=true;var work=new CancellationTokenSource();previewWork=work;var token=work.Token;try{int version;do{token.ThrowIfCancellationRequested();version=renderVersion;var snapshot=EditDocument.Deserialize(Doc.Serialize());var size=PreviewSize(snapshot);double time=position;int i;double source=snapshot.SourceTime(time,out i);
     // W3：预览解码源 = 代理（开时，缺失会抛错）→ 当前机位角度文件；空隙画黑场；调色走解码器 vf。
     double cutOffset;var cutAt=snapshot.CutAt(time,out cutOffset);
     string frameSource=MulticamModel.Active(snapshot)?MulticamModel.AngleSource(snapshot,MulticamModel.AngleAt(snapshot,time)):snapshot.EffectiveSource();
     string colorVf=snapshot.Grade.VideoFilter();
+    CameraStillProvider stillCam=null;
+    try{if(snapshot.Camera!=null&&snapshot.Camera.Enabled&&File.Exists(snapshot.Camera.SourcePath))stillCam=new CameraStillProvider(snapshot.Camera.SourcePath);}catch{}
     var result=await Task.Run(()=>{
      byte[] frameBytes;
      if(cutAt.Gap)frameBytes=BlackFrame(snapshot.Width,snapshot.Height);
@@ -231,12 +269,12 @@ namespace DogSC.Replica {
       if(cachedFrame==null||cachedSource!=frameSource||Math.Abs(cachedTime-source)>.015){cachedFrame=StudioMedia.Frame(frameSource,Math.Min(source,snapshot.Duration-.03),snapshot.Width,token,colorVf);cachedSource=frameSource;cachedTime=source;}
       frameBytes=cachedFrame;
      }
-     token.ThrowIfCancellationRequested();using(var stream=new MemoryStream(frameBytes))using(var frame=new D.Bitmap(stream))using(var composed=ComposeBitmap(frame,snapshot,time,size))return Tuple.Create(PreviewSurface.BitmapBytes(composed),size.Width,size.Height);
-    });token.ThrowIfCancellationRequested();if(version==renderVersion&&!playing&&!recordingWorkSuspended){EnsurePreviewSurface().PresentComposed(result.Item1,result.Item2,result.Item3);DrawEffectGuides();}
+     token.ThrowIfCancellationRequested();using(var stream=new MemoryStream(frameBytes))using(var frame=new D.Bitmap(stream))using(var composed=ComposeBitmap(frame,snapshot,time,size,null,null,stillCam==null?(Func<double,D.Bitmap>)null:(t=>stillCam.FrameAt(t))))return Tuple.Create(PreviewSurface.BitmapBytes(composed),size.Width,size.Height);
+    });if(stillCam!=null)stillCam.Dispose();token.ThrowIfCancellationRequested();if(version==renderVersion&&!playing&&!recordingWorkSuspended){EnsurePreviewSurface().PresentComposed(result.Item1,result.Item2,result.Item3);DrawEffectGuides();}
     }while(version!=renderVersion&&!playing&&!closing&&!recordingWorkSuspended);}catch(OperationCanceledException){}catch(Exception ex){Status("预览暂不可用："+ex.Message);}finally{rendering=false;if(previewWork==work)previewWork=null;work.Dispose();}}
   static byte[] BlackFrame(int w,int h){using(var b=new D.Bitmap(w,h))using(var g=D.Graphics.FromImage(b))using(var ms=new MemoryStream()){g.Clear(D.Color.Black);b.Save(ms,Imaging.ImageFormat.Png);return ms.ToArray();}}
-  static BitmapSource Compose(D.Bitmap frame,EditDocument doc,double time,D.Size size,MotionEvaluator evaluator=null,D.Image loadedWallpaper=null,StudioRenderer.SceneCache cache=null){using(var canvas=ComposeBitmap(frame,doc,time,size,evaluator,loadedWallpaper,cache))return UI.Image(canvas);}
-  static D.Bitmap ComposeBitmap(D.Bitmap frame,EditDocument doc,double time,D.Size size,MotionEvaluator evaluator=null,D.Image loadedWallpaper=null,StudioRenderer.SceneCache cache=null){int w=size.Width,h=size.Height;var canvas=new D.Bitmap(w,h,Imaging.PixelFormat.Format32bppArgb);using(var own=evaluator==null?new MotionEvaluator(doc):null)using(var g=D.Graphics.FromImage(canvas))using(var wallpaper=loadedWallpaper==null&&doc.Style.Background=="image"&&File.Exists(doc.Style.ImagePath)?D.Image.FromFile(doc.Style.ImagePath):null){g.InterpolationMode=D.Drawing2D.InterpolationMode.HighQualityBicubic;g.SmoothingMode=D.Drawing2D.SmoothingMode.AntiAlias;if(cache==null)StudioRenderer.Draw(g,frame,doc,evaluator??own,time,w,h,loadedWallpaper??wallpaper,canvas);else cache.Render(g,frame,doc,evaluator??own,time,w,h,loadedWallpaper??wallpaper,canvas);}return canvas;}
+  static BitmapSource Compose(D.Bitmap frame,EditDocument doc,double time,D.Size size,MotionEvaluator evaluator=null,D.Image loadedWallpaper=null,StudioRenderer.SceneCache cache=null,Func<double,D.Bitmap> cameraFrame=null){using(var canvas=ComposeBitmap(frame,doc,time,size,evaluator,loadedWallpaper,cache,cameraFrame))return UI.Image(canvas);}
+  static D.Bitmap ComposeBitmap(D.Bitmap frame,EditDocument doc,double time,D.Size size,MotionEvaluator evaluator=null,D.Image loadedWallpaper=null,StudioRenderer.SceneCache cache=null,Func<double,D.Bitmap> cameraFrame=null){int w=size.Width,h=size.Height;var canvas=new D.Bitmap(w,h,Imaging.PixelFormat.Format32bppArgb);using(var own=evaluator==null?new MotionEvaluator(doc):null)using(var g=D.Graphics.FromImage(canvas))using(var wallpaper=loadedWallpaper==null&&doc.Style.Background=="image"&&File.Exists(doc.Style.ImagePath)?D.Image.FromFile(doc.Style.ImagePath):null){g.InterpolationMode=D.Drawing2D.InterpolationMode.HighQualityBicubic;g.SmoothingMode=D.Drawing2D.SmoothingMode.AntiAlias;if(cache==null)StudioRenderer.Draw(g,frame,doc,evaluator??own,time,w,h,loadedWallpaper??wallpaper,canvas,cameraFrame);else cache.Render(g,frame,doc,evaluator??own,time,w,h,loadedWallpaper??wallpaper,canvas,cameraFrame);}return canvas;}
   async void Play(){if(Doc==null||playing||recordingWorkSuspended)return;if(position>=Doc.Length-.05)position=0;playing=true;playbackJobs++;overlayGuides.Children.Clear();Find<Button>("Play").Content=UI.Icon("pause",16);var tokenSource=new CancellationTokenSource();playback=tokenSource;var token=tokenSource.Token;
    try{var doc=EditDocument.Deserialize(Doc.Serialize());var size=PreviewSize(doc);int playbackFps=Math.Min(90,Math.Max(1,(int)Math.Round(doc.FrameRate)));double start=position;
     // W3：音乐床（有可听音乐轨时）随播放启动，播完循环；文件缺失只报状态，不拦播放。
@@ -244,6 +282,8 @@ namespace DogSC.Replica {
     if(bed!=null){try{musicPlayer.Open(new Uri(bed.SourcePath));ApplyMixerPreview();musicPlayer.Position=TimeSpan.Zero;musicPlayer.Play();}catch(Exception ex){Status("音乐床预览不可用："+ex.Message);}}
     // W1：预览面在 UI 线程建一次（D3D 建不起来就 WriteableBitmap），GPU 合成资格按文档定。
     var surface=EnsurePreviewSurface();bool gpuPath=surface.IsHardware&&IsGpuEligible(doc);
+    CameraFrameStream playCam=null;
+    try{if(doc.Camera!=null&&doc.Camera.Enabled&&File.Exists(doc.Camera.SourcePath))playCam=new CameraFrameStream(doc.Camera.SourcePath,playbackFps);}catch{}
     await Task.Run(()=>{
     // W3：播放按“段”走（Cut × 多机位切换点切出来的段，见 MulticamModel.BuildSegments）；
     // 无多机位/无空隙时一段就是一个 Cut，与老行为一致。主源文件走代理（开时）。
@@ -265,7 +305,7 @@ namespace DogSC.Replica {
        while(true){token.ThrowIfCancellationRequested();double elapsed=gapClock.Elapsed.TotalSeconds;if(elapsed>=gapRemaining)break;
         double t=time+gn/(double)playbackFps;if(t>=seg.TimelineEnd)break;
         int wait=(int)(gn*1000.0/playbackFps-gapClock.Elapsed.TotalMilliseconds);if(wait>0&&token.WaitHandle.WaitOne(wait))token.ThrowIfCancellationRequested();
-        using(var composed=ComposeBitmap(black,doc,t,size,evaluator,wallpaper,cache)){var bits=PreviewSurface.BitmapBytes(composed);Window.Dispatcher.Invoke(new Action(()=>{if(!token.IsCancellationRequested)surface.PresentComposed(bits,size.Width,size.Height);}));}
+        using(var composed=ComposeBitmap(black,doc,t,size,evaluator,wallpaper,cache,playCam==null?(Func<double,D.Bitmap>)null:(tt=>playCam.FrameAt(tt)))){var bits=PreviewSurface.BitmapBytes(composed);Window.Dispatcher.Invoke(new Action(()=>{if(!token.IsCancellationRequested)surface.PresentComposed(bits,size.Width,size.Height);}));}
         double now=Math.Min(seg.TimelineEnd,time+gapClock.Elapsed.TotalSeconds);Window.Dispatcher.Invoke(new Action(()=>{if(!token.IsCancellationRequested){position=now;Update();DrawPlayhead();}}));gn++;
        }
       }
@@ -297,14 +337,14 @@ namespace DogSC.Replica {
         if(!shown&&!token.IsCancellationRequested){
          // 回退：GDI+ Compose 逐帧合成，但合成帧仍经 D3D 纹理/WriteableBitmap 呈现，不再走 BitmapSource。
          var data=frame.LockBits(new D.Rectangle(0,0,dw,dh),Imaging.ImageLockMode.WriteOnly,Imaging.PixelFormat.Format32bppArgb);try{Marshal.Copy(bytes,0,data.Scan0,bytes.Length);}finally{frame.UnlockBits(data);}
-         using(var composed=ComposeBitmap(frame,doc,t,size,evaluator,wallpaper,cache)){var bits=PreviewSurface.BitmapBytes(composed);Window.Dispatcher.Invoke(new Action(()=>{if(!token.IsCancellationRequested)surface.PresentComposed(bits,size.Width,size.Height);}));}
+         using(var composed=ComposeBitmap(frame,doc,t,size,evaluator,wallpaper,cache,playCam==null?(Func<double,D.Bitmap>)null:(tt=>playCam.FrameAt(tt)))){var bits=PreviewSurface.BitmapBytes(composed);Window.Dispatcher.Invoke(new Action(()=>{if(!token.IsCancellationRequested)surface.PresentComposed(bits,size.Width,size.Height);}));}
         }
        }
        double now=Math.Min(seg.TimelineEnd,time+clock.Elapsed.TotalSeconds);Window.Dispatcher.Invoke(new Action(()=>{if(!token.IsCancellationRequested){position=now;Update();DrawPlayhead();}}));n++;
       }try{if(!p.HasExited)p.Kill();p.WaitForExit();}catch{}if(clock.IsRunning){int wait=(int)((remaining-clock.Elapsed.TotalSeconds)*1000);if(wait>0&&token.WaitHandle.WaitOne(wait))token.ThrowIfCancellationRequested();double end=Math.Min(doc.Length-.001,seg.TimelineEnd);Window.Dispatcher.Invoke(new Action(()=>{if(!token.IsCancellationRequested){position=end;Update();DrawPlayhead();}}));}
      }
     }}
-   });}catch(OperationCanceledException){}catch(Exception ex){if(!token.IsCancellationRequested)Status("播放失败："+ex.Message);}finally{playbackJobs--;if(playback==tokenSource){playback=null;playing=false;audio.Pause();musicPlayer.Pause();Find<Button>("Play").Content=UI.Icon("play",16);RefreshPreview();}tokenSource.Dispose();}
+   });}catch(OperationCanceledException){}catch(Exception ex){if(!token.IsCancellationRequested)Status("播放失败："+ex.Message);}finally{playbackJobs--;if(playback==tokenSource){playback=null;playing=false;audio.Pause();musicPlayer.Pause();Find<Button>("Play").Content=UI.Icon("play",16);RefreshPreview();}if(playCam!=null)playCam.Dispose();tokenSource.Dispose();}
   }
   double TimelineWidth {get {return Math.Max(600,Find<ScrollViewer>("TimelineScroll").ActualWidth-8)*Find<Slider>("TimelineScale").Value;}}
   Line playhead;Ellipse head;
