@@ -62,12 +62,23 @@ import {
   audioFxFilter,
   validateAudioFx,
   validateMasterGainDb,
+  volumeKeysFilter,
 } from './audiofx.js';
 import {
   reframeCropFilter,
   validateSmartCut,
   type SubjectTrack,
 } from './smartcut.js';
+import {
+  beatFlashFilters,
+  validateBeatFlash,
+  validateBeatSpeed,
+} from './beat.js';
+import {
+  beautyFilter,
+  hqdn3dFilter,
+  validateBeauty,
+} from './beauty.js';
 
 export interface FilterGraph {
   filterComplex: string;
@@ -145,6 +156,8 @@ interface MaskCtx {
   duckInputIndex: Map<number, number>;
   /** clipIdx -> ffmpeg input index of its portrait mask video. */
   portraitInputIndex: Map<number, number>;
+  /** clipIdx -> ffmpeg input index of its beauty mask video. */
+  beautyInputIndex: Map<number, number>;
   /** `${clipIdx}:${angleIdx}` -> ffmpeg input index of a multicam angle
    *  (angle 0 rides on the clip's own input, so only angles 1.. are here). */
   multicamInputIndex: Map<string, number>;
@@ -272,6 +285,14 @@ function clipVideoChains(
 ): string[] {
   const { width, height, fps } = project;
   const chains: string[] = [];
+
+  // Beat-speed (P3): validate the block here; the nodes themselves
+  // are derived inside speedCurveSegments (project.ts), so the
+  // segment work, clipDuration and the audio chain all see the same
+  // curve without any local clip replacement.
+  if (clip.beatSpeed) {
+    validateBeatSpeed(clip);
+  }
 
   // Multicam (P2): the [vb] stream is assembled from the angle
   // segments instead of the speed-curve segments below. vidstab,
@@ -407,6 +428,16 @@ function clipVideoChains(
   // Shape-mask PiP (P1): composite first, then zoom/rotation/colour act as
   // camera effects on the composited frame. Without a mask this is a no-op.
   let picLabel = `[vbs${idx}]`;
+  // Face beautify (P3): retouch the person region before the mask /
+  // chroma / portrait stages (they all still see a normal picture).
+  // Strength 0 skips the stage (bit-identical to no beauty) but the
+  // validation above still ran — a bad strength throws either way.
+  if (clip.beauty) {
+    validateBeauty(clip.beauty, clip);
+    if ((clip.beauty.strength ?? 50) > 0) {
+      picLabel = applyBeautyStage(chains, picLabel, clip, idx, project, maskCtx);
+    }
+  }
   if (clip.mask && maskCtx) {
     picLabel = applyMaskStage(chains, picLabel, clip, idx, project, maskCtx);
   }
@@ -428,6 +459,16 @@ function clipVideoChains(
   }
 
   const parts: string[] = [picLabel];
+  // Video denoise (P3): hqdn3d right after scale/pad, before
+  // zoom/rotation/colour — the noise is removed before any camera
+  // effect magnifies it. Strength 0 = no filter in the graph.
+  if (clip.videoDenoise) {
+    const s = clip.videoDenoise.strength ?? 50;
+    if (typeof s !== 'number' || Number.isNaN(s) || s < 0 || s > 100) {
+      throw new Error(`clip ${clip.id}: videoDenoise.strength ${clip.videoDenoise.strength} outside [0, 100]`);
+    }
+    if (s > 0) parts.push(hqdn3dFilter(s));
+  }
   const zoom = clip.zoom ?? [];
   if (zoom.length >= 2) {
     // Animated zoom = scale up with a time-varying factor, then crop a
@@ -493,6 +534,23 @@ function clipVideoChains(
   const picChain =
     tailFilters.length > 0 ? `${parts[0]}${tailFilters.join(',')}` : `${parts[0]}null`;
 
+  // Beat-flash (P3): white the frame for `frames` frames at each
+  // output-time beat (drawbox with enable=between — probe 2026-11-18:
+  // fade=t=in whites everything BEFORE the beat, drawbox does not).
+  // Applied last, after text, so the flash covers the whole final
+  // frame including subtitles.
+  const flashFilters: string[] = [];
+  if (clip.beatFlash) {
+    validateBeatFlash(clip);
+    const dur = clipDuration(clip);
+    for (const b of clip.beatFlash.beats) {
+      if (b > dur) {
+        throw new Error(`clip ${clip.id}: beatFlash beat ${b} outside clip duration [0, ${dur.toFixed(3)}]`);
+      }
+    }
+    flashFilters.push(...beatFlashFilters(clip.beatFlash.beats, fps, clip.beatFlash.frames ?? 2));
+  }
+
   const opacity = clip.opacity ?? [];
   if (opacity.length >= 1) {
     // Single video track: there is nothing underneath to reveal, so opacity
@@ -509,17 +567,60 @@ function clipVideoChains(
     chains.push(
       `[va${idx}][blk${idx}]blend=all_expr='A*(${oExpr})+B*(1-(${oExpr}))'[vop${idx}]`,
     );
-    if (textFilters.length > 0) {
-      chains.push(`[vop${idx}]${textFilters.join(',')}[v${idx}]`);
+    if (textFilters.length > 0 || flashFilters.length > 0) {
+      chains.push(`[vop${idx}]${[...textFilters, ...flashFilters].join(',')}[v${idx}]`);
     } else {
       chains.push(`[vop${idx}]null[v${idx}]`);
     }
     return chains;
   }
   chains.push(
-    picChain + (textFilters.length > 0 ? `,${textFilters.join(',')}` : '') + `[v${idx}]`,
+    picChain + (textFilters.length > 0 || flashFilters.length > 0 ? `,${[...textFilters, ...flashFilters].join(',')}` : '') + `[v${idx}]`,
   );
   return chains;
+}
+
+/**
+ * Face beautify stage (P3). Input is the full-frame clip picture;
+ * output is the same frame with the person region retouched. The
+ * beautified branch (hqdn3d + slight brightness + unsharp) is
+ * alphamerged with the filtered ONNX mask video and overlaid back
+ * onto the untouched original — outside the mask the frame is
+ * bit-identical to the input (the overlay only writes where the
+ * mask is non-zero). Same composite pattern as the portrait stage,
+ * but the foreground is a FILTERED copy of the picture, not a
+ * cut-out. Runs before the mask/chroma/portrait stages, so those
+ * still see a normal picture.
+ */
+function applyBeautyStage(
+  chains: string[],
+  input: string,
+  clip: Clip,
+  idx: number,
+  project: Project,
+  ctx?: MaskCtx,
+): string {
+  const beauty = clip.beauty as NonNullable<Clip['beauty']>;
+  validateBeauty(beauty, clip);
+  const { fps } = project;
+  const maskIdx = ctx?.beautyInputIndex.get(idx);
+  if (maskIdx === undefined) {
+    throw new Error(
+      `clip ${clip.id}: beauty mask video not prepared; call prepareBeautyMasks first`,
+    );
+  }
+  const strength = beauty.strength ?? 50;
+  const feather = beauty.edgeFeather ?? 1;
+  const blurPart = feather > 0 ? `,gblur=sigma=${feather}` : '';
+  chains.push(`${input}split[btO${idx}][btI${idx}]`);
+  chains.push(`[btI${idx}]${beautyFilter(strength)}[btB${idx}]`);
+  chains.push(
+    `[${maskIdx}:v]fps=fps=${fps},format=gray${blurPart}[btMk${idx}]`,
+  );
+  chains.push(`[btB${idx}]format=yuva420p[btBf${idx}]`);
+  chains.push(`[btBf${idx}][btMk${idx}]alphamerge[btBm${idx}]`);
+  chains.push(`[btO${idx}][btBm${idx}]overlay=0:0,format=yuv420p[btOut${idx}]`);
+  return `[btOut${idx}]`;
 }
 
 /**
@@ -739,6 +840,12 @@ function atempoChain(speed: number): string {
  */
 function clipAudioChains(clip: Clip, idx: number, ctx?: MaskCtx): string[] {
   const chains: string[] = [];
+  // Beat-speed (P3): same validation as the video chain — the nodes
+  // are derived inside speedCurveSegments, so audio and video stay
+  // in sync with no local replacement.
+  if (clip.beatSpeed) {
+    validateBeatSpeed(clip);
+  }
   // Multicam (P2): audio comes from one angle only (audioAngle, default
   // 0) for the whole clip — the angle switches are video-only. Angle 0
   // is the clip's own input; other angles are extra inputs.
@@ -822,6 +929,17 @@ function clipAudioChains(clip: Clip, idx: number, ctx?: MaskCtx): string[] {
   const fxChain = fx ? audioFxFilter(fx) : '';
   if (fxChain) preDuck.push(fxChain);
   const gainDb = fx?.gainDb;
+  // Volume keyframes (P3): after loudnorm/ducking/volume/gainDb, so
+  // they are a trim loudnorm cannot eat. The last key must sit inside
+  // the clip (checked here — validateAudioFx only knows the shape).
+  const volKeys = fx?.volumeKeys;
+  if (volKeys && volKeys.length > 0) {
+    const lastT = volKeys[volKeys.length - 1].t;
+    if (lastT > dur) {
+      throw new Error(`clip ${clip.id}: audioFx.volumeKeys last key t=${lastT} outside clip duration [0, ${dur.toFixed(3)}]`);
+    }
+  }
+  const volKeysFilterStr = volumeKeysFilter(volKeys);
   if (clip.denoise) preDuck.push('afftdn');
   // loudnorm single-pass (linear=true is the default); no two-pass measurement.
   if (clip.loudnorm) preDuck.push('loudnorm=I=-16:TP=-1.5:LRA=11:linear=true');
@@ -836,12 +954,13 @@ function clipAudioChains(clip: Clip, idx: number, ctx?: MaskCtx): string[] {
     );
     chains.push(`[ad${idx}][${scIdx}:a]${duckingFilter(duck)}[adc${idx}]`);
     chains.push(
-      `[adc${idx}]volume=${clip.volume}${gainDb !== undefined ? `,volume=${gainDb}dB` : ''}[a${idx}]`,
+      `[adc${idx}]volume=${clip.volume}${gainDb !== undefined ? `,volume=${gainDb}dB` : ''}${volKeysFilterStr ? `,${volKeysFilterStr}` : ''}[a${idx}]`,
     );
     return chains;
   }
   const audioFilters = [...preDuck, `volume=${clip.volume}`];
   if (gainDb !== undefined) audioFilters.push(`volume=${gainDb}dB`);
+  if (volKeysFilterStr) audioFilters.push(volKeysFilterStr);
   chains.push(`${audioBase}${audioFilters.join(',')}[a${idx}]`);
   return chains;
 }
@@ -868,6 +987,9 @@ export function buildFilterGraph(
    *  container (pseudo-HDR). Applied AFTER subtitle burn, so the
    *  subtitles are tone-mapped with the picture. 'off' = no filter. */
   hdrMode?: HdrMode,
+  /** clipIdx -> beauty mask video path (prepareBeautyMasks output);
+   *  required by any clip with beauty (strength > 0). */
+  beautyMasks?: Map<number, string>,
 ): FilterGraph {
   const n = project.clips.length;
   if (n === 0) throw new Error('project has no clips');
@@ -892,6 +1014,7 @@ export function buildFilterGraph(
     bgInputIndex: new Map(),
     duckInputIndex: new Map(),
     portraitInputIndex: new Map(),
+    beautyInputIndex: new Map(),
     multicamInputIndex: new Map(),
   };
   project.clips.forEach((clip, i) => {
@@ -918,6 +1041,13 @@ export function buildFilterGraph(
     const file = portraitMasks?.get(i);
     if (!file) return;
     maskCtx.portraitInputIndex.set(i, n + maskCtx.extraInputs.length);
+    maskCtx.extraInputs.push(file);
+  });
+  // Beauty masks (P3): same registration pattern as the portrait masks.
+  project.clips.forEach((clip, i) => {
+    const file = beautyMasks?.get(i);
+    if (!file) return;
+    maskCtx.beautyInputIndex.set(i, n + maskCtx.extraInputs.length);
     maskCtx.extraInputs.push(file);
   });
   // Multicam angles: angle 0 is the clip's own input (clip.source), so
