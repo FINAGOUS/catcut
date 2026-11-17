@@ -72,6 +72,15 @@ namespace DogSC.Windows {
     return d;
    }
   }
+  // W3：第一条音轨的声道数（roles.ts 的 probeAudioChannels 移植；没有音轨
+  // 或探不到时抛错——混音的 mono/stereo 分支不能靠猜）。
+  public static int AudioChannels(string path) {
+   using (var p = Start("ffprobe", "-v error -select_streams a:0 -show_entries stream=channels -of csv=p=0 " + Q(path), true)) {
+    var readError = p.StandardError.ReadToEndAsync(); var s = p.StandardOutput.ReadToEnd(); p.WaitForExit();
+    int n; if (p.ExitCode != 0 || !int.TryParse(s.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out n) || n < 1) throw new Exception("无法读取音频声道数：" + path + "。" + readError.Result);
+    return n;
+   }
+  }
   public static string N(double v) { return v.ToString("0.######", CultureInfo.InvariantCulture); }
  }
  public class Camera {

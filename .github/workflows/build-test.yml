@@ -49,6 +49,12 @@ jobs:
           $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/DogSC.Windows.exe') -ArgumentList '--update-test' -WindowStyle Hidden -PassThru -Wait
           if ($test.ExitCode -ne 0 -or -not ((Get-Content 'Windows/bin/update-results.txt' -Raw).StartsWith('PASS:'))) { throw 'Update checks failed.' }
 
+      - name: W3 feature-panel checks
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/DogSC.Windows.exe') -ArgumentList '--w3-test' -WindowStyle Hidden -PassThru -Wait
+          if ($test.ExitCode -ne 0 -or -not ((Get-Content 'Windows/bin/w3-results.txt' -Raw).StartsWith('PASS:'))) { throw 'W3 checks failed.' }
+
       - name: Package portable ZIP
         run: |
           $ErrorActionPreference = 'Stop'

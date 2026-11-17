@@ -3,7 +3,7 @@
       与 DogSC 原布局的区别：左侧新增 300px 素材库媒体池（原版没有）；竖轨从窗口最左移到调节区左缘；
       播放控制从时间线工具条移到监视区底部；时间线改为全宽轨道区，自带“预览轨道”区头与吸附/波纹指示。
       所有 x:Name 保持与 W1 一致，后台代码（EditorApp/EditorPolish/EditorEffectsUI 等）的 Find<> 接线不动。
-      占位说明：素材库四分栏只做栏位与切换，内容由 W3 接入；“波纹”按钮仅视觉占位，交互由 W3 接线。 -->
+      W3 已接线：素材库四栏内容（FeaturePanelsUI.RefreshMediaLibrary）、“波纹”按钮（EditorApp 的 ripple 开关）。 -->
  <shell:WindowChrome.WindowChrome><shell:WindowChrome CaptionHeight="0" ResizeBorderThickness="6" CornerRadius="16" GlassFrameThickness="0" UseAeroCaptionButtons="False"/></shell:WindowChrome.WindowChrome>
  <Window.Resources><ResourceDictionary><ResourceDictionary.MergedDictionaries><ResourceDictionary Source="EditorTheme.xaml"/></ResourceDictionary.MergedDictionaries></ResourceDictionary></Window.Resources>
  <Border CornerRadius="16" BorderBrush="{DynamicResource Line}" BorderThickness="0.7" Background="{DynamicResource Workspace}" ClipToBounds="True">
@@ -15,7 +15,7 @@
    </Grid></Border>
    <!-- 四区工作区：左 素材库 / 中 监视 / 右 调节（竖轨 + 检查器） -->
    <Grid Grid.Row="1" x:Name="WorkspaceGrid" Margin="12,6,12,8"><Grid.ColumnDefinitions><ColumnDefinition x:Name="MediaLibraryColumn" Width="300"/><ColumnDefinition Width="*"/><ColumnDefinition x:Name="InspectorColumn" Width="400"/></Grid.ColumnDefinitions>
-    <!-- 一区：素材库（媒体池）。四分栏位 + 切换是 W2 的活；各栏内容由 W3 接入。 -->
+    <!-- 一区：素材库（媒体池）。四分栏位 + 切换是 W2 的活；各栏内容由 W3 接入（RefreshMediaLibrary）。 -->
     <Border x:Name="MediaLibrary" Style="{StaticResource SurfaceCard}" Margin="0,0,8,0"><Grid><Grid.RowDefinitions><RowDefinition Height="44"/><RowDefinition Height="40"/><RowDefinition Height="*"/></Grid.RowDefinitions>
      <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,0.7"><Grid Margin="14,0,10,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="素材库" FontWeight="SemiBold" FontSize="14" VerticalAlignment="Center"/><Button x:Name="MediaLibraryImport" Grid.Column="1" Style="{StaticResource PlainButton}" Content="＋ 导入" ToolTip="打开视频或项目" Padding="8,5" MinHeight="28"/></Grid></Border>
      <Border Grid.Row="1" Background="{DynamicResource Well}" CornerRadius="11" Margin="10,5,10,3" Padding="2"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
@@ -24,7 +24,7 @@
       <Button x:Name="MediaTabSubtitles" Grid.Column="2" Content="字幕" Style="{StaticResource PlainButton}" MinHeight="28" Padding="4,2"/>
       <Button x:Name="MediaTabEffects" Grid.Column="3" Content="特效" Style="{StaticResource PlainButton}" MinHeight="28" Padding="4,2"/>
      </Grid></Border>
-     <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><StackPanel x:Name="MediaLibraryContent" Margin="16,18,16,16"><TextBlock x:Name="MediaLibraryEmpty" Text="还没有素材" FontSize="13" FontWeight="SemiBold" HorizontalAlignment="Center"/><TextBlock x:Name="MediaLibraryHint" Text="导入视频后，素材会出现在这里。&#x0a;媒体池内容由 W3 接入。" Foreground="{DynamicResource Secondary}" FontSize="11" Margin="0,10,0,0" TextAlignment="Center" TextWrapping="Wrap"/></StackPanel></ScrollViewer>
+     <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><StackPanel x:Name="MediaLibraryContent" Margin="16,18,16,16"><TextBlock x:Name="MediaLibraryEmpty" Text="还没有素材" FontSize="13" FontWeight="SemiBold" HorizontalAlignment="Center"/><TextBlock x:Name="MediaLibraryHint" Text="导入视频后，素材会出现在这里。" Foreground="{DynamicResource Secondary}" FontSize="11" Margin="0,10,0,0" TextAlignment="Center" TextWrapping="Wrap"/></StackPanel></ScrollViewer>
     </Grid></Border>
     <!-- 二区：监视页面（主监视器，接 W1 的 GPU 预览面；只挪位置，不动 GpuPreview.cs 的渲染逻辑）。 -->
     <Grid x:Name="CanvasWorkspace" Grid.Column="1" Margin="0,0,8,0"><Grid.RowDefinitions><RowDefinition Height="40"/><RowDefinition Height="*"/><RowDefinition Height="48"/></Grid.RowDefinitions>
@@ -45,11 +45,11 @@
     </Grid>
    </Grid>
    <!-- 四区：预览轨道（底部时间线，全宽）。多轨呈现由 DrawTimeline/AddEffectTracks 代码绘制（屏幕录制/缩放/贴图/柔化轨）；
-        吸附（Snap）是现有开关；“波纹”按钮仅视觉占位，波纹编辑交互由 W3 接线。 -->
+        吸附（Snap）是现有开关 + W3 的吸附线渲染；“波纹”按钮由 W3 接线（ripple 开关，删片段跟进/留空隙）。 -->
    <Border Grid.Row="2" Style="{StaticResource SurfaceCard}" Margin="12,0,12,0"><Grid><Grid.RowDefinitions><RowDefinition Height="46"/><RowDefinition Height="*"/></Grid.RowDefinitions>
     <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,0.7"><Grid Margin="12,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
      <StackPanel Orientation="Horizontal" VerticalAlignment="Center"><TextBlock Text="预览轨道" FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center" Margin="0,0,14,0"/><Button x:Name="Split" Style="{StaticResource PlainButton}" Width="30" ToolTip="在播放头分割 Ctrl+B"/><Button x:Name="Delete" Style="{StaticResource PlainButton}" Width="30" ToolTip="删除选中片段 Delete"/><Button x:Name="MoveLeft" Style="{StaticResource PlainButton}" Width="27" ToolTip="片段向左移动"/><Button x:Name="MoveRight" Style="{StaticResource PlainButton}" Width="27" ToolTip="片段向右移动"/><Border Width="1" Height="18" Background="{DynamicResource Line}" Margin="7,0,10,0"/><Border Background="{DynamicResource Well}" CornerRadius="9" Padding="2"><StackPanel Orientation="Horizontal"><Button x:Name="TimelineView" Padding="9,3" MinHeight="27" BorderBrush="Transparent"/><Button x:Name="Waveforms" Content="波形" Style="{StaticResource PlainButton}" Padding="8,3" MinHeight="27" IsEnabled="False" ToolTip="音频波形尚未移植"/></StackPanel></Border></StackPanel>
-     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center"><Button x:Name="Snap" Padding="8,4" MinHeight="28" BorderBrush="Transparent"/><Button x:Name="RipplePlaceholder" Content="波纹" Padding="8,4" MinHeight="28" BorderBrush="Transparent" IsEnabled="False" ToolTip="波纹编辑：W3 接线，本批仅视觉占位" Margin="6,0,0,0"/></StackPanel>
+     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center"><Button x:Name="Snap" Padding="8,4" MinHeight="28" BorderBrush="Transparent"/><Button x:Name="Ripple" Content="波纹" Padding="8,4" MinHeight="28" BorderBrush="Transparent" ToolTip="波纹编辑：开=删除片段后后续跟进；关=删除留空隙" Margin="6,0,0,0"/></StackPanel>
      <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center"><Button x:Name="ZoomOut" Content="−" Style="{StaticResource PlainButton}" Width="25" ToolTip="缩小时间线"/><Slider x:Name="TimelineScale" Minimum="1" Maximum="8" Value="1" Width="68" Margin="0"/><Button x:Name="ZoomIn" Content="＋" Style="{StaticResource PlainButton}" Width="25" ToolTip="放大时间线"/></StackPanel>
     </Grid></Border>
     <ScrollViewer x:Name="TrackScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="104"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><StackPanel x:Name="TimelineLabels" Margin="12,0,0,0"/><ScrollViewer x:Name="TimelineScroll" Grid.Column="1" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"><Canvas x:Name="TimelineHost" Height="236" MinWidth="600" Background="Transparent"/></ScrollViewer></Grid></ScrollViewer>
