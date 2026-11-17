@@ -12,9 +12,13 @@ import type { TextStylePreset } from './presets.js';
 import type { AdvancedColor } from './color.js';
 import type { CompoundRef } from './compound.js';
 import type { Multicam } from './multicam.js';
+import type { RoleConfig } from './roles.js';
+import type { ProxyRef } from './proxy.js';
 
 export type { CompoundRef } from './compound.js';
 export type { Multicam, MulticamCut, MulticamSegment } from './multicam.js';
+export type { RoleConfig, ResolvedRoleConfig } from './roles.js';
+export type { ProxyRef, ProxyInfo, GenerateProxyOptions } from './proxy.js';
 
 export type { AdvancedColor, Curves, CurvePoint, HslZoneAdjust, HueZoneName, WhiteBalance } from './color.js';
 
@@ -324,6 +328,23 @@ export interface Clip {
    * duration, speed 1, no reverse/freeze/stabilisation/portrait.
    */
   multicam?: Multicam;
+  /**
+   * Audio role (P2, M4): which role this clip's audio belongs to
+   * ('dialogue' / 'music' / 'effects' / 'narration', or a custom role
+   * declared in Project.roles). No role = 'dialogue'. The mix applies
+   * the role's gain/pan/mute/solo (see roles.ts); the export can also
+   * write one stem per role (ExportOptions.roleStems).
+   */
+  role?: string;
+  /**
+   * Proxy editing (P2, M4): low-resolution stand-in for this clip's
+   * source (see proxy.ts). The timeline / preview renders against
+   * proxy.file; EXPORT always renders from `source` (the relink) but
+   * refuses to export when a declared proxy file is missing or does
+   * not match its declared size/duration — it never silently falls
+   * back to the original. v1: not supported on compound/multicam clips.
+   */
+  proxy?: ProxyRef;
 }
 
 export type TransitionType =
@@ -352,6 +373,14 @@ export interface Project {
    * (karaoke word highlight) after the timeline is assembled.
    */
   subtitles?: SubtitleItem[];
+  /**
+   * Role mix config (P2, M4): per-role gain/pan/mute/solo, one entry
+   * per role (see roles.ts). An entry may override a built-in role
+   * (e.g. { name: 'music', gainDb: -6 }) or declare a custom role
+   * that clips reference via Clip.role. Empty/absent = all roles at
+   * gain 0 / pan 0 / unmuted.
+   */
+  roles?: RoleConfig[];
 }
 
 export interface SpeedSegment {
