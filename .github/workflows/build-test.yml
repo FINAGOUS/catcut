@@ -59,6 +59,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/DogSC.Windows.exe') -ArgumentList '--w4-test' -WindowStyle Hidden -PassThru -Wait
+          Get-Content 'Windows/bin/w4-results.txt' -Raw
           if ($test.ExitCode -ne 0 -or -not ((Get-Content 'Windows/bin/w4-results.txt' -Raw).StartsWith('PASS:'))) { throw 'W4 checks failed.' }
 
       - name: Package portable ZIP
