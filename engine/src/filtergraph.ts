@@ -39,6 +39,10 @@ import {
 import {
   validatePortraitCutout,
 } from './portrait.js';
+import {
+  lut3dFilter,
+  validateAdvancedColor,
+} from './color.js';
 
 export interface FilterGraph {
   filterComplex: string;
@@ -163,6 +167,7 @@ function clipVideoChains(
   lut?: string,
   maskCtx?: MaskCtx,
   stabTrf?: Map<number, string>,
+  colorLuts?: Map<number, string[]>,
 ): string[] {
   const { width, height, fps } = project;
   const chains: string[] = [];
@@ -304,6 +309,21 @@ function clipVideoChains(
       const t = Math.max(-1, Math.min(1, color.temperature));
       parts.push(`colorbalance=rs=${t}:gs=0:bs=${-t}`);
     }
+  }
+  // Advanced colour (P2): baked 3D LUT(s) from export prep, applied
+  // after the P0 eq/colorbalance stage. Generated LUT first, imported
+  // .cube second; the project preset LUT (param `lut`) still applies
+  // last. A clip with advancedColor but no prepared LUT is a hard
+  // error — call prepareColorLuts first (export.ts does this).
+  if (clip.advancedColor) {
+    validateAdvancedColor(clip.advancedColor, clip.id);
+    const luts = colorLuts?.get(idx);
+    if (!luts) {
+      throw new Error(
+        `clip ${clip.id}: advanced colour LUT not prepared; call prepareColorLuts first`,
+      );
+    }
+    for (const p of luts) parts.push(lut3dFilter(p));
   }
   if (lut) parts.push(`lut3d=${lut}`);
   const textFilters = (clip.text ?? []).map((t) => drawtextFilter(t, fontfile));
@@ -656,6 +676,7 @@ export function buildFilterGraph(
   maskFiles?: Map<number, string[]>,
   stabilizeTrf?: Map<number, string>,
   portraitMasks?: Map<number, string>,
+  colorLuts?: Map<number, string[]>,
 ): FilterGraph {
   const n = project.clips.length;
   if (n === 0) throw new Error('project has no clips');
@@ -698,7 +719,7 @@ export function buildFilterGraph(
   });
   const chains: string[] = [];
   project.clips.forEach((clip, i) => {
-    chains.push(...clipVideoChains(clip, i, project, fontfile, lut, maskCtx, stabilizeTrf));
+    chains.push(...clipVideoChains(clip, i, project, fontfile, lut, maskCtx, stabilizeTrf, colorLuts));
     chains.push(...clipAudioChains(clip, i, maskCtx));
   });
 
