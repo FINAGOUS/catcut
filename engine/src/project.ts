@@ -222,6 +222,43 @@ export interface PortraitCutout {
   sampleEvery?: number;
 }
 
+/**
+ * Smart reframe (P3, M4 §8.7): crop the source to a target aspect,
+ * following the tracked subject (see smartcut.ts). The crop runs on
+ * the SOURCE stream, before scale/pad — a crop after scale/pad would
+ * cut the letterbox bars, not the subject.
+ */
+export interface ReframeOptions {
+  /** Target aspect of the crop window (default '9:16'). */
+  aspect?: '9:16' | '16:9' | '1:1';
+  /** Follow the subject vertically too (default false: the window
+   *  stays vertically centred). */
+  followY?: boolean;
+  /** Shrink the window by this fraction (0..0.2, default 0.02) so the
+   *  subject never touches the frame edge. */
+  margin?: number;
+}
+
+/**
+ * Auto-follow zoom (P3, M4 §8.7): zoom keyframes generated from the
+ * tracked subject + voice segments (see smartcut.ts). The keys are
+ * merged into clip.zoom at export prep (prepareSmartCut) — a clip
+ * must not carry manual zoom keys as well.
+ */
+export interface FollowZoomOptions {
+  /** Scale at emphasis, (1, 1.35] (default 1.35 — the task range is
+   *  1.0..1.35; autozoom's 1.6 cap does not apply here). */
+  maxScale?: number;
+  /** Ramp time in/out of emphasis in seconds (default 0.2). The
+   *  effective ramp is at least (maxScale-1)/maxRate. */
+  ease?: number;
+  /** Shortest emphasis plateau in seconds (default 0.5). */
+  minHold?: number;
+  /** Max scale change per second (default 1.0) — the anti-nausea
+   *  rate limit on the ramp. */
+  maxRate?: number;
+}
+
 export interface Clip {
   id: string;
   /** Path to the source media file. */
@@ -322,6 +359,24 @@ export interface Clip {
    * be 1, no reverse/freeze, and it cannot combine with chromaKey.
    */
   portraitCutout?: PortraitCutout;
+  /**
+   * Scene-detection threshold for this clip (P3, M4 §8.7): 0.05..0.95,
+   * default 0.4. Analysis only — detectScenes() reads it; it never
+   * enters the render graph.
+   */
+  sceneThreshold?: number;
+  /**
+   * Vertical reframe (P3): crop the source to `aspect`, following the
+   * tracked subject (prepareSubjectTracks). Requires speed 1, no
+   * reverse/freeze/multicam/portraitCutout (validateSmartCut).
+   */
+  reframe?: ReframeOptions;
+  /**
+   * Auto-follow zoom (P3): zoom keyframes from tracking + voice
+   * segments, merged into clip.zoom at export prep. Cannot combine
+   * with manual zoom keyframes.
+   */
+  followZoom?: FollowZoomOptions;
   /**
    * Compound clip / nested timeline (P2, M4): this clip IS a whole
    * child project, rendered first to an intermediate MP4 (see
