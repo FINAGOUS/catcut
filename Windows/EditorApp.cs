@@ -139,7 +139,7 @@ namespace DogSC.Replica {
    }catch(Exception ex){Error(ex);}
   }
   public void SetDocument(EditDocument d){Doc=d;motion=new MotionEvaluator(d);position=0;dirty=false;thumbs.Clear();waveform=null;waveformView=false;musicPlayer.Close();Update();BuildInspector();RefreshMediaLibrary();DrawTimeline();RefreshPreview();LoadThumbnails();}
-  async void LoadThumbnails(){if(Doc==null||recordingWorkSuspended)return;if(thumbnailWork!=null)thumbnailWork.Cancel();var work=new CancellationTokenSource();thumbnailWork=work;var token=work.Token;thumbnailJobs++;var doc=Doc;try{for(int i=thumbs.Count;i<8;i++){token.ThrowIfCancellationRequested();double t=Math.Min(doc.Duration-.05,doc.Duration*i/8);var b=await Task.Run(()=>UI.Image(StudioMedia.Frame(doc.EffectiveSource(),t,200,token,doc.Grade.VideoFilter())));token.ThrowIfCancellationRequested();if(Doc==null||Doc.Source!=doc.Source)return;thumbs.Add(b);DrawTimeline();}var wave=await Task.Run(()=>ReadWaveform(doc,token));token.ThrowIfCancellationRequested();if(Doc!=null&&Doc.Source==doc.Source){waveform=wave;DrawTimeline();}}catch{}finally{thumbnailJobs--;if(thumbnailWork==work)thumbnailWork=null;work.Dispose();}}
+  async void LoadThumbnails(){if(Doc==null||recordingWorkSuspended)return;if(thumbnailWork!=null)thumbnailWork.Cancel();var work=new CancellationTokenSource();thumbnailWork=work;var token=work.Token;thumbnailJobs++;var doc=Doc;try{for(int i=thumbs.Count;i<8;i++){token.ThrowIfCancellationRequested();double t=Math.Min(doc.Duration-.05,doc.Duration*i/8);var b=await Task.Run(()=>UI.Image(StudioMedia.Frame(doc.EffectiveSource(),t,200,token,W8ColourFilters.Chain(doc,true))));token.ThrowIfCancellationRequested();if(Doc==null||Doc.Source!=doc.Source)return;thumbs.Add(b);DrawTimeline();}var wave=await Task.Run(()=>ReadWaveform(doc,token));token.ThrowIfCancellationRequested();if(Doc!=null&&Doc.Source==doc.Source){waveform=wave;DrawTimeline();}}catch{}finally{thumbnailJobs--;if(thumbnailWork==work)thumbnailWork=null;work.Dispose();}}
   async void Open(){var dlg=new Microsoft.Win32.OpenFileDialog {Filter="视频或 Windows 项目|*.mp4;*.mov;*.mkv;*.webm;*.dogscwin|所有文件|*.*"};if(dlg.ShowDialog(Window)==true)await Load(dlg.FileName);}
   bool Save(){if(Doc==null)return true;try{if(FilePath==null){var dlg=new Microsoft.Win32.SaveFileDialog {Filter="DogSC Windows 项目|*.dogscwin",FileName=Doc.Name+".dogscwin"};if(dlg.ShowDialog(Window)!=true)return false;FilePath=dlg.FileName;}Doc.Save(FilePath);dirty=false;Update();try{AutoSave.NoteSession(AutoSave.BackupDirFor(FilePath,Doc));}catch{}Status("项目已保存 · "+FilePath);return true;}catch(Exception ex){Error(ex);return false;}}
   static bool HeadlessArgs(){foreach(var a in Environment.GetCommandLineArgs())if(a.StartsWith("--")&&(a.Contains("test")||a.Contains("snapshot")))return true;return false;}
@@ -265,7 +265,7 @@ namespace DogSC.Replica {
     // W3：预览解码源 = 代理（开时，缺失会抛错）→ 当前机位角度文件；空隙画黑场；调色走解码器 vf。
     double cutOffset;var cutAt=snapshot.CutAt(time,out cutOffset);
     string frameSource=MulticamModel.Active(snapshot)?MulticamModel.AngleSource(snapshot,MulticamModel.AngleAt(snapshot,time)):snapshot.EffectiveSource();
-    string colorVf=snapshot.Grade.VideoFilter();
+    string colorVf=W8ColourFilters.Chain(snapshot,true);
     // W5：降噪拼进解码 vf；美颜有遮罩时走遮罩图（单帧预览按源时间取遮罩，
     // 变速也不错位；多机位时遮罩与角度文件不对齐，回退未美颜）。
     string effectVf="";bool masked=false;
@@ -306,7 +306,7 @@ namespace DogSC.Replica {
     // 无多机位/无空隙时一段就是一个 Cut，与老行为一致。主源文件走代理（开时）。
     var segs=MulticamModel.BuildSegments(doc);
     int firstSeg=segs.Count-1;for(int s=0;s<segs.Count;s++)if(start>=segs[s].TimelineStart&&start<segs[s].TimelineEnd){firstSeg=s;break;}
-    string colorVf=doc.Grade.VideoFilter();
+    string colorVf=W8ColourFilters.Chain(doc,true);
     // W5：降噪拼进播放解码 vf；美颜有遮罩时走遮罩图。遮罩按源帧算，变速
     // （setpts 会改时间映射）或多机位（角度文件与源遮罩不对齐）时不生效，
     // 回退未美颜播放并报状态，不拦播放。
