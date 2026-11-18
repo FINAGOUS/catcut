@@ -51,7 +51,17 @@ namespace DogSC.Replica {
  // 滤镜参数里的文件路径：FFmpeg 滤镜解析器里反斜杠是转义符，
 // 路径里的 C:\work 会被吃掉反斜杠；统一写正斜杠 + 单引号。
  static class W8Paths {
+  // 滤镜串里的路径：反斜杠改正斜杠，冒号必须转义成 \: ——ffmpeg 的
+  // 滤镜解析器在选项层按冒号切分，单引号拦不住盘符冒号（D:），
+  // 云端 run 42 实测：result='D:/...trf' 直接报 No option name；
+  // 本地复现确认 \: 可行。Windows CRT 只在双引号前处理反斜杠，
+  // 所以 \: 能原样到达 ffmpeg 再被还原成冒号。
   public static string FilterPath(string path) {
+   return "'" + path.Replace("\\", "/").Replace(":", "\\:").Replace("'", "\\'") + "'";
+  }
+  // 非滤镜串里的路径（concat 清单 file '...'）：冒号不用转义，
+  // 转了反而找不到文件；只做单引号包裹 + 正斜杠。
+  public static string QuotedPath(string path) {
    return "'" + path.Replace("\\", "/").Replace("'", "\\'") + "'";
   }
   public static string CodecOf(string file) {
@@ -762,7 +772,7 @@ namespace DogSC.Replica {
      t += line.Duration;
     }
     string list = Path.Combine(work, "list.txt");
-    File.WriteAllText(list, string.Join("\n", segs.Select(s => "file " + W8Paths.FilterPath(s)).ToArray()), new UTF8Encoding(false));
+    File.WriteAllText(list, string.Join("\n", segs.Select(s => "file " + W8Paths.QuotedPath(s)).ToArray()), new UTF8Encoding(false));
     StudioMedia.Run("-v error -y -f concat -safe 0 -i " + Media.Q(list) + " -c copy " + Media.Q(output), token);
     File.WriteAllText(Path.ChangeExtension(output, ".srt"), srt.ToString(), new UTF8Encoding(false));
     double d = Media.Duration(output);
