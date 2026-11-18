@@ -11,6 +11,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
+using System.Text;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -150,8 +151,10 @@ namespace DogSC.Replica {
     string morphFilter = StudioMedia.Filter(mdoc, false);
     Require(morphFilter.Contains("minterpolate") && morphFilter.Contains("concat=n=3"), "morph filter has interpolate + 3-way concat");
     string morphTimeline = Path.Combine(Folder, "morph-timeline.mp4");
-    File.WriteAllText(Path.Combine(Folder, "morph-filter.txt"), morphFilter);
-    RunFfmpeg("-v error -y -i " + Media.Q(morphSrc) + " -filter_complex_script " + Media.Q(Path.Combine(Folder, "morph-filter.txt")) + " -map \"[video]\" -c:v libx264 -pix_fmt yuv420p -r 30 " + Media.Q(morphTimeline));
+    File.WriteAllText(Path.Combine(Folder, "morph-filter.txt"), morphFilter, new UTF8Encoding(false));
+    // 注意：FFmpeg 8+ 把 -filter_complex_script 标记为废弃，9.0.2 已删掉它；
+    // 读文件形式的滤镜串要用 -/filter_complex（产品 Export() 也是这个写法）。
+    RunFfmpeg("-v error -y -i " + Media.Q(morphSrc) + " -/filter_complex " + Media.Q(Path.Combine(Folder, "morph-filter.txt")) + " -map \"[video]\" -c:v libx264 -pix_fmt yuv420p -r 30 " + Media.Q(morphTimeline));
     Require(Math.Abs(Media.Duration(morphTimeline) - 2) < 0.05, "morph timeline keeps 2.0s");
     string fA = Path.Combine(Folder, "mf-a.png"), fM = Path.Combine(Folder, "mf-m.png"), fB = Path.Combine(Folder, "mf-b.png");
     FramePng(morphTimeline, 15, fA); FramePng(morphTimeline, 30, fM); FramePng(morphTimeline, 45, fB);
