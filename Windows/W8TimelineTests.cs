@@ -40,6 +40,13 @@ namespace DogSC.Replica {
    foreach (string line in text.Split('\n')) if (line.Trim() == type) return true;
    return false;
   }
+  // 纯音频文件没有视频轨，StudioMedia.Import 会拒收；时长改用 ffprobe 直接读。
+  static double ProbeDuration(string file) {
+   string text = Probe("-v error -show_entries format=duration -of csv=p=0 " + Media.Q(file));
+   double d;
+   if (double.TryParse(text.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out d)) return d;
+   throw new Exception("ffprobe 没有输出时长：" + text);
+  }
   static double MeanVolume(string file, double from, double duration) {
    // 注意：不能加 -v error——volumedetect 的统计是 info 级输出，加了就看不到 mean_volume。
    using (var p = Media.Start("ffmpeg", "-ss " + Media.N(from) + " -t " + Media.N(duration) + " -i " + Media.Q(file) + " -af volumedetect -f null -", false)) {
@@ -323,7 +330,7 @@ namespace DogSC.Replica {
     aoDoc.Cuts = new List<Cut> { new Cut { Start = 0, End = 2 } };
     string aoOut = Path.Combine(Folder, "ao-out.mp4");
     StudioRenderer.Export(aoDoc, aoOut, new ExportOptions { PresetName = "test", Height = 360, Fps = 30, Codec = "h264", Crf = 18, OnlyMode = "audio" }, (v, s) => { }, CancellationToken.None);
-    Require(HasStream(aoOut, "audio") && !HasStream(aoOut, "video") && Math.Abs(StudioMedia.Import(aoOut).Duration - 2) < 0.15, "audio-only export has no video stream, 2.0s");
+    Require(HasStream(aoOut, "audio") && !HasStream(aoOut, "video") && Math.Abs(ProbeDuration(aoOut) - 2) < 0.15, "audio-only export has no video stream, 2.0s");
     var soDoc = StudioMedia.Import(srcA);
     soDoc.Cuts = new List<Cut> { new Cut { Start = 0, End = 2 } };
     soDoc.Subtitles.Add(new SubtitleCue { Start = 0.5, End = 1.5, Text = "测试字幕" });
