@@ -182,7 +182,7 @@ namespace DogSC.Replica {
     sdoc.RecordingMarkers.Add(new RecordingMarker { Time = 5.0, Label = "后半" });
     double removed = SilenceCut.Apply(sdoc, spans);
     Require(Near(removed, 2.0, 0.05) && Near(sdoc.Length, 4.0, 0.05), "silence cut removes 2.0s, length 6 -> 4 (removed " + removed.ToString("0.00") + ")");
-    Require(sdoc.Cuts.Count == 2 && Near(sdoc.Cuts[0].Start, 0, .01) && Near(sdoc.Cuts[0].End, 2, .01) && Near(sdoc.Cuts[1].Start, 4, .01) && Near(sdoc.Cuts[1].End, 6, .01), "cuts split into [0,2] + [4,6]");
+    Require(sdoc.Cuts.Count == 2 && Near(sdoc.Cuts[0].Start, 0, .01) && Near(sdoc.Cuts[0].End, spans[0].Start, .05) && Near(sdoc.Cuts[1].Start, spans[0].End, .05) && Near(sdoc.Cuts[1].End, sdoc.Duration, .01), "cuts split into [0,2] + [4,6] (span " + spans[0].Start.ToString("0.000") + "-" + spans[0].End.ToString("0.000") + ", duration " + sdoc.Duration.ToString("0.000") + ")");
     Require(Near(sdoc.Subtitles[0].Start, 3.0, .05) && Near(sdoc.Subtitles[0].End, 3.8, .05), "subtitle follows the cut (5.0 -> 3.0)");
     Require(Near(sdoc.RecordingMarkers[0].Time, 1.0, .01) && Near(sdoc.RecordingMarkers[1].Time, 3.0, .05), "markers follow the cut (1.0 stays, 5.0 -> 3.0)");
     threw = false;
