@@ -42,10 +42,10 @@ namespace DogSC.Replica {
   }
   static int ChapterCount(string file) {
    // -of default=noprint_wrappers=1 不输出 [CHAPTER] 包裹头，只剩字段行；
-   // 每章恰好一行 index=，按它计数。
+   // 章节没有 index= 字段，每章恰好一行 id=（本地 ffprobe 实测），按它计数。
    string text = Probe("-v error -show_chapters -of default=noprint_wrappers=1 " + Media.Q(file));
    int n = 0;
-   foreach (string line in text.Split('\n')) if (line.Trim().StartsWith("index=", StringComparison.Ordinal)) n++;
+   foreach (string line in text.Split('\n')) if (line.Trim().StartsWith("id=", StringComparison.Ordinal)) n++;
    return n;
   }
   static string ChapterTitles(string file) {
