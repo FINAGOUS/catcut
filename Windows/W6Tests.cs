@@ -157,11 +157,25 @@ namespace DogSC.Replica {
     // 读文件形式的滤镜串要用 -/filter_complex（产品 Export() 也是这个写法）。
     RunFfmpeg("-v error -y -i " + Media.Q(morphSrc) + " -/filter_complex " + Media.Q(Path.Combine(Folder, "morph-filter.txt")) + " -map \"[video]\" -c:v libx264 -pix_fmt yuv420p -r 30 " + Media.Q(morphTimeline));
     Require(Math.Abs(Media.Duration(morphTimeline) - 2) < 0.05, "morph timeline keeps 2.0s");
-    string fA = Path.Combine(Folder, "mf-a.png"), fM = Path.Combine(Folder, "mf-m.png"), fB = Path.Combine(Folder, "mf-b.png");
-    FramePng(morphTimeline, 15, fA); FramePng(morphTimeline, 30, fM); FramePng(morphTimeline, 45, fB);
-    double cxA = BrightCentroidX(fA), cxM = BrightCentroidX(fM), cxB = BrightCentroidX(fB);
-    Require(cxA > 0 && cxB > 0 && cxM > 0, "morph frames have a visible square (A " + cxA.ToString("0.0") + ", M " + cxM.ToString("0.0") + ", B " + cxB.ToString("0.0") + ")");
-    Require(cxM > cxA + 2 && cxM < cxB - 2, "morph frame square sits between A and B (A " + cxA.ToString("0.0") + ", M " + cxM.ToString("0.0") + ", B " + cxB.ToString("0.0") + ")");
+    // 插值帧不在边界帧 30（那已是 B 的插值），而在窗口内第 3 帧（29，
+    // 插值发生在 A 尾最后一帧与 B 头第一帧之间）；不同 ffmpeg 版本采样
+    // 可能差 ±1 帧，所以扫整个窗口 27..32，断言窗口内必有一帧严格落在 A、B 之间。
+    string fA = Path.Combine(Folder, "mf-a.png"), fB = Path.Combine(Folder, "mf-b.png");
+    FramePng(morphTimeline, 15, fA); FramePng(morphTimeline, 45, fB);
+    double cxA = BrightCentroidX(fA), cxB = BrightCentroidX(fB);
+    Require(cxA > 0 && cxB > 0, "morph frames have a visible square (A " + cxA.ToString("0.0") + ", B " + cxB.ToString("0.0") + ")");
+    double winFirst = -1, winLast = -1; bool foundBetween = false; string winTrace = "";
+    for (int n = 27; n <= 32; n++) {
+     string fp = Path.Combine(Folder, "mf-w" + n + ".png");
+     FramePng(morphTimeline, n, fp);
+     double cx = BrightCentroidX(fp);
+     if (n == 27) winFirst = cx;
+     if (n == 32) winLast = cx;
+     if (cx > cxA + 2 && cx < cxB - 2) foundBetween = true;
+     winTrace += n + ":" + cx.ToString("0.0") + " ";
+    }
+    Require(Math.Abs(winFirst - cxA) < 2 && Math.Abs(winLast - cxB) < 2, "morph window starts as A and ends as B (" + winTrace.Trim() + ")");
+    Require(foundBetween, "morph window contains an interpolated frame between A and B (" + winTrace.Trim() + ")");
     mdoc.MorphEnabled = false;
     Require(!StudioMedia.Filter(mdoc, false).Contains("minterpolate"), "morph off leaves filter untouched");
     // 5. 配音：枚举不抛错、错误设备明确失败、遍往返。
@@ -240,7 +254,7 @@ namespace DogSC.Replica {
     string morphOut = Path.Combine(Folder, "morph-export.mp4");
     StudioRenderer.Export(medoc, morphOut, 360, 30, (v, s) => { }, CancellationToken.None);
     Require(Math.Abs(StudioMedia.Import(morphOut).Duration - 2) < 0.15, "export with morph keeps 2.0s");
-    File.WriteAllText(log, "PASS: RGB red halves (0.5,0,0), master halves all, RGB-after-HSL order (0.25,0.5,0.5), LUT key/path, y>1 rejected; flash map [0.5,1.5,3.0] gap skipped + window [beat,beat+frames/fps); dialogue preset lifts -40dB sine to " + dlgMean.ToString("0.0") + " dB mean, ducking " + musicOn.ToString("0.0") + " -> " + duckOn.ToString("0.0") + " dB under dialogue, recovers " + duckOff.ToString("0.0") + " vs " + musicOff.ToString("0.0") + "; morph boundary rules, filter minterpolate + concat n=3, timeline 2.0s, square A " + cxA.ToString("0.0") + " M " + cxM.ToString("0.0") + " B " + cxB.ToString("0.0") + ", off leaves filter untouched; mic enum no-throw (" + mics.Count + "), bogus mic fails fast, take round-trips Start 0.5; proxy generates + usage line; sv3d 106 bytes, Likely -> Definite, second inject no-op, 16:9 None; export dialogue+ducking+take 3s + audio, flash white " + brightOn.ToString("0") + " vs " + brightOff.ToString("0") + ", morph export 2.0s.\n");
+    File.WriteAllText(log, "PASS: RGB red halves (0.5,0,0), master halves all, RGB-after-HSL order (0.25,0.5,0.5), LUT key/path, y>1 rejected; flash map [0.5,1.5,3.0] gap skipped + window [beat,beat+frames/fps); dialogue preset lifts -40dB sine to " + dlgMean.ToString("0.0") + " dB mean, ducking " + musicOn.ToString("0.0") + " -> " + duckOn.ToString("0.0") + " dB under dialogue, recovers " + duckOff.ToString("0.0") + " vs " + musicOff.ToString("0.0") + "; morph boundary rules, filter minterpolate + concat n=3, timeline 2.0s, square A " + cxA.ToString("0.0") + " B " + cxB.ToString("0.0") + " window [" + winTrace.Trim() + "], off leaves filter untouched; mic enum no-throw (" + mics.Count + "), bogus mic fails fast, take round-trips Start 0.5; proxy generates + usage line; sv3d 106 bytes, Likely -> Definite, second inject no-op, 16:9 None; export dialogue+ducking+take 3s + audio, flash white " + brightOn.ToString("0") + " vs " + brightOff.ToString("0") + ", morph export 2.0s.\n");
    }
    catch (Exception ex) { File.WriteAllText(log, "FAIL\n" + ex); Environment.ExitCode = 1; }
   }
