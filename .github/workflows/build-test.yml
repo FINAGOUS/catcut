@@ -83,6 +83,14 @@ jobs:
           Get-Content 'Windows/bin/w7-results.txt' -Raw
           if ($test.ExitCode -ne 0 -or -not ((Get-Content 'Windows/bin/w7-results.txt' -Raw).StartsWith('PASS:'))) { throw 'W7 checks failed.' }
 
+      - name: Upload W7 results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w7-results
+          path: Windows/bin/w7-results.txt
+          if-no-files-found: warn
+
       - name: Package portable ZIP
         run: |
           $ErrorActionPreference = 'Stop'
