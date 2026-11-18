@@ -207,9 +207,9 @@ namespace DogSC.Windows {
     double duration=Media.Duration(output);if(Math.Abs(duration-2)>.15)throw new Exception("裁剪时长错误："+duration);
     string canceled=Path.Combine(folder,"canceled.mp4");using(var cancel=new CancellationTokenSource()){cancel.Cancel();try{Renderer.Export(p,source,canceled,0,2,true,1.6,0,v=>{},cancel.Token);throw new Exception("未能取消导出");}catch(OperationCanceledException){if(File.Exists(canceled))throw new Exception("取消后仍生成成片");}}
     // Exercise gdigrab only against this synthetic window, never the user's desktop.
-    using(var testWindow=new Form {Text="DogSC Capture Smoke",ClientSize=new Size(400,240),BackColor=Color.Teal,StartPosition=FormStartPosition.Manual,Location=new Point(40,40),TopMost=true}) {
-     testWindow.Controls.Add(new Label {Text="DogSC Windows capture test",ForeColor=Color.White,AutoSize=true,Location=new Point(20,50)});testWindow.Show();Application.DoEvents();
-     using(var ff=Media.Start("ffmpeg","-v error -y -f gdigrab -framerate 30 -draw_mouse 0 -i "+Media.Q("title=DogSC Capture Smoke")+" -t 1 -vf pad=ceil(iw/2)*2:ceil(ih/2)*2 -c:v libx264 -pix_fmt yuv420p "+Media.Q(Path.Combine(folder,"capture.mp4")),false)){var errors=ff.StandardError.ReadToEndAsync();if(!ff.WaitForExit(15000)){ff.Kill();throw new Exception("录屏测试超时");}if(ff.ExitCode!=0)throw new Exception("Windows 录屏测试失败："+errors.Result);}
+    using(var testWindow=new Form {Text="CatCut Capture Smoke",ClientSize=new Size(400,240),BackColor=Color.Teal,StartPosition=FormStartPosition.Manual,Location=new Point(40,40),TopMost=true}) {
+     testWindow.Controls.Add(new Label {Text="CatCut Windows capture test",ForeColor=Color.White,AutoSize=true,Location=new Point(20,50)});testWindow.Show();Application.DoEvents();
+     using(var ff=Media.Start("ffmpeg","-v error -y -f gdigrab -framerate 30 -draw_mouse 0 -i "+Media.Q("title=CatCut Capture Smoke")+" -t 1 -vf pad=ceil(iw/2)*2:ceil(ih/2)*2 -c:v libx264 -pix_fmt yuv420p "+Media.Q(Path.Combine(folder,"capture.mp4")),false)){var errors=ff.StandardError.ReadToEndAsync();if(!ff.WaitForExit(15000)){ff.Kill();throw new Exception("录屏测试超时");}if(ff.ExitCode!=0)throw new Exception("Windows 录屏测试失败："+errors.Result);}
      testWindow.Close();
     }
     if(Math.Abs(Media.Duration(Path.Combine(folder,"capture.mp4"))-1)>.15)throw new Exception("录屏时长错误");
