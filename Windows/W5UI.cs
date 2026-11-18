@@ -92,7 +92,7 @@ namespace DogSC.Replica {
    Section("HSL 曲线");
    HslCurveEditor("色相 – 饱和度（x = 色相 0–360°，y = 饱和度倍数，1 = 不变）", g.HslCurveSat, 0, 3, 1, () => { Checkpoint(); g.HslCurveSat = HslCurves.IdentitySat(); Changed(); BuildInspector(); });
    HslCurveEditor("色相 – 明度（x = 色相 0–360°，y = 明度增量，0 = 不变）", g.HslCurveLum, -1, 1, 0, () => { Checkpoint(); g.HslCurveLum = HslCurves.IdentityLum(); Changed(); BuildInspector(); });
-   Note("曲线烤进 17³ .cube（与 HSL 分区、色轮同一条 LUT 路，预览与导出一致；color.ts 的 applyCurve：分段线性、端点外钳制）。拖点移动，双击加曲点，右键点删除（至少留 2 个点）。RGB/主曲线仍未接。");
+   Note("曲线烤进 17³ .cube（与 HSL 分区、色轮同一条 LUT 路，预览与导出一致；color.ts 的 applyCurve：分段线性、端点外钳制）。拖点移动，双击加曲点，右键点删除（至少留 2 个点）。RGB/主曲线见下面一节（W6 接线）。");
   }
   void HslCurveEditor(string title, List<CurvePoint> points, double yLo, double yHi, double neutral, Action reset) {
    var label = UI.Text(title, 13, "#63696D");

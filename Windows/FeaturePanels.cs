@@ -38,8 +38,9 @@
 //
 // 限制（诚实写清）：W5 已接——自动识别字幕（Whisper，W5Panels.cs /
 // W5UI.cs）与 HSL 曲线编辑器（HslCurveSat/HslCurveLum，烘焙进同一张
-// LUT）。仍未接：RGB/主曲线；混音台的电平表 UI 在 W5UI.cs（BuildLevelMeterSection），
-// 模型在 W5Panels.cs 的 LevelMeter；美颜/降噪/变速的面板接线也在 W5 批。
+// LUT）。W6 已接——RGB/主曲线（RgbR/RgbG/RgbB/RgbMaster，同进一张 LUT）。
+// 混音台的电平表 UI 在 W5UI.cs（BuildLevelMeterSection），模型在
+// W5Panels.cs 的 LevelMeter；美颜/降噪/变速的面板接线也在 W5 批。
 // 本机 Linux 跑不了 WPF，验证全靠云端 windows-2025 构建 + 启动检查
 // + 新增的 --w3-test（FeaturePanelsTests.cs）与 --w5-test（W5Tests.cs）。
 using System;
@@ -59,7 +60,9 @@ namespace DogSC.Replica {
  public class MixerChannel {
   // Role 取值：对话（主音轨）/音乐（本地音频床）/音效/旁白。C# 侧目前只
   // 有主音轨与音乐床两种来源，音效/旁白角色保留给以后接 TTS/音效轨。
-  public string Role="对话"; public string SourcePath=""; public double GainDb; public double Pan; public bool Mute; public bool Solo;
+  // W6：旁白 = 时间线内录配音的每一遍；Start 是录制时的播放头位置
+  // （时间线秒），导出时按 Start 对齐（adelay），不循环。
+  public string Role="对话"; public string SourcePath=""; public double GainDb; public double Pan; public bool Mute; public bool Solo; public double Start;
  }
  public class PlaySegment {
   public bool Gap; public double TimelineStart; public double TimelineEnd;
@@ -83,6 +86,13 @@ namespace DogSC.Replica {
   // 烤进同一张 LUT，顺序在色轮之后（color.ts 的 applyCurve 位置）。
   public List<CurvePoint> HslCurveSat=HslCurves.IdentitySat();
   public List<CurvePoint> HslCurveLum=HslCurves.IdentityLum();
+  // RGB/主曲线（W6 接线，color.ts 的 curves）：x/y 都是亮度 0–1，对角线
+  // y=x = 不变。顺序在 HSL 曲线之后：先 R/G/B 逐通道查表，再主曲线作用于
+  // 每个通道；同样烤进同一张 LUT。
+  public List<CurvePoint> RgbR=RgbCurves.Identity();
+  public List<CurvePoint> RgbG=RgbCurves.Identity();
+  public List<CurvePoint> RgbB=RgbCurves.Identity();
+  public List<CurvePoint> RgbMaster=RgbCurves.Identity();
   public static readonly string[] HslZoneNames=new[]{"红","橙","黄","绿","青","蓝","品红"};
   public static readonly double[] HslZoneCenters=new[]{0.0,30,60,120,180,240,300};
   public static readonly string[] WheelZoneNames=new[]{"阴影","中间调","高光"};
@@ -93,6 +103,10 @@ namespace DogSC.Replica {
    for(int i=0;i<3;i++)if(!Near(WheelHue[i],0)||!Near(WheelSat[i],1))return false;
    if(HslCurveSat!=null&&!HslCurves.IsIdentitySat(HslCurveSat))return false;
    if(HslCurveLum!=null&&!HslCurves.IsIdentityLum(HslCurveLum))return false;
+   if(RgbR!=null&&!RgbCurves.IsIdentity(RgbR))return false;
+   if(RgbG!=null&&!RgbCurves.IsIdentity(RgbG))return false;
+   if(RgbB!=null&&!RgbCurves.IsIdentity(RgbB))return false;
+   if(RgbMaster!=null&&!RgbCurves.IsIdentity(RgbMaster))return false;
    return true;
   }
   // 白平衡色调（tint）没有 P0 的 colorbalance 等价写法（colorbalance 只有
@@ -104,6 +118,10 @@ namespace DogSC.Replica {
    for(int i=0;i<3;i++)if(!Near(WheelHue[i],0)||!Near(WheelSat[i],1))return true;
    if(HslCurveSat!=null&&!HslCurves.IsIdentitySat(HslCurveSat))return true;
    if(HslCurveLum!=null&&!HslCurves.IsIdentityLum(HslCurveLum))return true;
+   if(RgbR!=null&&!RgbCurves.IsIdentity(RgbR))return true;
+   if(RgbG!=null&&!RgbCurves.IsIdentity(RgbG))return true;
+   if(RgbB!=null&&!RgbCurves.IsIdentity(RgbB))return true;
+   if(RgbMaster!=null&&!RgbCurves.IsIdentity(RgbMaster))return true;
    return false;
   }
   // 解码器 vf 链的追加片段（以逗号开头，直接拼在 scale=... 之后）。
@@ -139,6 +157,10 @@ namespace DogSC.Replica {
    for(int i=0;i<3;i++)sb.Append("/").Append(Media.N(WheelHue[i])).Append(",").Append(Media.N(WheelSat[i]));
    if(HslCurveSat!=null)sb.Append("/").Append(HslCurves.Key(HslCurveSat));
    if(HslCurveLum!=null)sb.Append("/").Append(HslCurves.Key(HslCurveLum));
+   if(RgbR!=null)sb.Append("/").Append(HslCurves.Key(RgbR));
+   if(RgbG!=null)sb.Append("/").Append(HslCurves.Key(RgbG));
+   if(RgbB!=null)sb.Append("/").Append(HslCurves.Key(RgbB));
+   if(RgbMaster!=null)sb.Append("/").Append(HslCurves.Key(RgbMaster));
    return sb.ToString();
   }
   public void Reset(){
@@ -146,13 +168,14 @@ namespace DogSC.Replica {
    for(int i=0;i<7;i++){HslSat[i]=1;HslLum[i]=0;}
    for(int i=0;i<3;i++){WheelHue[i]=0;WheelSat[i]=1;}
    HslCurveSat=HslCurves.IdentitySat();HslCurveLum=HslCurves.IdentityLum();
+   RgbR=RgbCurves.Identity();RgbG=RgbCurves.Identity();RgbB=RgbCurves.Identity();RgbMaster=RgbCurves.Identity();
   }
  }
 
  // color.ts 的 applyAdvancedColorToRgb / buildColorLut / lutToCube 的 C# 移植。
  // 数学逐行照抄 TS（白平衡增益、HSL 分区权重、色轮 smoothstep 权重、HSL 互转）；
  // 曲线（huevsat/huevlum）W5 已接：顺序在色轮之后，见 Apply 末尾。
- // 仍不含 RGB/主曲线（curves）——那个编辑器未接。
+ // RGB/主曲线 W6 已接：顺序在 HSL 曲线之后，见 Apply 末尾的 curves 段。
  static class ColorLut {
   static double Clamp01(double v){return Math.Max(0,Math.Min(1,v));}
   static double HueDistance(double a,double b){double d=Math.Abs(a-b)%360;return d>180?360-d:d;}
@@ -205,6 +228,12 @@ namespace DogSC.Replica {
     }
     var rgb=HslToRgb(h,s,l);r=rgb[0];g=rgb[1];b=rgb[2];
    }
+   // RGB/主曲线（W6，color.ts 的 curves 顺序：HSL 曲线之后，先 R/G/B 逐通道
+   // 查表，再主曲线作用于每个通道；identity 时跳过，不改 LUT 键）。
+   if(grade.RgbR!=null&&!RgbCurves.IsIdentity(grade.RgbR))r=HslCurves.ApplyCurve(grade.RgbR,r);
+   if(grade.RgbG!=null&&!RgbCurves.IsIdentity(grade.RgbG))g=HslCurves.ApplyCurve(grade.RgbG,g);
+   if(grade.RgbB!=null&&!RgbCurves.IsIdentity(grade.RgbB))b=HslCurves.ApplyCurve(grade.RgbB,b);
+   if(grade.RgbMaster!=null&&!RgbCurves.IsIdentity(grade.RgbMaster)){r=HslCurves.ApplyCurve(grade.RgbMaster,r);g=HslCurves.ApplyCurve(grade.RgbMaster,g);b=HslCurves.ApplyCurve(grade.RgbMaster,b);}
    return new[]{Clamp01(r),Clamp01(g),Clamp01(b)};
   }
   public static string BuildCube(ColorGrade grade,int size=17){
