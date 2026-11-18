@@ -43,43 +43,43 @@ jobs:
       - name: Startup checks
         run: |
           $ErrorActionPreference = 'Stop'
-          $app = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/DogSC.Windows.exe') -ArgumentList '--snapshot' -WindowStyle Hidden -PassThru
+          $app = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/CatCut.exe') -ArgumentList '--snapshot' -WindowStyle Hidden -PassThru
           if (-not $app.WaitForExit(30000)) { Stop-Process -Id $app.Id; throw 'Startup check timed out.' }
           if ($app.ExitCode -ne 0 -or -not (Test-Path 'Windows/bin/editor-preview.png')) { throw 'Startup check failed.' }
-          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/DogSC.Windows.exe') -ArgumentList '--update-test' -WindowStyle Hidden -PassThru -Wait
+          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/CatCut.exe') -ArgumentList '--update-test' -WindowStyle Hidden -PassThru -Wait
           if ($test.ExitCode -ne 0 -or -not ((Get-Content 'Windows/bin/update-results.txt' -Raw).StartsWith('PASS:'))) { throw 'Update checks failed.' }
 
       - name: W3 feature-panel checks
         run: |
           $ErrorActionPreference = 'Stop'
-          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/DogSC.Windows.exe') -ArgumentList '--w3-test' -WindowStyle Hidden -PassThru -Wait
+          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/CatCut.exe') -ArgumentList '--w3-test' -WindowStyle Hidden -PassThru -Wait
           if ($test.ExitCode -ne 0 -or -not ((Get-Content 'Windows/bin/w3-results.txt' -Raw).StartsWith('PASS:'))) { throw 'W3 checks failed.' }
 
       - name: W4 autosave/cache/camera checks
         run: |
           $ErrorActionPreference = 'Stop'
-          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/DogSC.Windows.exe') -ArgumentList '--w4-test' -WindowStyle Hidden -PassThru -Wait
+          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/CatCut.exe') -ArgumentList '--w4-test' -WindowStyle Hidden -PassThru -Wait
           Get-Content 'Windows/bin/w4-results.txt' -Raw
           if ($test.ExitCode -ne 0 -or -not ((Get-Content 'Windows/bin/w4-results.txt' -Raw).StartsWith('PASS:'))) { throw 'W4 checks failed.' }
 
       - name: W5 panels checks
         run: |
           $ErrorActionPreference = 'Stop'
-          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/DogSC.Windows.exe') -ArgumentList '--w5-test' -WindowStyle Hidden -PassThru -Wait
+          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/CatCut.exe') -ArgumentList '--w5-test' -WindowStyle Hidden -PassThru -Wait
           Get-Content 'Windows/bin/w5-results.txt' -Raw
           if ($test.ExitCode -ne 0 -or -not ((Get-Content 'Windows/bin/w5-results.txt' -Raw).StartsWith('PASS:'))) { throw 'W5 checks failed.' }
 
       - name: W6 panels checks
         run: |
           $ErrorActionPreference = 'Stop'
-          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/DogSC.Windows.exe') -ArgumentList '--w6-test' -WindowStyle Hidden -PassThru -Wait
+          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/CatCut.exe') -ArgumentList '--w6-test' -WindowStyle Hidden -PassThru -Wait
           Get-Content 'Windows/bin/w6-results.txt' -Raw
           if ($test.ExitCode -ne 0 -or -not ((Get-Content 'Windows/bin/w6-results.txt' -Raw).StartsWith('PASS:'))) { throw 'W6 checks failed.' }
 
       - name: W7 panels checks
         run: |
           $ErrorActionPreference = 'Stop'
-          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/DogSC.Windows.exe') -ArgumentList '--w7-test' -WindowStyle Hidden -PassThru -Wait
+          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/CatCut.exe') -ArgumentList '--w7-test' -WindowStyle Hidden -PassThru -Wait
           Get-Content 'Windows/bin/w7-results.txt' -Raw
           if ($test.ExitCode -ne 0 -or -not ((Get-Content 'Windows/bin/w7-results.txt' -Raw).StartsWith('PASS:'))) { throw 'W7 checks failed.' }
 
@@ -94,7 +94,7 @@ jobs:
       - name: W8 effects checks
         run: |
           $ErrorActionPreference = 'Stop'
-          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/DogSC.Windows.exe') -ArgumentList '--w8effects-test' -WindowStyle Hidden -PassThru -Wait
+          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/CatCut.exe') -ArgumentList '--w8effects-test' -WindowStyle Hidden -PassThru -Wait
           Get-Content 'Windows/bin/w8effects-results.txt' -Raw
           if ($test.ExitCode -ne 0 -or -not ((Get-Content 'Windows/bin/w8effects-results.txt' -Raw).StartsWith('PASS:'))) { throw 'W8 effects checks failed.' }
 
@@ -109,7 +109,7 @@ jobs:
       - name: W8 audio checks
         run: |
           $ErrorActionPreference = 'Stop'
-          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/DogSC.Windows.exe') -ArgumentList '--w8audio-test' -WindowStyle Hidden -PassThru -Wait
+          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/CatCut.exe') -ArgumentList '--w8audio-test' -WindowStyle Hidden -PassThru -Wait
           Get-Content 'Windows/bin/w8audio-results.txt' -Raw
           if ($test.ExitCode -ne 0 -or -not ((Get-Content 'Windows/bin/w8audio-results.txt' -Raw).StartsWith('PASS:'))) { throw 'W8 audio checks failed.' }
 
@@ -124,7 +124,7 @@ jobs:
       - name: W8 timeline checks
         run: |
           $ErrorActionPreference = 'Stop'
-          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/DogSC.Windows.exe') -ArgumentList '--w8timeline-test' -WindowStyle Hidden -PassThru -Wait
+          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/CatCut.exe') -ArgumentList '--w8timeline-test' -WindowStyle Hidden -PassThru -Wait
           Get-Content 'Windows/bin/w8timeline-results.txt' -Raw
           if ($test.ExitCode -ne 0 -or -not ((Get-Content 'Windows/bin/w8timeline-results.txt' -Raw).StartsWith('PASS:'))) { throw 'W8 checks failed.' }
 
@@ -139,7 +139,7 @@ jobs:
       - name: W8 colour checks
         run: |
           $ErrorActionPreference = 'Stop'
-          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/DogSC.Windows.exe') -ArgumentList '--w8colour-test' -WindowStyle Hidden -PassThru -Wait
+          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/CatCut.exe') -ArgumentList '--w8colour-test' -WindowStyle Hidden -PassThru -Wait
           Get-Content 'Windows/bin/w8colour-results.txt' -Raw
           if ($test.ExitCode -ne 0 -or -not ((Get-Content 'Windows/bin/w8colour-results.txt' -Raw).StartsWith('PASS:'))) { throw 'W8 colour checks failed.' }
 
