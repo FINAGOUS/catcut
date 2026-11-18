@@ -67,6 +67,10 @@ namespace DogSC.Replica {
  public class PlaySegment {
   public bool Gap; public double TimelineStart; public double TimelineEnd;
   public double SourceStart; public double SourceEnd; public double Speed=1; public string File="";
+  // W8：J/L 音频窗口（源秒数，默认等于视频源范围）与纯音频片段（黑视频 + 音频保留）。
+  // AudioSilent = 音频窗口已耗尽（窗口比视频短），该段音频补静音（apad 只能补尾巴，
+  // 整段都没音时直接走 anullsrc）。
+  public double AudioStart; public double AudioEnd; public bool AudioOnly; public bool AudioSilent;
   public double Length { get { return TimelineEnd-TimelineStart; } }
  }
 
@@ -444,13 +448,17 @@ namespace DogSC.Replica {
    var segs=new List<PlaySegment>();double offset=0;
    foreach(var c in doc.Cuts){
     double len=c.Length;
-    if(c.Gap){segs.Add(new PlaySegment {Gap=true,TimelineStart=offset,TimelineEnd=offset+len,SourceStart=c.Start,SourceEnd=c.Start,Speed=1,File=doc.Source});offset+=len;continue;}
+    if(c.Gap){segs.Add(new PlaySegment {Gap=true,TimelineStart=offset,TimelineEnd=offset+len,SourceStart=c.Start,SourceEnd=c.Start,AudioStart=c.Start,AudioEnd=c.Start,Speed=1,File=doc.Source});offset+=len;continue;}
+    // W8 J/L：音频窗口（源秒数）与视频窗口独立；该段音频取窗口内对应位置
+    // （aIn + 段内偏移 × 速度），再由 Filter() 的 apad/atrim 对齐视频时长。
+    double aIn=c.AudioIn.HasValue?c.AudioIn.Value:c.Start, aOut=c.AudioOut.HasValue?c.AudioOut.Value:c.End;
     var bounds=new List<double>{offset,offset+len};
     if(doc.MulticamSwitches!=null)foreach(var s in doc.MulticamSwitches)if(s.Time>offset+.001&&s.Time<offset+len-.001)bounds.Add(s.Time);
     bounds.Sort();
     for(int i=0;i+1<bounds.Count;i++){
      double t0=bounds[i],t1=bounds[i+1];int angle=AngleAt(doc,t0);
-     segs.Add(new PlaySegment {TimelineStart=t0,TimelineEnd=t1,SourceStart=c.Start+(t0-offset)*c.Speed,SourceEnd=c.Start+(t1-offset)*c.Speed,Speed=c.Speed,File=AngleSource(doc,angle)});
+     double auS=aIn+(t0-offset)*c.Speed, auE=Math.Min(aOut,aIn+(t1-offset)*c.Speed);
+     segs.Add(new PlaySegment {TimelineStart=t0,TimelineEnd=t1,SourceStart=c.Start+(t0-offset)*c.Speed,SourceEnd=c.Start+(t1-offset)*c.Speed,AudioStart=auS,AudioEnd=auE,AudioOnly=c.AudioOnly,AudioSilent=auS>=aOut,Speed=c.Speed,File=AngleSource(doc,angle)});
     }
     offset+=len;
    }
