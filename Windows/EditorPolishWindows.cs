@@ -9,6 +9,7 @@ using System.Windows.Media;
 using System.Windows.Media.Effects;
 using System.Windows.Interop;
 using System.Windows.Threading;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Input;
 using System.Collections.Generic;
