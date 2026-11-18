@@ -18,7 +18,10 @@ namespace DogSC.Replica {
  public class Cut { public double Start; public double End; public double Speed=1; public double Length { get { return Gap?GapDuration:(End-Start)/Speed; } }
   // W3 波纹/空隙：Gap=true 时这段不是源素材，而是黑场 + 静音的空隙；
   // Start==End 为锚点源时间（空隙不消耗源时间），GapDuration 是时间线时长。
-  public bool Gap; public double GapDuration; }
+  public bool Gap; public double GapDuration;
+  // W8 J/L 剪辑：音频 in/out（源秒数，可超出视频窗口，null = 与视频同步）；
+  // AudioOnly = 联动关时删视频留下的纯音频片段（黑视频 + 音频保留）。
+  public double? AudioIn; public double? AudioOut; public bool AudioOnly; }
  public class Zoom { public double Start; public double End; public double Scale=1.6; public double X=.5; public double Y=.5; public bool Automatic; public double Transition=.7; public string Easing="spring"; }
  public class Appearance {
   public string Ratio="16:9"; public string Background="dots"; public string ImagePath="";
@@ -54,6 +57,10 @@ namespace DogSC.Replica {
   public bool FlashEnabled; public int FlashFrames=2; public double FlashIntensity=1; public List<double> FlashBeats=new List<double>();
   public bool MorphEnabled; public double MorphSeconds=0.2;
   public bool Spherical360;
+  // W8：音画联动锁定（默认开；Alt 键临时取反）、调整层、复合片段
+  // （模型见 Windows/W8TimelinePanels.cs；老工程反序列化为 null/默认，
+  // Validate() 里补默认值与范围校验）。
+  public bool LinkSelection=true; public List<AdjustmentLayer> AdjustmentLayers=new List<AdjustmentLayer>(); public List<CompoundClip> CompoundClips=new List<CompoundClip>();
   public double Length { get { return Cuts.Sum(c=>c.Length); } }
   public static JavaScriptSerializer Serializer() { return new JavaScriptSerializer { MaxJsonLength=int.MaxValue }; }
   public string Serialize() { return Serializer().Serialize(this); }
@@ -77,6 +84,12 @@ namespace DogSC.Replica {
    if(string.IsNullOrEmpty(AudioType))AudioType="无";
    if(FlashBeats==null)FlashBeats=new List<double>();
    if(Grade.RgbR==null)Grade.RgbR=RgbCurves.Identity(); if(Grade.RgbG==null)Grade.RgbG=RgbCurves.Identity(); if(Grade.RgbB==null)Grade.RgbB=RgbCurves.Identity(); if(Grade.RgbMaster==null)Grade.RgbMaster=RgbCurves.Identity();
+   // W8：老项目缺新字段时补默认值；J/L 音频窗口、调整层、复合片段逐项校验。
+   if(AdjustmentLayers==null)AdjustmentLayers=new List<AdjustmentLayer>();
+   if(CompoundClips==null)CompoundClips=new List<CompoundClip>();
+   JlAudio.ValidateAll(this);
+   foreach(var layer in AdjustmentLayers)AdjustmentLayerFilter.Validate(layer,Length);
+   foreach(var cc in CompoundClips){if(cc==null)throw new Exception("复合片段为空。");if(cc.Depth<0||cc.Depth>=CompoundTimeline.MaxDepth)throw new Exception("复合片段嵌套超过 2 层上限。");if(!Finite(cc.In)||!Finite(cc.Out)||cc.In<0||cc.Out<=cc.In)throw new Exception("复合片段窗口无效。");if(!string.IsNullOrEmpty(cc.ProjectPath)&&!File.Exists(cc.ProjectPath))throw new Exception("复合片段的子项目文件缺失："+cc.ProjectPath);}
    if(!Finite(FrameRate)||FrameRate<=0||FrameRate>240)FrameRate=30;
    if(Cuts.Any(c=>!Finite(c.Start)||!Finite(c.End)||!Finite(c.Speed)||c.Start<0||c.End>Duration+.1||(!c.Gap&&(c.End<=c.Start||c.Speed<.5||c.Speed>2))||(c.Gap&&(!Finite(c.GapDuration)||c.GapDuration<=0||c.End<c.Start)))) throw new Exception("项目的剪辑范围无效。");
    // W3：字幕 / 调色 / 混音 / 代理 / 多机位校验（范围外的值直接拒绝，不静默修正）。
@@ -229,8 +242,14 @@ namespace DogSC.Replica {
    }
    for(int i=0;i<segs.Count;i++){var g=segs[i];
     if(g.Gap){s.Append("color=c=black:s="+doc.Width+"x"+doc.Height+":r="+Media.N(doc.FrameRate)+":d="+Media.N(g.Length)+"[v"+i+"];\n");if(audio)s.Append("anullsrc=r=48000:cl=stereo:d="+Media.N(g.Length)+"[a"+i+"];\n");}
+    // W8 AudioOnly（联动关时删视频留音频）：视频黑场，音频照常用 J/L 窗口走；
+    // 音频窗口耗尽的段补静音（anullsrc，与空隙同款）。
+    else if(g.AudioOnly){s.Append("color=c=black:s="+doc.Width+"x"+doc.Height+":r="+Media.N(doc.FrameRate)+":d="+Media.N(g.Length)+"[v"+i+"];\n");if(audio){if(g.AudioSilent)s.Append("anullsrc=r=48000:cl=stereo:d="+Media.N(g.Length)+"[a"+i+"];\n");else s.Append("[0:a:0]atrim=start="+Media.N(g.AudioStart)+":end="+Media.N(g.AudioEnd)+",asetpts=PTS-STARTPTS,atempo="+Media.N(g.Speed)+",apad,atrim=duration="+Media.N(g.Length)+"[a"+i+"];\n");}}
     else{int v=inputOf(g.File);s.Append("["+v+":v]trim=start="+Media.N(g.SourceStart)+":end="+Media.N(g.SourceEnd)+",setpts=(PTS-STARTPTS)/"+Media.N(g.Speed)+"[v"+i+"];\n");
-     if(audio)s.Append("[0:a:0]atrim=start="+Media.N(g.SourceStart)+":end="+Media.N(g.SourceEnd)+",asetpts=PTS-STARTPTS,atempo="+Media.N(g.Speed)+",apad,atrim=duration="+Media.N(g.Length)+"[a"+i+"];\n");}
+     // W8 J/L：音频用 AudioStart/AudioEnd（默认等于视频源范围）；窗口长于视频时
+     // apad 补静音、短于视频时 atrim 截到视频时长（与引擎 clipAudioChains 同款）；
+     // 窗口已耗尽的段直接补静音。
+     if(audio){if(g.AudioSilent)s.Append("anullsrc=r=48000:cl=stereo:d="+Media.N(g.Length)+"[a"+i+"];\n");else s.Append("[0:a:0]atrim=start="+Media.N(g.AudioStart)+":end="+Media.N(g.AudioEnd)+",asetpts=PTS-STARTPTS,atempo="+Media.N(g.Speed)+",apad,atrim=duration="+Media.N(g.Length)+"[a"+i+"];\n");}}
     tracks.Append("[v"+i+"]");if(audio)tracks.Append("[a"+i+"]");
     string tag;if(morphAt.TryGetValue(i,out tag)){
      // A 尾 = [新 SourceEnd, 新 SourceEnd+half]，B 头 = [新 SourceStart-half, 新 SourceStart]。
@@ -426,6 +445,16 @@ namespace DogSC.Replica {
   }
   public static void Export(EditDocument doc,string output,ExportOptions options,Action<double,string> progress,CancellationToken token,Action<string> diagnostics=null) {
    doc.Validate();if(options==null)options=ExportOptions.Sdr(1080,30);options.Validate();int fps=options.Fps;
+   // W8 仅导出字幕：只写字幕边车文件，不渲染视频（deliver.ts 的 subtitleOnly 同款）。
+   if(options.OnlyMode=="subtitle"){
+    if(doc.Subtitles==null||doc.Subtitles.Count==0)throw new Exception("没有字幕可导出：先添加字幕。");
+    string ext=doc.SubtitleSidecar=="ass"?".ass":doc.SubtitleSidecar=="vtt"?".vtt":".srt";
+    string sidecar=Path.ChangeExtension(output,ext);
+    if(File.Exists(sidecar))throw new Exception("请选择一个新的导出文件名。");
+    string text=doc.SubtitleSidecar=="ass"?SubtitleFiles.ToAss(doc.Subtitles,doc.Width,doc.Height):doc.SubtitleSidecar=="vtt"?SubtitleFiles.ToVtt(doc.Subtitles):SubtitleFiles.ToSrt(doc.Subtitles);
+    File.WriteAllText(sidecar,text,new UTF8Encoding(false));
+    progress(1,"仅导出字幕完成");return;
+   }
    if(File.Exists(output))throw new Exception("请选择一个新的导出文件名。");
    var size=SceneLayout.OutputSize(doc,options.Height);int width=size[0];int height=size[1];
    string work=Path.Combine(Path.GetDirectoryName(output),".dogsc-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(work);
@@ -434,6 +463,15 @@ namespace DogSC.Replica {
     string timeline=Path.Combine(work,"timeline.mp4"),filter=Path.Combine(work,"timeline.txt"),result=Path.Combine(work,"result.mp4");
     progress(0,"整理时间线");bool direct=doc.Cuts.Count==1&&Math.Abs(doc.Cuts[0].Speed-1)<.000001&&!doc.Cuts[0].Gap&&!MulticamModel.Active(doc);string media=direct?doc.Source:timeline;string selection=direct?"-ss "+Media.N(doc.Cuts[0].Start)+" -t "+Media.N(doc.Cuts[0].End-doc.Cuts[0].Start)+" ":"";
     if(!direct){File.WriteAllText(filter,StudioMedia.Filter(doc,doc.Audio),new UTF8Encoding(false));var inputs=string.Join(" ",StudioMedia.InputFiles(doc).Select(f=>"-i "+Media.Q(f)).ToArray());StudioMedia.Run("-v error -y "+inputs+" -/filter_complex "+Media.Q(filter)+" -map [video] "+(doc.Audio?"-map [audio] -c:a aac ":"")+"-c:v libx264 -preset ultrafast -crf 16 -pix_fmt yuv420p -r "+fps+" "+Media.Q(timeline),token);}
+    // W8 仅导出音频：时间线已拼好（或单源直通），只抽音频、不渲染画面；
+    // 输入 0 是 anullsrc 占位（AudioArgs 的 -map 1:a:0 与音乐床输入序号都按
+    // media 在 1 号位算），不混入输出。
+    if(options.OnlyMode=="audio"){
+     string musicInputs2;string aargs=AudioArgs(doc,media,out musicInputs2);
+     if(aargs.Trim()=="-an")throw new Exception("当前项目没有可导出的音频。");
+     StudioMedia.Run("-v error -y -f lavfi -i anullsrc=r=48000:cl=stereo -i "+Media.Q(media)+musicInputs2+" "+aargs+" -vn -t "+Media.N(doc.Length)+" "+Media.Q(result),token);
+     File.Move(result,output);SubtitleFiles.WriteSidecar(doc,output);progress(1,"导出完成");return;
+    }
     token.ThrowIfCancellationRequested();progress(.1,"渲染画面与运镜");
     int dw=Math.Min(doc.Width,width);dw-=dw%2;int dh=Math.Max(2,(int)Math.Round((double)dw*doc.Height/doc.Width/2)*2);
     // W5：降噪（整条时间线统一强度）拼进解码 vf；美颜有遮罩时走遮罩图
@@ -442,6 +480,9 @@ namespace DogSC.Replica {
     // 空隙）。遮罩图里调色在 overlay 之后贴（W5Media.MaskedFilterComplex
     // 内部拼 GradeChain），videoFilters 里只放 fps/scale/降噪，不重复贴调色。
     string effectVf=W5Effects.VideoFilter(doc);
+    // W8 调整层：eq/colorbalance + enable=between 拼进解码 vf（时间线时间 t）；
+    // 美颜遮罩路径的 videoFilters 字符串里同样带 effectVf，两路都覆盖。
+    effectVf+=AdjustmentLayerFilter.Build(doc);
     string maskFile=null;
     if(doc.BeautyEnabled){
      if(direct)maskFile=doc.BeautyMaskPath;
@@ -454,7 +495,7 @@ namespace DogSC.Replica {
      decoder=Media.Start("ffmpeg","-v error "+selection+"-i "+Media.Q(media)+" -an -vf "+(direct?"fps="+fps+",":"")+"scale="+dw+":"+dh+doc.Grade.VideoFilter()+effectVf+" -pix_fmt bgra -f rawvideo pipe:1",true);
     }
     var decodeError=decoder.StandardError.ReadToEndAsync();
-    string musicInputs;string audioArgs=AudioArgs(doc,media,out musicInputs);
+    string musicInputs="";string audioArgs=options.OnlyMode=="video"?"-an ":AudioArgs(doc,media,out musicInputs);
     encoder=Media.Start("ffmpeg","-v error -y -f rawvideo -pixel_format bgra -video_size "+width+"x"+height+" -framerate "+fps+" -i pipe:0 "+selection+"-i "+Media.Q(media)+musicInputs+" -map 0:v "+audioArgs+options.VideoEncoderArgs()+" -t "+Media.N(doc.Length)+" -movflags +faststart "+Media.Q(result),false);var encodeError=encoder.StandardError.ReadToEndAsync();
     using(token.Register(()=>{try{decoder.Kill();}catch{}try{encoder.Kill();}catch{}}))
     using(var source=new Bitmap(dw,dh,PixelFormat.Format32bppArgb))using(var canvas=new Bitmap(width,height,PixelFormat.Format32bppArgb))using(var g=Graphics.FromImage(canvas))
