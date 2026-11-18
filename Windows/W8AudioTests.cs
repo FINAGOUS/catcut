@@ -305,7 +305,11 @@ namespace DogSC.Replica {
     string dualOut = Path.Combine(Folder, "dual-out.mp4");
     StudioRenderer.Export(edoc, dualOut, 360, 30, (v, s) => { }, CancellationToken.None);
     var dualOutPcm = Pcm(dualOut);
-    double eqBoostExport = Goertzel(dualOutPcm, 3000) - Goertzel(Pcm(dualSrc), 3000);
+    var dualSrcPcm = Pcm(dualSrc);
+    double src3000 = Goertzel(dualSrcPcm, 3000), src440 = Goertzel(dualSrcPcm, 440);
+    double out3000 = Goertzel(dualOutPcm, 3000), out440 = Goertzel(dualOutPcm, 440);
+    Mark("EQ export diag: src 3000=" + src3000.ToString("0.00") + " 440=" + src440.ToString("0.00") + " samples=" + dualSrcPcm.Length + " audio=" + AudioInfo(dualSrc) + " dur=" + StudioMedia.Import(dualSrc).Duration.ToString("0.00") + " | out 3000=" + out3000.ToString("0.00") + " 440=" + out440.ToString("0.00") + " samples=" + dualOutPcm.Length + " audio=" + AudioInfo(dualOut) + " | eqFilter=" + edoc.Eq.Filter() + " vol=" + edoc.Style.Volume.ToString("0.00"));
+    double eqBoostExport = out3000 - src3000;
     Require(Near(eqBoostExport, 6, 1.5), "exported EQ +6dB @3000Hz measures +" + eqBoostExport.ToString("0.00") + "dB");
     Mark("STEP 7 EQ curve + export + waveform OK");
     // 8. 压缩器：滤镜串 + 校验 + 估算 + 两段电平实测。
