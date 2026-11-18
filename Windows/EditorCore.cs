@@ -47,6 +47,13 @@ namespace DogSC.Replica {
   // 降噪是整条时间线统一强度（引擎是逐片段；C# 解码时作用于已拼好的时间线）。
   public double DenoiseStrength; public bool BeautyEnabled; public double BeautyStrength=50; public string BeautyMode="single"; public string BeautyMaskPath=""; public double BeautyEdgeFeather=1;
   public List<RecordingMarker> RecordingMarkers=new List<RecordingMarker>();
+  // W6：音频类型/闪避/闪白/Morph/360°（模型见 Windows/W6Panels.cs；老工程
+  // 反序列化时为默认值，Validate() 里补默认值与范围校验）。AudioDucking
+  // 默认关——老项目导出行为不变；选“对话”预设时面板会帮它打开。
+  public string AudioType="无"; public bool AudioDucking;
+  public bool FlashEnabled; public int FlashFrames=2; public double FlashIntensity=1; public List<double> FlashBeats=new List<double>();
+  public bool MorphEnabled; public double MorphSeconds=0.2;
+  public bool Spherical360;
   public double Length { get { return Cuts.Sum(c=>c.Length); } }
   public static JavaScriptSerializer Serializer() { return new JavaScriptSerializer { MaxJsonLength=int.MaxValue }; }
   public string Serialize() { return Serializer().Serialize(this); }
@@ -66,6 +73,10 @@ namespace DogSC.Replica {
    if(RecordingMarkers==null)RecordingMarkers=new List<RecordingMarker>();
    if(string.IsNullOrEmpty(BeautyMode))BeautyMode="single"; if(BeautyMaskPath==null)BeautyMaskPath="";
    if(Grade.HslCurveSat==null)Grade.HslCurveSat=HslCurves.IdentitySat(); if(Grade.HslCurveLum==null)Grade.HslCurveLum=HslCurves.IdentityLum();
+   // W6：老项目缺新字段时补默认值。
+   if(string.IsNullOrEmpty(AudioType))AudioType="无";
+   if(FlashBeats==null)FlashBeats=new List<double>();
+   if(Grade.RgbR==null)Grade.RgbR=RgbCurves.Identity(); if(Grade.RgbG==null)Grade.RgbG=RgbCurves.Identity(); if(Grade.RgbB==null)Grade.RgbB=RgbCurves.Identity(); if(Grade.RgbMaster==null)Grade.RgbMaster=RgbCurves.Identity();
    if(!Finite(FrameRate)||FrameRate<=0||FrameRate>240)FrameRate=30;
    if(Cuts.Any(c=>!Finite(c.Start)||!Finite(c.End)||!Finite(c.Speed)||c.Start<0||c.End>Duration+.1||(!c.Gap&&(c.End<=c.Start||c.Speed<.5||c.Speed>2))||(c.Gap&&(!Finite(c.GapDuration)||c.GapDuration<=0||c.End<c.Start)))) throw new Exception("项目的剪辑范围无效。");
    // W3：字幕 / 调色 / 混音 / 代理 / 多机位校验（范围外的值直接拒绝，不静默修正）。
@@ -75,10 +86,19 @@ namespace DogSC.Replica {
    // W5：降噪/美颜/曲线/标记校验（范围外的值直接拒绝，不静默修正）。
    HslCurves.ValidateCurve(Grade.HslCurveSat,"色相-饱和度曲线",0,3);
    HslCurves.ValidateCurve(Grade.HslCurveLum,"色相-明度曲线",-1,1);
+   // W6：RGB/主曲线（y 是亮度 0–1）与闪白/Morph/音频类型校验。
+   HslCurves.ValidateCurve(Grade.RgbR,"红通道曲线",0,1);
+   HslCurves.ValidateCurve(Grade.RgbG,"绿通道曲线",0,1);
+   HslCurves.ValidateCurve(Grade.RgbB,"蓝通道曲线",0,1);
+   HslCurves.ValidateCurve(Grade.RgbMaster,"主曲线",0,1);
+   if(!AudioTypePreset.Types.Contains(AudioType))throw new Exception("音频类型无效。");
+   if(!Finite(FlashIntensity)||FlashIntensity<0||FlashIntensity>1||FlashFrames<1||FlashFrames>10)throw new Exception("闪白参数超出范围。");
+   foreach(var b in FlashBeats)if(!Finite(b)||b<0||b>Length+.1)throw new Exception("闪白点超出时间线范围。");
+   if(!Finite(MorphSeconds)||MorphSeconds<.1||MorphSeconds>.5)throw new Exception("Morph 过渡时长超出范围（0.1–0.5 秒）。");
    if(BeautyEnabled)BeautyFilter.Validate(this);
    foreach(var m in RecordingMarkers)if(!Finite(m.Time)||m.Time<0||m.Time>Length+.1||string.IsNullOrWhiteSpace(m.Label))throw new Exception("录制标记时间或名称无效。");
    if(!Finite(MasterGainDb)||MasterGainDb<-60||MasterGainDb>12)throw new Exception("总输出增益超出范围。");
-   foreach(var ch in Mixer){if(string.IsNullOrEmpty(ch.Role)||!new[]{"对话","音乐","音效","旁白"}.Contains(ch.Role)||!Finite(ch.GainDb)||ch.GainDb<-60||ch.GainDb>12||!Finite(ch.Pan)||ch.Pan<-1||ch.Pan>1)throw new Exception("混音通道参数无效。");if(!string.IsNullOrEmpty(ch.SourcePath)&&!File.Exists(ch.SourcePath))throw new Exception("混音通道的音频文件缺失："+ch.SourcePath);}
+   foreach(var ch in Mixer){if(string.IsNullOrEmpty(ch.Role)||!new[]{"对话","音乐","音效","旁白"}.Contains(ch.Role)||!Finite(ch.GainDb)||ch.GainDb<-60||ch.GainDb>12||!Finite(ch.Pan)||ch.Pan<-1||ch.Pan>1||!Finite(ch.Start)||ch.Start<0||ch.Start>Length)throw new Exception("混音通道参数无效。");if(!string.IsNullOrEmpty(ch.SourcePath)&&!File.Exists(ch.SourcePath))throw new Exception("混音通道的音频文件缺失："+ch.SourcePath);}
    ProxyTools.Validate(this);MulticamModel.Validate(this);
    // W4：画中画开时素材缺失是硬错（与代理/混音通道同款语义，不静默回退）。
    if(Camera.Enabled){
@@ -194,12 +214,32 @@ namespace DogSC.Replica {
    inputs[doc.Source]=0;
    Func<string,int> inputOf=file=>{int i;if(inputs.TryGetValue(file,out i))return i;i=inputs.Count;inputs[file]=i;return i;};
    var segs=MulticamModel.BuildSegments(doc);
+   // W6 Morph Cut：先算出哪些相邻段界要走插值过渡，把相邻段各缩短半个过渡，
+   // 再在两段之间插一段 morph 片段；关时这里是空操作，滤镜串与老版本逐字一致。
+   var morphAt=new Dictionary<int,string>();
+   if(doc.MorphEnabled){
+    double t=doc.MorphSeconds;
+    for(int i=0;i+1<segs.Count;i++){
+     if(!MorphCut.BoundaryOk(segs[i],segs[i+1],t,doc.FrameRate))continue;
+     double half=t/2;
+     segs[i].SourceEnd-=half;segs[i].TimelineEnd-=half;
+     segs[i+1].SourceStart+=half;segs[i+1].TimelineStart+=half;
+     morphAt[i]=i.ToString(CultureInfo.InvariantCulture);
+    }
+   }
    for(int i=0;i<segs.Count;i++){var g=segs[i];
     if(g.Gap){s.Append("color=c=black:s="+doc.Width+"x"+doc.Height+":r="+Media.N(doc.FrameRate)+":d="+Media.N(g.Length)+"[v"+i+"];\n");if(audio)s.Append("anullsrc=r=48000:cl=stereo:d="+Media.N(g.Length)+"[a"+i+"];\n");}
     else{int v=inputOf(g.File);s.Append("["+v+":v]trim=start="+Media.N(g.SourceStart)+":end="+Media.N(g.SourceEnd)+",setpts=(PTS-STARTPTS)/"+Media.N(g.Speed)+"[v"+i+"];\n");
      if(audio)s.Append("[0:a:0]atrim=start="+Media.N(g.SourceStart)+":end="+Media.N(g.SourceEnd)+",asetpts=PTS-STARTPTS,atempo="+Media.N(g.Speed)+",apad,atrim=duration="+Media.N(g.Length)+"[a"+i+"];\n");}
-    tracks.Append("[v"+i+"]");if(audio)tracks.Append("[a"+i+"]");}
-   s.Append(tracks+"concat=n="+segs.Count+":v=1:a="+(audio?1:0)+"[video]"+(audio?"[audio]":"")+"\n");
+    tracks.Append("[v"+i+"]");if(audio)tracks.Append("[a"+i+"]");
+    string tag;if(morphAt.TryGetValue(i,out tag)){
+     // A 尾 = [新 SourceEnd, 新 SourceEnd+half]，B 头 = [新 SourceStart-half, 新 SourceStart]。
+     double half=doc.MorphSeconds/2;int v=inputOf(g.File);
+     s.Append(MorphCut.VideoSnippet(v,segs[i].SourceEnd,segs[i].SourceEnd+half,segs[i+1].SourceStart-half,segs[i+1].SourceStart,doc.FrameRate,tag));
+     if(audio)s.Append(MorphCut.AudioSnippet(segs[i].SourceEnd,segs[i].SourceEnd+half,segs[i+1].SourceStart-half,segs[i+1].SourceStart,tag));
+     tracks.Append("[mv"+tag+"]");if(audio)tracks.Append("[ma"+tag+"]");
+    }}
+   s.Append(tracks+"concat=n="+(segs.Count+morphAt.Count)+":v=1:a="+(audio?1:0)+"[video]"+(audio?"[audio]":"")+"\n");
    // 多输入时调用方须按 InputFiles(doc) 的顺序把 -i 排在 filter_complex 之前。
    return s.ToString();
   }
@@ -264,6 +304,10 @@ namespace DogSC.Replica {
     using(var projected=projection.Warp(card,bounds,width,height))g.DrawImageUnscaled(projected,0,0);
    }
    }EffectRenderer.Backdrop(g,canvas,doc,time,width,height);EffectRenderer.Stickers(g,doc,motion,time,width,height);CameraOverlay.Draw(g,doc,time,layout,width,height,cameraFrame);DrawSubtitles(g,doc,time,layout,width,height);
+   // W6 卡点闪白：画在最上层（字幕之上），预览与导出同一条路。
+   if(doc.FlashEnabled&&BeatFlash.IsFlash(time,doc.FlashBeats,doc.FlashFrames,doc.FrameRate)){
+    using(var white=new SolidBrush(Color.FromArgb((int)(255*EditDocument.Clamp(doc.FlashIntensity,0,1)),255,255,255)))g.FillRectangle(white,0,0,width,height);
+   }
   }
   // W3 字幕烧录（GDI+，与贴图/光标同一条路）：预览 Compose 与导出 DrawCore
   // 都走这里，所以烧录效果在预览里看得到、导出里也一定有。主行白色在下，
@@ -319,29 +363,58 @@ namespace DogSC.Replica {
    var music=MixerAudio.MusicChannels(doc);
    var source=doc.Audio?MixerAudio.SourceChannel(doc):null;
    if(source==null&&music.Count==0)return "-an ";
-   bool plain=source!=null&&music.Count==0&&Math.Abs(doc.MasterGainDb)<.000001&&Math.Abs(source.GainDb)<.000001&&source.Pan==0;
+   // W6：音频类型预设作用于主音轨；有预设时不再走 plain 直通（行为与老版本
+   // 逐字一致的条件里加了 preset 为空，老项目无预设时仍走老路）。
+   string preset=AudioTypePreset.FilterFor(doc.AudioType);
+   bool plain=source!=null&&music.Count==0&&Math.Abs(doc.MasterGainDb)<.000001&&Math.Abs(source.GainDb)<.000001&&source.Pan==0&&string.IsNullOrEmpty(preset);
    if(plain)return "-map 1:a:0 -af volume="+Media.N(doc.Style.Volume)+" -c:a aac ";
    if(music.Count==0){
     int channels=Media.AudioChannels(media);
     if(doc.Style.Volume<=.001)return "-map 1:a:0 -af volume=0 -c:a aac ";
     double totalDb=20*Math.Log10(doc.Style.Volume)+doc.MasterGainDb+source.GainDb;
     var ch=new MixerChannel {Role="对话",GainDb=totalDb,Pan=source.Pan};
-    return "-map 1:a:0 -af "+MixerAudio.RoleFilter(ch,false,channels)+" -c:a aac ";
+    string rf=MixerAudio.RoleFilter(ch,false,channels);
+    return "-map 1:a:0 -af "+(string.IsNullOrEmpty(preset)?rf:preset+","+rf)+" -c:a aac ";
    }
    var graph=new StringBuilder();var labels=new List<string>();
+   // W6：音乐床（循环）与配音遍（不循环、按 Start 对齐）分开处理。
+   var beds=music.Where(c=>c.Role!="旁白").ToList();
+   var takes=music.Where(c=>c.Role=="旁白").ToList();
+   bool duck=doc.AudioDucking&&source!=null&&beds.Count>0;
    if(source!=null){
     int channels=Media.AudioChannels(media);
     bool muted=doc.Style.Volume<=.001;
     double totalDb=muted?0:20*Math.Log10(doc.Style.Volume)+doc.MasterGainDb+source.GainDb;
     var ch=new MixerChannel {Role="对话",GainDb=totalDb,Pan=source.Pan};
-    graph.Append("[1:a]"+MixerAudio.RoleFilter(ch,muted,channels)+"[a0];");labels.Add("[a0]");
+    string rf=MixerAudio.RoleFilter(ch,muted,channels);
+    if(!string.IsNullOrEmpty(preset)&&!muted)rf=preset+","+rf;
+    if(duck){
+     var parts=new List<string>();parts.Add("[a0]");
+     for(int i=0;i<beds.Count;i++)parts.Add("[a0sc"+i+"]");
+     graph.Append("[1:a]"+rf+",asplit="+(1+beds.Count)+":"+string.Join("",parts.ToArray())+";");
+    }else graph.Append("[1:a]"+rf+"[a0];");
+    labels.Add("[a0]");
    }
-   for(int i=0;i<music.Count;i++){
-    var m=music[i];int inputIndex=2+i;
+   int inputIndex=2;
+   for(int i=0;i<beds.Count;i++){
+    var m=beds[i];int idx=inputIndex++;
     extraInputs+=" -stream_loop -1 -i "+Media.Q(m.SourcePath);
     int mch=Media.AudioChannels(m.SourcePath);
     var ch=new MixerChannel {Role=m.Role,GainDb=m.GainDb+doc.MasterGainDb,Pan=m.Pan};
-    graph.Append("["+inputIndex+":a]"+MixerAudio.RoleFilter(ch,false,mch)+"[a"+(i+1)+"];");labels.Add("[a"+(i+1)+"]");
+    string label="[a"+labels.Count+"]";
+    if(duck)graph.Append("["+idx+":a]"+MixerAudio.RoleFilter(ch,false,mch)+"[b"+i+"raw];[b"+i+"raw][a0sc"+i+"]"+AudioTypePreset.DuckFilter+label+";");
+    else graph.Append("["+idx+":a]"+MixerAudio.RoleFilter(ch,false,mch)+label+";");
+    labels.Add(label);
+   }
+   for(int i=0;i<takes.Count;i++){
+    var t=takes[i];int idx=inputIndex++;
+    extraInputs+=" -i "+Media.Q(t.SourcePath);
+    int tch=Media.AudioChannels(t.SourcePath);
+    var ch=new MixerChannel {Role=t.Role,GainDb=t.GainDb+doc.MasterGainDb,Pan=t.Pan};
+    string label="[a"+labels.Count+"]";
+    long delayMs=(long)Math.Round(Math.Max(0,t.Start)*1000);
+    graph.Append("["+idx+":a]"+MixerAudio.RoleFilter(ch,false,tch)+",adelay="+delayMs+":all=1,apad,atrim=duration="+Media.N(doc.Length)+label+";");
+    labels.Add(label);
    }
    graph.Append(string.Join("",labels.ToArray())+"amix=inputs="+labels.Count+":duration=first:normalize=0,atrim=duration="+Media.N(doc.Length)+"[aout]");
    return "-filter_complex "+Media.Q(graph.ToString())+" -map [aout] -c:a aac ";
@@ -398,7 +471,11 @@ namespace DogSC.Replica {
      if(frame==0||decoder.ExitCode!=0||encoder.ExitCode!=0)throw new Exception("导出失败："+decodeError.Result+encodeError.Result);if(diagnostics!=null)diagnostics("Frames: "+frame+"; rendering: "+(drawTicks/(double)Stopwatch.Frequency).ToString("F2")+" seconds; encoder input wait: "+(writeTicks/(double)Stopwatch.Frequency).ToString("F2")+" seconds.");}
      if(cameraStream!=null)cameraStream.Dispose();
     }
-    File.Move(result,output);SubtitleFiles.WriteSidecar(doc,output);progress(1,"导出完成");
+    File.Move(result,output);
+    // W6 360°：导出时注入 Spherical Video V2 球面元数据；注入失败直接报错，
+    // 不会静默出一份普通视频。
+    if(doc.Spherical360){progress(.99,"注入 360° 球面元数据");Spherical.Inject(output);}
+    SubtitleFiles.WriteSidecar(doc,output);progress(1,"导出完成");
    }catch{if(cameraStream!=null)cameraStream.Dispose();token.ThrowIfCancellationRequested();throw;}finally{
     foreach(var p in new[]{decoder,encoder})if(p!=null){try{if(!p.HasExited)p.Kill();p.WaitForExit();}catch{}p.Dispose();}
     // Only delete the unique, explicitly created transaction directory.
