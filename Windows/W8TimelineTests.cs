@@ -225,7 +225,7 @@ namespace DogSC.Replica {
     var spdDoc = StudioMedia.Import(srcA);
     spdDoc.Cuts = new List<Cut> { new Cut { Start = 0, End = 2, Speed = 2 }, new Cut { Start = 2, End = 6 } };
     threw = false;
-    try { ThreePoint.Insert(spdDoc, 0, 1, 1.0); } catch { threw = true; }
+    try { ThreePoint.Insert(spdDoc, 0, 1, 0.5); } catch { threw = true; }
     Require(threw, "three-point insert into a speed-changed clip is rejected");
     Mark("STEP 6 three-point edit OK");
     // 7. 粘贴属性：变速 + 调色 + 音频快照；源不变；空选拒绝。
