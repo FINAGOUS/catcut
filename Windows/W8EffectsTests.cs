@@ -395,8 +395,8 @@ namespace DogSC.Replica {
     string optOut = Path.Combine(Folder, "small.optimized.mov");
     var optInfo = OptimizedMedia.Generate(smallSrc, optOut, "dnxhr_hq", CancellationToken.None);
     Require(CodecOf(optOut) == "dnxhd" && Math.Abs(optInfo.Duration - 2) < .1 && optInfo.Width == 320, "DNxHR optimized media is dnxhd 320x180 2.0s");
-    string oddSrc = Path.Combine(Folder, "odd.mp4");
-    RunFfmpeg("-v error -y -f lavfi -i testsrc2=size=321x180:rate=30:duration=1 -c:v libx264 -pix_fmt yuv444p " + Media.Q(oddSrc));
+    string oddSrc = Path.Combine(Folder, "odd.mov");
+    RunFfmpeg("-v error -y -f lavfi -i color=c=red:s=321x180:r=30:d=1 -c:v png " + Media.Q(oddSrc));
     threw = false;
     try { OptimizedMedia.Generate(oddSrc, Path.Combine(Folder, "odd.optimized.mov"), "dnxhr_hq", CancellationToken.None); } catch (Exception ex) { threw = ex.Message.Contains("偶数"); }
     Require(threw, "optimized media rejects odd dimensions");
