@@ -179,7 +179,7 @@ namespace DogSC.Replica {
     string meta = Path.Combine(work, "chapters.txt");
     File.WriteAllText(meta, BuildMetadata(markers, length), new UTF8Encoding(false));
     string tmp = Path.Combine(work, "chapters.mp4");
-    StudioMedia.Run("-v error -y -i " + Media.Q(output) + " -i " + Media.Q(meta) + " -map_metadata 1 -map_chapters 1 -c copy -movflags +faststart " + Media.Q(tmp), token);
+    StudioMedia.Run("-v error -y -i " + Media.Q(output) + " -f ffmetadata -i " + Media.Q(meta) + " -map_metadata 1 -map_chapters 1 -c copy -movflags +faststart " + Media.Q(tmp), token);
     if (!File.Exists(tmp)) throw new Exception("章节写入失败：没有生成带章节的文件。");
     File.Replace(tmp, output, null);
    } finally {
