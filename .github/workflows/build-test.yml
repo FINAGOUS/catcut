@@ -76,6 +76,13 @@ jobs:
           Get-Content 'Windows/bin/w6-results.txt' -Raw
           if ($test.ExitCode -ne 0 -or -not ((Get-Content 'Windows/bin/w6-results.txt' -Raw).StartsWith('PASS:'))) { throw 'W6 checks failed.' }
 
+      - name: W7 panels checks
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/DogSC.Windows.exe') -ArgumentList '--w7-test' -WindowStyle Hidden -PassThru -Wait
+          Get-Content 'Windows/bin/w7-results.txt' -Raw
+          if ($test.ExitCode -ne 0 -or -not ((Get-Content 'Windows/bin/w7-results.txt' -Raw).StartsWith('PASS:'))) { throw 'W7 checks failed.' }
+
       - name: Package portable ZIP
         run: |
           $ErrorActionPreference = 'Stop'
