@@ -1,4 +1,4 @@
-// W3 功能面板接线 · 检查器 UI（2026-11-18）。
+﻿// W3 功能面板接线 · 检查器 UI（2026-11-18）。
 // 画面-调色 / 字幕 / 混音 / 代理 / 多机位 五个面板 + 素材库四栏内容 +
 // 时间线吸附线 + 媒体拖进时间线。模型与滤镜逻辑见 FeaturePanels.cs。
 // 控件全部复用现有检查器助手（Section/Note/Slider/Number/Toggle/Buttons/
@@ -50,6 +50,7 @@ namespace DogSC.Replica {
    foreach(var name in new[]{"原片","冷调","暖调","黑白","电影感","高饱和"}){string p=name;var b=UI.Button(p,()=>ApplyColorPreset(p));b.FontSize=12;b.Padding=new Thickness(4,6,4,6);b.Margin=new Thickness(2);presets.Children.Add(b);}
    inspector.Children.Add(presets);
    inspector.Children.Add(UI.Button("重置调色",()=>{Checkpoint();g.Reset();Changed();BuildInspector();}));
+   BuildTemplateSection();
    Note("基础调节走 eq / colorbalance（与 TS 引擎 filtergraph.ts 同款滤镜串）；色轮、HSL 分区、HSL 曲线、RGB/主曲线、白平衡色调烘进 17³ .cube，经 lut3d 应用到解码帧，预览与导出一致。");
   }
   void ApplyColorPreset(string name){
@@ -155,7 +156,7 @@ namespace DogSC.Replica {
    inspector.Children.Add(InspectorAction("plus",has?"重新生成代理":"生成代理",()=>GenerateProxy()));
    if(has)inspector.Children.Add(InspectorAction("trash","删除代理文件",()=>{try{File.Delete(Doc.ProxyPath);}catch(Exception ex){Error(ex);return;}Checkpoint();Doc.ProxyPath="";Doc.ProxyDuration=0;Doc.ProxyEnabled=false;Changed();BuildInspector();RefreshMediaLibrary();},true));
    Note("预览用代理、导出始终用原片（与 TS 引擎 P2c 一致，这就是重链接）；代理缺失时预览与导出明确报错，不静默回退原片。代理 720p 上限、CRF 28。");
-   BuildProxyDiskSection();
+   BuildProxyDiskSection();BuildOptimizedSection();BuildWatchFolderSection();BuildUpscaleSection();
   }
   async void GenerateProxy(){
    if(Doc==null)return;Pause();Status("正在生成代理…");
