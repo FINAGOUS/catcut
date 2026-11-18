@@ -1,14 +1,14 @@
 ﻿$ErrorActionPreference = 'Stop'
 $shareRoot = Join-Path $PSScriptRoot 'share'
-$packageName = 'DogSC-Windows-Trial-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
+$packageName = 'CatCut-Windows-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
 $packageRoot = Join-Path $shareRoot $packageName
 $zipPath = "$packageRoot.zip"
 if (Test-Path -LiteralPath $packageRoot) { throw '同名体验包已存在，请稍后重试。' }
 
 # Explicit file list excludes recordings, projects, tests and personal settings.
 $files = @{
-    'bin/DogSC.Windows.exe' = 'Windows/bin/DogSC.Windows.exe'
-    'bin/DogSC.Windows.exe.config' = 'Windows/bin/DogSC.Windows.exe.config'
+    'bin/CatCut.exe' = 'Windows/bin/CatCut.exe'
+    'bin/CatCut.exe.config' = 'Windows/bin/CatCut.exe.config'
     'Editor.xaml' = 'Windows/Editor.xaml'
     'EditorTheme.xaml' = 'Windows/EditorTheme.xaml'
     'version.txt' = 'Windows/version.txt'
@@ -49,8 +49,8 @@ Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot '../Resources/Fonts') -File 
 }
 @'
 @echo off
-start "" "%~dp0Windows\bin\DogSC.Windows.exe"
-'@ | Set-Content -LiteralPath (Join-Path $packageRoot 'Start-DogSC.cmd') -Encoding ASCII
+start "" "%~dp0Windows\bin\CatCut.exe"
+'@ | Set-Content -LiteralPath (Join-Path $packageRoot 'Start-CatCut.cmd') -Encoding ASCII
 Compress-Archive -LiteralPath $packageRoot -DestinationPath $zipPath -CompressionLevel Optimal
 $packageRoot | Set-Content -LiteralPath (Join-Path $shareRoot 'latest-package-path.txt') -Encoding UTF8
 Write-Output "Package: $zipPath"
