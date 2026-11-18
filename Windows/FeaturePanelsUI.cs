@@ -253,6 +253,8 @@ namespace DogSC.Replica {
     var main=MediaRow(Path.GetFileName(Doc.Source),Doc.Width+" × "+Doc.Height+" · "+UI.Time(Doc.Duration)+proxyBadge,"video|"+Doc.Source);
     MediaRowButton(main,"打开",()=>Open());
     panel.Children.Add(main);
+    // W8：子片段行（只存引用不复制文件；点“加入时间线”复用）。
+    AddSubclipRows(panel);
     for(int a=1;a<MulticamModel.AngleCount(Doc);a++){int angle=a;
      var row=MediaRow("角度 "+(a+1)+" · "+Path.GetFileName(MulticamModel.AngleSource(Doc,a)),"多机位角度","video|"+MulticamModel.AngleSource(Doc,a));
      MediaRowButton(row,"移除",()=>RemoveMulticamAngle(angle));
