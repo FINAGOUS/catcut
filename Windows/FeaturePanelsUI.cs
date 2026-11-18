@@ -45,6 +45,7 @@ namespace DogSC.Replica {
    }
    BuildHslCurveSection();
    BuildRgbCurveSection();
+   BuildAdjustmentLayerSection();
    Section("预设");
    var presets=new UniformGrid {Columns=3,Margin=new Thickness(0,0,0,8)};
    foreach(var name in new[]{"原片","冷调","暖调","黑白","电影感","高饱和"}){string p=name;var b=UI.Button(p,()=>ApplyColorPreset(p));b.FontSize=12;b.Padding=new Thickness(4,6,4,6);b.Margin=new Thickness(2);presets.Children.Add(b);}
