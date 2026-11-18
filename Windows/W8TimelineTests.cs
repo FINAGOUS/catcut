@@ -41,7 +41,8 @@ namespace DogSC.Replica {
    return false;
   }
   static double MeanVolume(string file, double from, double duration) {
-   using (var p = Media.Start("ffmpeg", "-v error -ss " + Media.N(from) + " -t " + Media.N(duration) + " -i " + Media.Q(file) + " -af volumedetect -f null -", false)) {
+   // 注意：不能加 -v error——volumedetect 的统计是 info 级输出，加了就看不到 mean_volume。
+   using (var p = Media.Start("ffmpeg", "-ss " + Media.N(from) + " -t " + Media.N(duration) + " -i " + Media.Q(file) + " -af volumedetect -f null -", false)) {
     var err = p.StandardError.ReadToEndAsync();
     p.StandardInput.Close();
     p.WaitForExit();
