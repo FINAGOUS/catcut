@@ -678,10 +678,12 @@ namespace DogSC.Replica {
    var watch = Stopwatch.StartNew();
    Task.Run(() => {
     try {
-     using (var p = Media.Start("ffmpeg", "-v info -re -ss " + Media.N(Math.Max(0, from)) + " -i " + Media.Q(source) + " -t " + Media.N(duration) + " -vn -af astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level:key=lavfi.astats.Overall.Peak_level -f null -", false)) {
+     using (var p = Media.Start("ffmpeg", "-v info -re -ss " + Media.N(Math.Max(0, from)) + " -i " + Media.Q(source) + " -t " + Media.N(duration) + " -vn -af astats=metadata=1:reset=1,ametadata=print -f null -", false)) {
       lock (gate) process = p;
       string line;
-      // ametadata=print 把数值打到 stderr（-v info）；逐行解析。
+      // ametadata=print 把数值打到 stderr（-v info）；逐行解析。注意：key
+      // 选项不能重复写（后一个会覆盖前一个，只剩 Peak_level）——不写 key，
+      // 全量打印，解析时只取 RMS_level / Peak_level 两行。
       using (var sr = new StreamReader(p.StandardError.BaseStream, Encoding.UTF8)) {
        double rms = -91, peak = -91;
        while ((line = sr.ReadLine()) != null) {
