@@ -50,7 +50,8 @@ namespace DogSC.Replica {
   }
   static void RunFfmpeg(string args) { StudioMedia.Run(args, CancellationToken.None); }
   static void FramePng(string video, int frame, string outPng) {
-   RunFfmpeg("-v error -y -i " + Media.Q(video) + " -vf select='eq(n\\," + frame + ")' -vsync 0 -frames:v 1 " + Media.Q(outPng));
+   // -vsync 在 FFmpeg 9 里已删，等价写法是 -fps_mode passthrough（vsync 0 = passthrough）。
+   RunFfmpeg("-v error -y -i " + Media.Q(video) + " -vf select='eq(n\\," + frame + ")' -fps_mode passthrough -frames:v 1 " + Media.Q(outPng));
   }
   static void FrameAtPng(string video, double time, string outPng) {
    RunFfmpeg("-v error -y -ss " + Media.N(time) + " -i " + Media.Q(video) + " -frames:v 1 " + Media.Q(outPng));
