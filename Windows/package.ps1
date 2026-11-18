@@ -23,6 +23,9 @@ $files = @{
     'tools/portrait_segment.py' = 'Windows/tools/portrait_segment.py'
     'tools/beauty_mask.py' = 'Windows/tools/beauty_mask.py'
     'tools/transcribe.py' = 'Windows/tools/transcribe.py'
+    # W8：TTS 与人声分离脚本（随包分发；模型不随包，需用户另装，见面板说明）。
+    'tools/tts.py' = 'Windows/tools/tts.py'
+    'tools/vocalsep.py' = 'Windows/tools/vocalsep.py'
     'tools/models/selfie_segmentation_256x256.onnx' = 'Windows/tools/models/selfie_segmentation_256x256.onnx'
     '../THIRD_PARTY_NOTICES.md' = 'THIRD_PARTY_NOTICES.md'
     '../LICENSE' = 'LICENSE'
