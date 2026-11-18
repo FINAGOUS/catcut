@@ -185,7 +185,7 @@ namespace DogSC.Replica {
     var meter = new LevelMeter();
     var got = new ManualResetEventSlim(false);
     double seenRms = -91, seenPeak = -91;
-    meter.Updated += (t, r, p) => { seenRms = r; seenPeak = p; if (r > -60) got.Set(); };
+    meter.Updated += (t, r, p) => { if (r > -60) { seenRms = r; seenPeak = p; got.Set(); } };
     meter.Start(sine, 0, 2);
     bool arrived = got.Wait(8000);
     meter.Stop();
