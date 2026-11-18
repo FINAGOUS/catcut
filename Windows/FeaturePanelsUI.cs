@@ -42,12 +42,13 @@ namespace DogSC.Replica {
     Slider(ColorGrade.HslZoneNames[zone]+" · 明度",-1,1,g.HslLum[zone],"",v=>g.HslLum[zone]=v);
    }
    BuildHslCurveSection();
+   BuildRgbCurveSection();
    Section("预设");
    var presets=new UniformGrid {Columns=3,Margin=new Thickness(0,0,0,8)};
    foreach(var name in new[]{"原片","冷调","暖调","黑白","电影感","高饱和"}){string p=name;var b=UI.Button(p,()=>ApplyColorPreset(p));b.FontSize=12;b.Padding=new Thickness(4,6,4,6);b.Margin=new Thickness(2);presets.Children.Add(b);}
    inspector.Children.Add(presets);
    inspector.Children.Add(UI.Button("重置调色",()=>{Checkpoint();g.Reset();Changed();BuildInspector();}));
-   Note("基础调节走 eq / colorbalance（与 TS 引擎 filtergraph.ts 同款滤镜串）；色轮、HSL 分区、HSL 曲线、白平衡色调烘进 17³ .cube，经 lut3d 应用到解码帧，预览与导出一致。RGB/主曲线仍未接。");
+   Note("基础调节走 eq / colorbalance（与 TS 引擎 filtergraph.ts 同款滤镜串）；色轮、HSL 分区、HSL 曲线、RGB/主曲线、白平衡色调烘进 17³ .cube，经 lut3d 应用到解码帧，预览与导出一致。");
   }
   void ApplyColorPreset(string name){
    if(Doc==null)return;Checkpoint();var g=Doc.Grade;g.Reset();
@@ -152,6 +153,7 @@ namespace DogSC.Replica {
    inspector.Children.Add(InspectorAction("plus",has?"重新生成代理":"生成代理",()=>GenerateProxy()));
    if(has)inspector.Children.Add(InspectorAction("trash","删除代理文件",()=>{try{File.Delete(Doc.ProxyPath);}catch(Exception ex){Error(ex);return;}Checkpoint();Doc.ProxyPath="";Doc.ProxyDuration=0;Doc.ProxyEnabled=false;Changed();BuildInspector();RefreshMediaLibrary();},true));
    Note("预览用代理、导出始终用原片（与 TS 引擎 P2c 一致，这就是重链接）；代理缺失时预览与导出明确报错，不静默回退原片。代理 720p 上限、CRF 28。");
+   BuildProxyDiskSection();
   }
   async void GenerateProxy(){
    if(Doc==null)return;Pause();Status("正在生成代理…");
@@ -243,7 +245,10 @@ namespace DogSC.Replica {
     return;
    }
    if(mediaTab=="素材"){
-    var main=MediaRow(Path.GetFileName(Doc.Source),Doc.Width+" × "+Doc.Height+" · "+UI.Time(Doc.Duration)+(Doc.ProxyEnabled?" · 代理开":""),"video|"+Doc.Source);
+    long proxyBytes=ProxyDisk.ProxyBytes(Doc);
+    string proxyBadge=proxyBytes>0?" · 代理 ✓ "+ProxyDisk.FormatSize(proxyBytes):(Doc.ProxyEnabled?" · 代理缺失！":" · 无代理");
+    if(Doc.Spherical360)proxyBadge+=" · 360°";
+    var main=MediaRow(Path.GetFileName(Doc.Source),Doc.Width+" × "+Doc.Height+" · "+UI.Time(Doc.Duration)+proxyBadge,"video|"+Doc.Source);
     MediaRowButton(main,"打开",()=>Open());
     panel.Children.Add(main);
     for(int a=1;a<MulticamModel.AngleCount(Doc);a++){int angle=a;
