@@ -1,4 +1,4 @@
-// W4 检查器面板（2026-11-18）：摄像头画中画、自动保存、后台渲染缓存。
+﻿// W4 检查器面板（2026-11-18）：摄像头画中画、自动保存、后台渲染缓存。
 // 控件全部复用现有检查器助手（Section/Note/Toggle/Slider/Buttons/
 // PositionPad/InspectorAction），不抄任何闭源软件的界面。
 // 诚实说明写在各面板的 Note 里；没接的（系统声音混音接入、自动识别
@@ -84,6 +84,7 @@ namespace DogSC.Replica {
    inspector.Children.Add(InspectorAction("folder","打开备份目录",()=>{try{Directory.CreateDirectory(dir);Process.Start("explorer.exe",Media.Q(dir));}catch(Exception ex){Error(ex);}}));
    inspector.Children.Add(InspectorAction("trash","清理旧备份（只留最新 "+AutoSave.KeepCount+" 份）",()=>{try{int removed=AutoSave.Prune(dir,AutoSave.KeepCount);Status(removed==0?"没有可清理的旧备份。":"已清理旧备份 "+removed+" 份。");BuildInspector();}catch(Exception ex){Error(ex);}},true));
    Note("只在工程有未保存改动时写备份；备份与工程文件是同一 .dogscwin 格式。异常退出后，下次启动会提示恢复备份；正常退出不提示。恢复后请另存为新项目——备份文件本身不会被覆盖。");
+   BuildMetadataSection();BuildArchiveSection();
   }
   void BackupNow(){
    if(Doc==null)return;
