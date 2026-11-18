@@ -91,6 +91,21 @@ jobs:
           path: Windows/bin/w7-results.txt
           if-no-files-found: warn
 
+      - name: W8 colour checks
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/DogSC.Windows.exe') -ArgumentList '--w8colour-test' -WindowStyle Hidden -PassThru -Wait
+          Get-Content 'Windows/bin/w8colour-results.txt' -Raw
+          if ($test.ExitCode -ne 0 -or -not ((Get-Content 'Windows/bin/w8colour-results.txt' -Raw).StartsWith('PASS:'))) { throw 'W8 colour checks failed.' }
+
+      - name: Upload W8 colour results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w8colour-results
+          path: Windows/bin/w8colour-results.txt
+          if-no-files-found: warn
+
       - name: Package portable ZIP
         run: |
           $ErrorActionPreference = 'Stop'
