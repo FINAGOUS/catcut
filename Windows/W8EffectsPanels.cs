@@ -514,7 +514,7 @@ namespace DogSC.Replica {
    return text.Replace("\\", "\\\\").Replace("'", "\\'").Replace(":", "\\:").Replace("%", "\\%").Replace("\n", " ").Replace("\r", " ");
   }
   public static string FontFile() {
-   string dir = Path.Combine(Media.Root, "Resources", "Fonts");
+   string dir = Path.GetFullPath(Path.Combine(Media.Root, "..", "Resources", "Fonts"));
    if (!Directory.Exists(dir)) return null;
    string[] fonts = Directory.GetFiles(dir, "*.otf");
    if (fonts.Length == 0) fonts = Directory.GetFiles(dir, "*.ttf");
@@ -661,14 +661,14 @@ namespace DogSC.Replica {
   // 模型 + helper 脚本的查找位置（tools/models 随包分发是目标位置，
   // 发版前还要核模型许可；engine 侧的测试模型位置也认）。
   public static string FindModel(string model) {
-   foreach (string dir in new[] { Path.Combine(Media.Root, "tools", "models"), Path.Combine(Media.Root, "engine", "test", "models"), Path.Combine(Media.Root, "engine", "models") }) {
+   foreach (string dir in new[] { Path.Combine(Media.Root, "tools", "models"), Path.GetFullPath(Path.Combine(Media.Root, "..", "engine", "test", "models")), Path.GetFullPath(Path.Combine(Media.Root, "..", "engine", "models")) }) {
     string p = Path.Combine(dir, ModelFileName(model));
     if (File.Exists(p)) return p;
    }
    return null;
   }
   public static string FindScript() {
-   foreach (string p in new[] { Path.Combine(Media.Root, "tools", "upscale.py"), Path.Combine(Media.Root, "engine", "scripts", "upscale.py") })
+   foreach (string p in new[] { Path.Combine(Media.Root, "tools", "upscale.py"), Path.GetFullPath(Path.Combine(Media.Root, "..", "engine", "scripts", "upscale.py")) })
     if (File.Exists(p)) return p;
    return null;
   }
