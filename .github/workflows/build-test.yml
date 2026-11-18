@@ -120,7 +120,6 @@ jobs:
           name: w8audio-results
           path: Windows/bin/w8audio-results.txt
           if-no-files-found: warn
-          if-no-files-found: warn
 
       - name: Package portable ZIP
         run: |
