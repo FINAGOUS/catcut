@@ -102,12 +102,12 @@ namespace DogSC.Replica {
   }
  }
 
- // 自定义导出预设：JSON 存 %LOCALAPPDATA%\DogSC.Windows\export-presets\<名>.json。
+ // 自定义导出预设：JSON 存 %LOCALAPPDATA%\CatCut\export-presets\<名>.json。
  // 只存导出设置，不存项目内容；坏 JSON、坏名字、坏参数一律拒绝，不静默修。
  static class ExportPresetStore {
   public static string Dir(string dir = null) {
    if (!string.IsNullOrEmpty(dir)) return dir;
-   return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DogSC.Windows", "export-presets");
+   return Path.Combine(AppIdentity.AppDataDir, "export-presets");
   }
   static void CheckName(string name) {
    if (string.IsNullOrWhiteSpace(name) || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || name == "." || name == "..")

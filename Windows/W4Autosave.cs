@@ -10,8 +10,8 @@
 //   区别：TS 的备份是 project JSON（.json），C# 侧备份就是工程文件本身
 //   （.dogscwin，EditDocument.Save 的同一格式、同一原子写盘 .tmp+Replace，
 //   不另发明格式）。备份目录是工程所在目录（TS 的“next to the project”）；
-//   还没保存过的工程（FilePath==null）放 %LocalAppData%\DogSC.Windows\autosave\。
-//   崩溃标记是全局的（%LocalAppData%\DogSC.Windows\.unclean，启动时写、
+//   还没保存过的工程（FilePath==null）放 %LocalAppData%\CatCut\autosave\。
+//   崩溃标记是全局的（%LocalAppData%\CatCut\.unclean，启动时写、
 //   正常退出时清），因为启动时还不知道上次打开的是哪个工程；
 //   上次工程的目录由 last-session.txt 指过去（每次备份/打开/保存时更新）。
 // - 渲染缓存：product/engine/src/rendercache.ts——任务模型（段落 + 状态 +
@@ -42,6 +42,21 @@ using DogSC.Windows;
 namespace DogSC.Replica {
  // ---- 自动保存 + 崩溃恢复（medialib.ts 的 autosave 节）----
  public class CrashInfo { public bool Crashed; public string Backup; public string Dir; }
+ // ---- 产品身份与数据路径（CatCut；旧名 DogSC.Windows 的数据启动时自动迁移）----
+ public static class AppIdentity {
+  public const string Name="CatCut";
+  public const string AppDataFolder="CatCut";
+  public const string LegacyAppDataFolder="DogSC.Windows";
+  public static string AppDataDir {get{return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),AppDataFolder);}}
+  public static string LegacyAppDataDir {get{return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),LegacyAppDataFolder);}}
+  public static string RecordingsDir {get{return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),Name,"recordings");}}
+  public static string LegacyRecordingsDir {get{return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),"DogSC","recordings");}}
+  static bool MoveDir(string from,string to){try{if(Directory.Exists(to)||!Directory.Exists(from))return false;Directory.CreateDirectory(Path.GetDirectoryName(to));Directory.Move(from,to);return true;}catch{return false;}}
+  // 只在新目录不存在且旧目录存在时整目录搬过去（改名，秒级）；两边都有时两边都留着，不合并、不删除。
+  public static void Migrate(){MoveDir(LegacyAppDataDir,AppDataDir);MoveDir(LegacyRecordingsDir,RecordingsDir);}
+  // 测试用显式路径版（W4Tests 调）：返回是否搬了至少一个目录。
+  public static bool Migrate(string oldAppData,string newAppData,string oldRecordings,string newRecordings){bool a=MoveDir(oldAppData,newAppData);bool b=MoveDir(oldRecordings,newRecordings);return a||b;}
+ }
  public static class AutoSave {
   public const string Prefix="project-autosave-";
   public const string FlagName=".unclean";
@@ -49,7 +64,7 @@ namespace DogSC.Replica {
   public const int DefaultKeepCount=5;
   // 测试可注入（W4Tests 把 AppData 指到临时目录，不污染跑手本机状态）。
   internal static string AppDataOverride;
-  public static string AppDataDir {get{return AppDataOverride??Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"DogSC.Windows");}}
+  public static string AppDataDir {get{return AppDataOverride??AppIdentity.AppDataDir;}}
   public static int IntervalMinutes=DefaultIntervalMinutes;
   public static int KeepCount=DefaultKeepCount;
   public static DateTime? LastSavedAt;

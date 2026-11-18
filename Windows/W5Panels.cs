@@ -729,7 +729,7 @@ namespace DogSC.Replica {
  // 候选设备），与麦克风经 amix 混入录制。amix normalize=0（不改电平，
  // roles.ts 的混音同款语义）；系统音量只作用于系统那路。
  static class SystemAudio {
-  public static string PreferencePath() { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DogSC.Windows", "recording-system-audio.txt"); }
+  public static string PreferencePath() { return Path.Combine(AppIdentity.AppDataDir, "recording-system-audio.txt"); }
   public static void Save(string device, double volume) {
    try { Directory.CreateDirectory(Path.GetDirectoryName(PreferencePath())); File.WriteAllText(PreferencePath(), (device ?? "") + "|" + Media.N(Math.Max(0, Math.Min(1, volume)))); }
    catch { }

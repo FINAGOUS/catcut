@@ -1,10 +1,10 @@
-# DogSC Windows · 原版风格适配版
+# CatCut Windows · 原版风格适配版
 
 本版按仓库内的原版截图和 SwiftUI 源码重做，替换了第一版的简单录屏表单。默认入口为浅银色编辑器，新建录制打开独立浮条。原版 macOS 源码保留，Windows 实现在本目录。
 
 ## 运行
 
-双击 `Windows/bin/DogSC.Windows.exe`。环境：Windows 10/11 x64、.NET Framework 4.8。保留 `Windows/Editor.xaml`、`Windows/EditorTheme.xaml`、`Windows/tools`、`Windows/bin` 的目录关系；原版字体位于仓库的 `Resources/Fonts`。无需管理员权限。
+双击 `Windows/bin/CatCut.exe`。环境：Windows 10/11 x64、.NET Framework 4.8。保留 `Windows/Editor.xaml`、`Windows/EditorTheme.xaml`、`Windows/tools`、`Windows/bin` 的目录关系；原版字体位于仓库的 `Resources/Fonts`。无需管理员权限。
 
 本次更新：统一编辑器、录制浮条和导出窗口样式；背景分类、壁纸／渐变缩略图、场景预设图卡、颜色胶囊、实际光标预览、贴图素材列表与参数分组；基础音频波形和画面／波形切换。右侧设置使用细滚动条，贴图与柔化按原版布局组织。
 
@@ -32,13 +32,13 @@
 
 快捷键：空格播放／暂停，方向键逐帧，Ctrl+B 分割，Delete 删除选中片段，Ctrl+Z 撤销，Ctrl+Y 重做，Ctrl+O 打开，Ctrl+S 保存。拖入视频或 Windows 项目也可打开。
 
-安装版的新录制素材存放在“文档/DogSC/recordings/日期时间/”；ZIP 便携版存放在程序目录的 `Windows/recordings/日期时间/`。旧版文件不会自动迁移。项目引用原始视频和自定义背景路径，移动或删除素材会影响重开。导出使用新文件名，不覆盖已有视频。
+安装版的新录制素材存放在“文档/CatCut/recordings/日期时间/”；ZIP 便携版存放在程序目录的 `Windows/recordings/日期时间/`。旧版文件不会自动迁移。项目引用原始视频和自定义背景路径，移动或删除素材会影响重开。导出使用新文件名，不覆盖已有视频。
 
 左侧「光标」调整新录制的独立光标，编辑不会改写原始视频。旧录制和导入视频中的光标已成为画面像素，不能无损替换或隐藏，需重新录制。鼠标位置与点击按裁剪、重排和变速映射到编辑时间；光标时间偏差可用「光标延后 / 毫秒」校准。
 
 左侧「贴图」→「导入贴图」添加图片；左侧「柔化」→「添加柔化区域」，可切换「柔化／突出」。拖动预览选框移动，右下角调整尺寸；时间线拖动整段或两端控制出现时间。多张贴图使用分层轨道，可上下滚动查看；「置底／下移／上移／置顶」改变叠放顺序。贴图原始图片直接嵌入 `.dogscwin`，删除外部图片后仍可重开，但录屏素材仍需保留。预览和导出共用光标、贴图与柔化合成代码。
 
-录制浮条下方的「帧率」可选择 30、60、90 FPS；倒计时和录制期间锁定设置。最后的选择保存到 `%LOCALAPPDATA%/DogSC.Windows/recording-fps.txt`。鼠标采样由独立线程按 30／60／90 次／秒运行，独立于界面与视频编码；浮条状态每秒最多更新 4 次，避免高帧率文字刷新触发布局与阴影重绘。项目保留素材帧率，播放预览最高跟随到 90 FPS，导出也可选 90 FPS。该设置是目标帧率；实际独立画面的数量与屏幕刷新率、捕获速度、编码和渲染负载有关，高帧率文件可能包含重复画面，不能保证所有设备满帧。
+录制浮条下方的「帧率」可选择 30、60、90 FPS；倒计时和录制期间锁定设置。最后的选择保存到 `%LOCALAPPDATA%/CatCut/recording-fps.txt`。鼠标采样由独立线程按 30／60／90 次／秒运行，独立于界面与视频编码；浮条状态每秒最多更新 4 次，避免高帧率文字刷新触发布局与阴影重绘。项目保留素材帧率，播放预览最高跟随到 90 FPS，导出也可选 90 FPS。该设置是目标帧率；实际独立画面的数量与屏幕刷新率、捕获速度、编码和渲染负载有关，高帧率文件可能包含重复画面，不能保证所有设备满帧。
 
 显示器／区域优先使用带静止补帧的桌面复制；窗口使用 GDI 持续捕获。启动前通过合成画面检测 NVIDIA NVENC、AMD AMF、Intel QSV；同显卡可尝试直接传递 GPU 帧，否则使用兼容传输。硬件编码不可用时回退至最多 4 个线程、且不超过逻辑处理器四分之一的软件编码。硬件进程采用正常调度优先级，CPU 回退采用较低优先级；兼容捕获保持 4 帧有界队列。硬件支持取决于实际显卡和驱动，Intel 路径尚未在对应机器上实测。
 
@@ -92,24 +92,24 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Windows\setup-tools.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Windows\build.ps1
 
 # 剪辑、重排、变速、运镜、音轨、取消、竖屏、1080p60
-Start-Process .\Windows\bin\DogSC.Windows.exe -ArgumentList '--editor-test' -WindowStyle Hidden -Wait
+Start-Process .\Windows\bin\CatCut.exe -ArgumentList '--editor-test' -WindowStyle Hidden -Wait
 Get-Content .\Windows\bin\editor-test\results.txt
 
 # 2560px 细线素材缩放清晰度、实际 UI 命令、播放与独立测试窗口录制
-Start-Process .\Windows\bin\DogSC.Windows.exe -ArgumentList '--ui-test' -WindowStyle Hidden -Wait
+Start-Process .\Windows\bin\CatCut.exe -ArgumentList '--ui-test' -WindowStyle Hidden -Wait
 Get-Content .\Windows\bin\editor-test\interface-results.txt
 Get-Content .\Windows\bin\editor-test\preview-quality-results.txt
 
 # 三个档位的实际窗口录制、项目帧率保存和 720p 成片导出
-Start-Process .\Windows\bin\DogSC.Windows.exe -ArgumentList '--fps-test' -WindowStyle Hidden -Wait
+Start-Process .\Windows\bin\CatCut.exe -ArgumentList '--fps-test' -WindowStyle Hidden -Wait
 Get-Content .\Windows\bin\fps-results.txt
 
 # 独立光标、剪辑／变速后的轨迹、透明贴图、层级、柔化、项目嵌入图片、实际成片及 UI
-Start-Process .\Windows\bin\DogSC.Windows.exe -ArgumentList '--effects-test' -WindowStyle Hidden -Wait
+Start-Process .\Windows\bin\CatCut.exe -ArgumentList '--effects-test' -WindowStyle Hidden -Wait
 Get-Content .\Windows\bin\effects-results.txt
 
 # 大尺寸合成窗口：旧／新录制进程 CPU 用时、分辨率与屏幕区域坐标
-Start-Process .\Windows\bin\DogSC.Windows.exe -ArgumentList '--capture-perf-test' -WindowStyle Hidden -Wait
+Start-Process .\Windows\bin\CatCut.exe -ArgumentList '--capture-perf-test' -WindowStyle Hidden -Wait
 Get-Content .\Windows\bin\capture-performance-results.txt
 ```
 
@@ -117,7 +117,7 @@ Get-Content .\Windows\bin\capture-performance-results.txt
 
 代码沿用原项目 MIT License，保留神烦老狗的版权声明。字体遵循 `Resources/Fonts/LICENSE.txt`；FFmpeg 及其包含组件遵循自身许可，见 `Windows/tools/FFmpeg-LICENSE.txt` 与保留的构建压缩包。这不是原作者官方 Windows 发行版。
 
-安装与更新（Windows Beta 3）：`Windows/build-installer.ps1` 使用 Inno Setup 6 生成当前版本安装程序，安装到当前用户目录。安装版在启动时检查更新，也可从项目菜单手动检查；选择下载后校验 GitHub 发布的文件大小和 SHA-256，确认保存项目后关闭应用并启动安装。旧 ZIP 版录屏和项目不会自动迁移或删除，安装版的新录屏存放于“文档/DogSC/recordings”，帧率偏好继续使用当前用户的本地设置目录。下载和校验失败会保留现有版本。更新文件目前无独立代码签名，SHA-256 用于校验下载内容与 GitHub 发布信息一致，不能替代发布者签名；GitHub 不可访问时无法检查或下载更新。完整的跨版本在线升级还需在下一版发布后实测。
+安装与更新（Windows Beta 3）：`Windows/build-installer.ps1` 使用 Inno Setup 6 生成当前版本安装程序，安装到当前用户目录。安装版在启动时检查更新，也可从项目菜单手动检查；选择下载后校验 GitHub 发布的文件大小和 SHA-256，确认保存项目后关闭应用并启动安装。旧 ZIP 版录屏和项目不会自动迁移或删除，安装版的新录屏存放于“文档/CatCut/recordings”，帧率偏好继续使用当前用户的本地设置目录。下载和校验失败会保留现有版本。更新文件目前无独立代码签名，SHA-256 用于校验下载内容与 GitHub 发布信息一致，不能替代发布者签名；GitHub 不可访问时无法检查或下载更新。完整的跨版本在线升级还需在下一版发布后实测。
 
 预览与文字调整：播放按真实时间推进，渲染跟不上时跳过过期预览帧，保留片段手动变速；录制浮条的阴影独立于内容，弹窗、菜单和浮条使用适合各自背景的文字绘制与像素对齐。`--playback-rate-test` 使用合成视频、静音音频和 70 毫秒模拟逐帧延迟验证默认速度及手动 0.5 倍速。
 
@@ -131,7 +131,7 @@ Windows Beta 2 视觉收尾：位置与倾斜控制板参照原版重新排布�
 
 弹窗与交互统一：重命名、保存确认、录制和导出提示参照原版圆角卡片，支持回车 / Esc、默认焦点及空名称检查；菜单继承明暗外观、显示快捷键 / 当前选项。自定义调色面板支持饱和度 / 亮度、色相、HEX、即时预览与整次撤销，关闭保留当前颜色。导出关闭时取消任务，取消后可重试，完成后的打开文件夹按钮不再关闭窗口。系统文件选择器保留 Windows 原生窗口。
 
-交互回归：运行 `Windows/bin/DogSC.Windows.exe --dialog-test`，结果在 `Windows/bin/dialog-results.txt`。测试只使用仓库图片生成的视频与独立项目，检查重命名、保存 / 丢弃 / 取消、颜色撤销、菜单主题及导出取消 / 重试 / 关闭。
+交互回归：运行 `Windows/bin/CatCut.exe --dialog-test`，结果在 `Windows/bin/dialog-results.txt`。测试只使用仓库图片生成的视频与独立项目，检查重命名、保存 / 丢弃 / 取消、颜色撤销、菜单主题及导出取消 / 重试 / 关闭。
 
 录制流畅性优化：录制前停止编辑器播放、高清预览、缩略图和波形任务，录制期间收起编辑器，完成后恢复；鼠标轨迹移到独立高精度线程，保持 30 / 60 / 90 FPS 采样，压缩静止数据并保留点击和分段。NVIDIA 编码使用有界并行队列，不再强制逐帧等待输出；探测 NVIDIA / AMD / Intel 可用编码器并保留兼容和 CPU 回退，限制软件编码线程、减少连续诊断输出和无效的跨显卡尝试。保持原始尺寸、所选帧率、独立光标和暂停保存。新录制的项目和鼠标轨迹先在后台保存，再询问是否切换项目；取消切换不会丢失新录制。
 

@@ -616,7 +616,7 @@ namespace DogSC.Replica {
   public static readonly string[] Categories = new[] { "film", "teal-orange", "bw", "log", "其他" };
   public static string Dir(string dir = null) {
    if (!string.IsNullOrEmpty(dir)) return dir;
-   return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DogSC.Windows", "lut-library");
+   return Path.Combine(AppIdentity.AppDataDir, "lut-library");
   }
   public static string StorePath(string dir = null) { return Path.Combine(Dir(dir), "library.json"); }
   public static List<LutLibraryEntry> Load(string dir = null) {
@@ -752,7 +752,7 @@ namespace DogSC.Replica {
   }
   public static string StillsDir(string dir = null) {
    if (!string.IsNullOrEmpty(dir)) return dir;
-   return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DogSC.Windows", "reference-stills");
+   return Path.Combine(AppIdentity.AppDataDir, "reference-stills");
   }
  }
 
