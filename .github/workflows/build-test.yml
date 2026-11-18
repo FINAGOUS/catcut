@@ -91,6 +91,21 @@ jobs:
           path: Windows/bin/w7-results.txt
           if-no-files-found: warn
 
+      - name: W8 audio checks
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/DogSC.Windows.exe') -ArgumentList '--w8audio-test' -WindowStyle Hidden -PassThru -Wait
+          Get-Content 'Windows/bin/w8audio-results.txt' -Raw
+          if ($test.ExitCode -ne 0 -or -not ((Get-Content 'Windows/bin/w8audio-results.txt' -Raw).StartsWith('PASS:'))) { throw 'W8 audio checks failed.' }
+
+      - name: Upload W8 audio results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w8audio-results
+          path: Windows/bin/w8audio-results.txt
+          if-no-files-found: warn
+
       - name: Package portable ZIP
         run: |
           $ErrorActionPreference = 'Stop'
