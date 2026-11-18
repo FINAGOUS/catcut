@@ -25,6 +25,8 @@ namespace DogSC.Replica {
   static void Require(bool ok, string name) { if (!ok) throw new Exception("W7 检查失败：" + name); }
   static bool Near(double a, double b, double tol) { return Math.Abs(a - b) <= tol; }
   static string Folder;
+  static string LogPath;
+  static void Mark(string s) { try { File.AppendAllText(LogPath, s + "\n"); } catch { } }
   static void RunFfmpeg(string args) { StudioMedia.Run(args, CancellationToken.None); }
   static string Probe(string args) {
    using (var p = Media.Start("ffprobe", args, true)) {
@@ -57,6 +59,8 @@ namespace DogSC.Replica {
    Folder = Path.Combine(Media.Root, "bin", "w7-test");
    Directory.CreateDirectory(Folder);
    string log = Path.Combine(Media.Root, "bin", "w7-results.txt");
+   LogPath = log;
+   File.WriteAllText(log, "RUNNING\n");
    try {
     // 1. 色轮圆盘数学 + LUT（暗红 + 阴影色相+120° 变绿，引擎 P3d 探针值）。
     double hue, sat;
@@ -105,6 +109,7 @@ namespace DogSC.Replica {
     try { new ExportOptions { Height = 1080, Fps = 0, Codec = "h264", Crf = 18 }.Validate(); } catch { threw = true; }
     Require(threw, "fps 0 is rejected");
     Require(ExportPresets.BuiltIn().Count == 4 && ExportPresets.Find("HDR 4K") != null && ExportPresets.Find("HDR 4K").Hdr && ExportPresets.Find("8K").Height == 4320, "built-in presets: SDR 1080p / SDR 4K / HDR 4K / 8K");
+    Mark("STEP 1-2 wheel + export options OK");
     // 3. 自定义预设存取（写测试目录，不碰用户配置）。
     string presetDir = Path.Combine(Folder, "presets");
     var saved = new ExportOptions { Height = 1440, Fps = 60, Codec = "h265", Crf = 20, Hdr = false, WriteChapters = false };
@@ -121,6 +126,7 @@ namespace DogSC.Replica {
     Require(threw, "preset name with slash is rejected");
     ExportPresetStore.Delete("我的4K", presetDir);
     Require(!ExportPresetStore.List(presetDir).Contains("我的4K"), "preset delete works");
+    Mark("STEP 3 preset store OK");
     // 4. 章节：元数据文本 + 真实导出写章节。
     var markers = new List<RecordingMarker> { new RecordingMarker { Time = 0, Label = "Intro" }, new RecordingMarker { Time = 2, Label = "Main" } };
     string meta = Chapters.BuildMetadata(markers, 4);
@@ -139,6 +145,7 @@ namespace DogSC.Replica {
     string noChapOut = Path.Combine(Folder, "no-chap-out.mp4");
     StudioRenderer.Export(cdocNoChap, noChapOut, new ExportOptions { PresetName = "test", Height = 360, Fps = 30, Codec = "h264", Crf = 18, Hdr = false, WriteChapters = true }, (v, s) => { }, CancellationToken.None);
     Require(ChapterCount(noChapOut) == 0, "no markers means no chapters written");
+    Mark("STEP 4 chapters OK");
     // 5. HDR 真实导出：小尺寸，验编码器 + 色彩元数据。
     string hdrSrc = Path.Combine(Folder, "hdr-src.mp4");
     RunFfmpeg("-v error -y -f lavfi -i testsrc2=size=640x360:rate=30:duration=1 -f lavfi -i \"sine=frequency=440:sample_rate=48000:duration=1\" -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest " + Media.Q(hdrSrc));
@@ -149,6 +156,7 @@ namespace DogSC.Replica {
     string hdrInfo = StreamInfo(hdrOut);
     Require(hdrInfo.Contains("hevc") && hdrInfo.Contains("smpte2084") && hdrInfo.Contains("bt2020"), "HDR export is hevc + smpte2084 + bt2020 (" + hdrInfo.Replace("\n", " ").Replace("\r", "") + ")");
     Require(hdrInfo.Contains("yuv420p10le"), "HDR export is 10-bit");
+    Mark("STEP 5 HDR export OK");
     // 6. 8K：0.3 秒 @10fps，验尺寸 + 编码器（只 3 帧，云端跑得动）。
     string kSrc = Path.Combine(Folder, "k-src.mp4");
     RunFfmpeg("-v error -y -f lavfi -i testsrc2=size=640x360:rate=30:duration=1 -c:v libx264 -pix_fmt yuv420p " + Media.Q(kSrc));
@@ -158,6 +166,7 @@ namespace DogSC.Replica {
     StudioRenderer.Export(kdoc, kOut, new ExportOptions { PresetName = "8K", Height = 4320, Fps = 10, Codec = "h265", Crf = 22, Hdr = false }, (v, s) => { }, CancellationToken.None);
     string kInfo = StreamInfo(kOut);
     Require(kInfo.Contains("7680") && kInfo.Contains("4320") && kInfo.Contains("hevc"), "8K export is 7680x4320 hevc (" + kInfo.Replace("\n", " ").Replace("\r", "") + ")");
+    Mark("STEP 6 8K export OK");
     // 7. 一键删静音：检测 + 应用 + 跟随前移 + 真实导出。
     string gapWav = Path.Combine(Folder, "gap.wav");
     RunFfmpeg("-v error -y -f lavfi -i \"sine=frequency=440:sample_rate=48000:duration=6,volume='if(between(t,2,4),0,1)':eval=frame\" -c:a pcm_s16le " + Media.Q(gapWav));
@@ -180,9 +189,10 @@ namespace DogSC.Replica {
     string cutOut = Path.Combine(Folder, "cut-out.mp4");
     StudioRenderer.Export(sdoc, cutOut, 360, 30, (v, s) => { }, CancellationToken.None);
     Require(Math.Abs(StudioMedia.Import(cutOut).Duration - 4) < 0.15, "export after silence cut is 4.0s");
+    Mark("STEP 7 silence cut OK");
     File.WriteAllText(log, "PASS: wheel center/edges/half-radius + round-trip, dark red + shadow hue +120 -> green (" + wgreen[0].ToString("0.00") + "," + wgreen[1].ToString("0.00") + "," + wgreen[2].ToString("0.00") + "); HDR args libx265 + yuv420p10le + x265-params, HDR+H.264/CRF 60/height 99999/fps 0 rejected, 4 built-in presets; preset store round-trip + broken JSON + bad name rejected + delete; chapters metadata + export carries Intro|Main, no markers means none; HDR export hevc + smpte2084 + bt2020 10-bit; 8K export 7680x4320 hevc (0.3s @10fps); silencedetect [2.0, 4.0], cut removes 2.0s, cuts [0,2]+[4,6], subtitle 5.0 -> 3.0, markers follow, overlap rejected, export after cut 4.0s.\n");
    }
-   catch (Exception ex) { File.WriteAllText(log, "FAIL\n" + ex); Environment.ExitCode = 1; }
+   catch (Exception ex) { File.AppendAllText(log, "FAIL\n" + ex + "\n"); Mark("FAIL: " + ex.Message); Environment.ExitCode = 1; }
   }
  }
 }
