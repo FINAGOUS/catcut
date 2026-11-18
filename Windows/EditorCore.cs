@@ -54,6 +54,28 @@ namespace DogSC.Replica {
   public bool FlashEnabled; public int FlashFrames=2; public double FlashIntensity=1; public List<double> FlashBeats=new List<double>();
   public bool MorphEnabled; public double MorphSeconds=0.2;
   public bool Spherical360;
+  // W8：效果与媒体（模型见 Windows/W8EffectsPanels.cs；老工程反序列化
+  // 时为默认值，Validate() 里补默认值与范围校验）。
+  // 防抖（stabilize.ts）：方法 vidstab/deshake，默认 vidstab。
+  public bool StabilizeEnabled; public string StabilizeMethod="vidstab"; public double StabilizeSmoothing=15; public double StabilizeZoom; public int StabilizeShakiness=5; public int StabilizeAccuracy=15; public int DeshakeRx=16; public int DeshakeRy=16;
+  // 人像抠像背景（portrait.ts）：模式 original/blur/color/image。
+  public bool PortraitEnabled; public string PortraitBgMode="original"; public string PortraitBgColor="#FF0000"; public string PortraitBgImage=""; public double PortraitBgBlur=6; public double PortraitEdgeFeather=1;
+  // 模板商店（templates.ts）：当前套用的内置模板 id（空 = 没套）。
+  public string TemplateId=""; public string Transition="cut"; public double TransitionDuration; public double AudioFadeIn; public double AudioFadeOut;
+  // 对象跟踪（p3g.ts）：方法 color/template；颜色 #rrggbb；框选框（画面比例）。
+  public bool ObjectTrackEnabled; public string ObjectTrackMethod="color"; public string ObjectTrackColor="#FFFFFF"; public double ObjectTrackTolerance=60; public string ObjectTrackSticker=""; public double ObjectTrackMosaic; public double TrackBoxX=.4; public double TrackBoxY=.4; public double TrackBoxW=.2; public double TrackBoxH=.2;
+  // 克隆（p3g.ts）：路数 2/4，偏移逗号分隔，布局 horizontal/grid。
+  public bool CloneEnabled; public int CloneLanes=2; public string CloneOffsets="0,1"; public string CloneLayout="horizontal";
+  // 抠像描边（p3g.ts）：颜色/粗细 px。
+  public bool OutlineEnabled; public string OutlineColor="#FFFFFF"; public int OutlineWidth=2;
+  // AI 放大（p3g.ts）：只做导出时可选，目标 1080p/4K。
+  public bool UpscaleEnabled; public string UpscaleModel="realesrgan-x4plus"; public string UpscaleTarget="1080p";
+  // 元数据（medialib.ts）：场景/场次/关键词/备注，进 project.json。
+  public ClipMetadata Metadata=new ClipMetadata();
+  // 优化媒体（optimized.ts）：DNxHR 中间片，只做预览，导出始终用原片。
+  public string OptimizedPath=""; public bool OptimizedEnabled; public string OptimizedProfile="dnxhr_hq";
+  // 观察文件夹 + 导入收录（medialib.ts）：监看目录；转码 none/dnxhr/proxy。
+  public string WatchFolder=""; public string IngestTranscode="none";
   public double Length { get { return Cuts.Sum(c=>c.Length); } }
   public static JavaScriptSerializer Serializer() { return new JavaScriptSerializer { MaxJsonLength=int.MaxValue }; }
   public string Serialize() { return Serializer().Serialize(this); }
@@ -76,6 +98,27 @@ namespace DogSC.Replica {
    // W6：老项目缺新字段时补默认值。
    if(string.IsNullOrEmpty(AudioType))AudioType="无";
    if(FlashBeats==null)FlashBeats=new List<double>();
+   // W8：老项目缺新字段时补默认值（字符串反序列化后可能为 null）。
+   if(string.IsNullOrEmpty(StabilizeMethod))StabilizeMethod="vidstab";
+   if(string.IsNullOrEmpty(PortraitBgMode))PortraitBgMode="original";
+   if(string.IsNullOrEmpty(PortraitBgColor))PortraitBgColor="#FF0000";
+   if(PortraitBgImage==null)PortraitBgImage="";
+   if(string.IsNullOrEmpty(TemplateId))TemplateId="";
+   if(string.IsNullOrEmpty(Transition))Transition="cut";
+   if(string.IsNullOrEmpty(ObjectTrackMethod))ObjectTrackMethod="color";
+   if(string.IsNullOrEmpty(ObjectTrackColor))ObjectTrackColor="#FFFFFF";
+   if(ObjectTrackSticker==null)ObjectTrackSticker="";
+   if(string.IsNullOrEmpty(CloneOffsets))CloneOffsets="0,1";
+   if(string.IsNullOrEmpty(CloneLayout))CloneLayout="horizontal";
+   if(string.IsNullOrEmpty(OutlineColor))OutlineColor="#FFFFFF";
+   if(string.IsNullOrEmpty(UpscaleModel))UpscaleModel="realesrgan-x4plus";
+   if(string.IsNullOrEmpty(UpscaleTarget))UpscaleTarget="1080p";
+   if(Metadata==null)Metadata=new ClipMetadata();
+   if(Metadata.Keywords==null)Metadata.Keywords=new List<string>();
+   if(OptimizedPath==null)OptimizedPath="";
+   if(string.IsNullOrEmpty(OptimizedProfile))OptimizedProfile="dnxhr_hq";
+   if(WatchFolder==null)WatchFolder="";
+   if(string.IsNullOrEmpty(IngestTranscode))IngestTranscode="none";
    if(Grade.RgbR==null)Grade.RgbR=RgbCurves.Identity(); if(Grade.RgbG==null)Grade.RgbG=RgbCurves.Identity(); if(Grade.RgbB==null)Grade.RgbB=RgbCurves.Identity(); if(Grade.RgbMaster==null)Grade.RgbMaster=RgbCurves.Identity();
    if(!Finite(FrameRate)||FrameRate<=0||FrameRate>240)FrameRate=30;
    if(Cuts.Any(c=>!Finite(c.Start)||!Finite(c.End)||!Finite(c.Speed)||c.Start<0||c.End>Duration+.1||(!c.Gap&&(c.End<=c.Start||c.Speed<.5||c.Speed>2))||(c.Gap&&(!Finite(c.GapDuration)||c.GapDuration<=0||c.End<c.Start)))) throw new Exception("项目的剪辑范围无效。");
@@ -95,6 +138,21 @@ namespace DogSC.Replica {
    if(!Finite(FlashIntensity)||FlashIntensity<0||FlashIntensity>1||FlashFrames<1||FlashFrames>10)throw new Exception("闪白参数超出范围。");
    foreach(var b in FlashBeats)if(!Finite(b)||b<0||b>Length+.1)throw new Exception("闪白点超出时间线范围。");
    if(!Finite(MorphSeconds)||MorphSeconds<.1||MorphSeconds>.5)throw new Exception("Morph 过渡时长超出范围（0.1–0.5 秒）。");
+   // W8：防抖/抠像背景/模板/对象跟踪/克隆/描边/放大/优化媒体校验
+   // （范围外的值直接拒绝，不静默修正；未开启的功能不校验）。
+   Stabilizer.Validate(this);
+   PortraitBackground.Validate(this);
+   if(PortraitEnabled&&BeautyEnabled)throw new Exception("人像抠像背景与美颜不能同开（共用同一张人像遮罩管线）。先关一个。");
+   if(!string.IsNullOrEmpty(TemplateId)&&TemplateStore.Find(TemplateId)==null)throw new Exception("模板无效：" + TemplateId + "。");
+   if(!string.IsNullOrEmpty(Transition)&&!new[]{"cut","fade","dissolve","wipeleft","wiperight","slideleft","circleopen","fadeblack","fadewhite"}.Contains(Transition))throw new Exception("转场无效：" + Transition + "。");
+   if(!Finite(TransitionDuration)||TransitionDuration<0||TransitionDuration>5)throw new Exception("转场时长超出范围（0–5 秒）。");
+   if(!Finite(AudioFadeIn)||AudioFadeIn<0||AudioFadeIn>10||!Finite(AudioFadeOut)||AudioFadeOut<0||AudioFadeOut>10)throw new Exception("音频淡入淡出超出范围（0–10 秒）。");
+   ObjectTracker.Validate(this);
+   CloneEffect.Validate(this);
+   KeyOutline.Validate(this);
+   Upscaler.Validate(this);
+   OptimizedMedia.Validate(this);
+   if(IngestTranscode!="none"&&IngestTranscode!="dnxhr"&&IngestTranscode!="proxy")throw new Exception("导入转码无效：" + IngestTranscode + "（none / dnxhr / proxy）。");
    if(BeautyEnabled)BeautyFilter.Validate(this);
    foreach(var m in RecordingMarkers)if(!Finite(m.Time)||m.Time<0||m.Time>Length+.1||string.IsNullOrWhiteSpace(m.Label))throw new Exception("录制标记时间或名称无效。");
    if(!Finite(MasterGainDb)||MasterGainDb<-60||MasterGainDb>12)throw new Exception("总输出增益超出范围。");
@@ -434,6 +492,12 @@ namespace DogSC.Replica {
     string timeline=Path.Combine(work,"timeline.mp4"),filter=Path.Combine(work,"timeline.txt"),result=Path.Combine(work,"result.mp4");
     progress(0,"整理时间线");bool direct=doc.Cuts.Count==1&&Math.Abs(doc.Cuts[0].Speed-1)<.000001&&!doc.Cuts[0].Gap&&!MulticamModel.Active(doc);string media=direct?doc.Source:timeline;string selection=direct?"-ss "+Media.N(doc.Cuts[0].Start)+" -t "+Media.N(doc.Cuts[0].End-doc.Cuts[0].Start)+" ":"";
     if(!direct){File.WriteAllText(filter,StudioMedia.Filter(doc,doc.Audio),new UTF8Encoding(false));var inputs=string.Join(" ",StudioMedia.InputFiles(doc).Select(f=>"-i "+Media.Q(f)).ToArray());StudioMedia.Run("-v error -y "+inputs+" -/filter_complex "+Media.Q(filter)+" -map [video] "+(doc.Audio?"-map [audio] -c:a aac ":"")+"-c:v libx264 -preset ultrafast -crf 16 -pix_fmt yuv420p -r "+fps+" "+Media.Q(timeline),token);}
+    // W8：防抖与对象跟踪是媒体预处理——先对拼好的 timeline.mp4（或
+    // 直接路径的源文件）各做一遍转码，再走原有解码管线。顺序：先防抖，
+    // 再跟踪（跟踪跑在防抖后的画面上）。代理/优化媒体不参与——导出
+    // 始终用原片（代理铁律）。
+    if(doc.StabilizeEnabled){progress(.05,"视频防抖…");media=Stabilizer.StabilizeFile(media,doc,work,token);}
+    if(doc.ObjectTrackEnabled){progress(.08,"对象跟踪…");media=ObjectTracker.ApplyToFile(media,doc,work,token);}
     token.ThrowIfCancellationRequested();progress(.1,"渲染画面与运镜");
     int dw=Math.Min(doc.Width,width);dw-=dw%2;int dh=Math.Max(2,(int)Math.Round((double)dw*doc.Height/doc.Width/2)*2);
     // W5：降噪（整条时间线统一强度）拼进解码 vf；美颜有遮罩时走遮罩图
@@ -447,9 +511,30 @@ namespace DogSC.Replica {
      if(direct)maskFile=doc.BeautyMaskPath;
      else{progress(.1,"生成人像遮罩…");maskFile=BeautyMask.GenerateSync(timeline,doc.BeautyMode,0,doc.Length,fps,dw,dh,Path.Combine(work,"beauty-mask.mp4"),token);}
     }
+    // W8：人像抠像背景——遮罩从已拼好的时间线媒体（防抖/跟踪之后）
+    // 重算（源遮罩与拼好的时间线不对齐，不能复用，与 W5 美颜同款理由）。
+    // 直接路径用片段的源时间，非直接路径用整条时间线；用 multi 模式
+    // （保留全部人物，不只取最大连通域）。
+    string portraitMask=null;
+    if(doc.PortraitEnabled&&doc.PortraitBgMode!="original"){
+     string problem=BeautyMask.CheckBackend();
+     if(problem!=null)throw new Exception("人像抠像背景不可用："+problem);
+     progress(.1,"生成人像遮罩…");
+     double pFrom=direct?doc.Cuts[0].Start:0;
+     double pDur=direct?doc.Cuts[0].End-doc.Cuts[0].Start:doc.Length;
+     portraitMask=BeautyMask.GenerateSync(media,"multi",pFrom,pDur,fps,dw,dh,Path.Combine(work,"portrait-mask.mp4"),token);
+    }
     if(maskFile!=null){
      string graph=W5Media.MaskedFilterComplex((direct?"fps="+fps+",":"")+"scale="+dw+":"+dh+effectVf,fps,dw.ToString(CultureInfo.InvariantCulture),dh.ToString(CultureInfo.InvariantCulture),doc);
      decoder=Media.Start("ffmpeg","-v error "+selection+"-i "+Media.Q(media)+" "+selection+"-i "+Media.Q(maskFile)+" -filter_complex "+Media.Q(graph)+" -map [out] -an -pix_fmt bgra -f rawvideo pipe:1",true);
+    }else if(portraitMask!=null){
+     // W8：人像抠像背景——遮罩从已拼好的时间线媒体（防抖/跟踪之后）
+     // 重算（源遮罩与拼好的时间线不对齐，不能复用，与 W5 美颜同款理由）。
+     // 直接路径用片段的源时间，非直接路径用整条时间线。
+     string pGraph=PortraitBackground.FilterComplex((direct?"fps="+fps+",":"")+"scale="+dw+":"+dh+effectVf,fps,dw,dh,doc,W5Effects.GradeChain(doc.Grade));
+     string pInputs="-v error "+selection+"-i "+Media.Q(media)+" -i "+Media.Q(portraitMask);
+     if(doc.PortraitBgMode=="image")pInputs+=" -i "+Media.Q(doc.PortraitBgImage);
+     decoder=Media.Start("ffmpeg",pInputs+" -filter_complex "+Media.Q(pGraph)+" -map [out] -an -pix_fmt bgra -f rawvideo pipe:1",true);
     }else{
      decoder=Media.Start("ffmpeg","-v error "+selection+"-i "+Media.Q(media)+" -an -vf "+(direct?"fps="+fps+",":"")+"scale="+dw+":"+dh+doc.Grade.VideoFilter()+effectVf+" -pix_fmt bgra -f rawvideo pipe:1",true);
     }
@@ -477,6 +562,10 @@ namespace DogSC.Replica {
      if(frame==0||decoder.ExitCode!=0||encoder.ExitCode!=0)throw new Exception("导出失败："+decodeError.Result+encodeError.Result);if(diagnostics!=null)diagnostics("Frames: "+frame+"; rendering: "+(drawTicks/(double)Stopwatch.Frequency).ToString("F2")+" seconds; encoder input wait: "+(writeTicks/(double)Stopwatch.Frequency).ToString("F2")+" seconds.");}
      if(cameraStream!=null)cameraStream.Dispose();
     }
+    // W8：AI 放大（导出时可选）：对已渲染好的成片逐帧超分；模型缺失
+    // 时 UpscaleFile 直接报错，不出一份冒充放大的文件（Validate 里已
+    // 经先验过一次，这里是第二道）。
+    if(doc.UpscaleEnabled){progress(.98,"AI 放大…");string up=Upscaler.UpscaleFile(result,doc,work,token);File.Delete(result);File.Move(up,result);}
     File.Move(result,output);
     // W7：导出写 MP4 章节（时间线标记 → ffmetadata → -c copy 重混，不重编码；
     // 没有标记或章节数为 0 时什么都不做）。章节在 360° 注入之前写——注入
