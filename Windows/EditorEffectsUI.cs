@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Linq;
 using System.Windows;
@@ -26,6 +26,7 @@ namespace DogSC.Replica {
   }
   static readonly string[][] animationChoices={new[]{"无","none"},new[]{"淡入淡出","fade"},new[]{"弹出","pop"},new[]{"从左侧","slideLeft"},new[]{"从右侧","slideRight"},new[]{"从上方","slideUp"},new[]{"从下方","slideDown"},new[]{"从左上","slideTopLeft"},new[]{"从右上","slideTopRight"},new[]{"从左下","slideBottomLeft"},new[]{"从右下","slideBottomRight"}};
   void BuildOverlayInspector(){bool sticker=tab=="贴图";inspector.Children.Add(InspectorAction("plus",sticker?"导入贴图…":"添加柔化区域",()=>AddEffect(sticker?"sticker":"blur",null)));
+   BuildObjectTrackSection();BuildCloneSection();BuildScriptVideoSection();
    if(selectedOverlay<0||selectedOverlay>=Doc.Overlays.Count){OverlayLibrary(sticker);Note(sticker?"支持透明 PNG 和 JPG，图片随项目保存。":"柔化区域随录屏运镜移动；突出模式压暗区域之外的画面。");return;}
    var o=Doc.Overlays[selectedOverlay];OverlayHeading(o);Section(o.Kind=="sticker"?"布局":"柔化效果");
    if(o.Kind!="sticker"){Buttons(new[]{"柔化","突出"},o.Kind=="blur"?"柔化":"突出",v=>{Checkpoint();o.Kind=v=="柔化"?"blur":"spotlight";o.Name=v;Changed();BuildInspector();});if(o.Kind=="blur")Percent("强度",0,1,o.Intensity,v=>o.Intensity=v);else Percent("暗度",0,.75,o.Dimming,v=>o.Dimming=v);Percent("圆角",0,.5,o.Corner,v=>o.Corner=v);
