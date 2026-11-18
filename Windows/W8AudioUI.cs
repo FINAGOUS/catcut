@@ -1,4 +1,4 @@
-// W8 音频高级 UI（2026-11-18）：音频修复、EQ 曲线拖动、压缩器旋钮、变声、
+﻿// W8 音频高级 UI（2026-11-18）：音频修复、EQ 曲线拖动、压缩器旋钮、变声、
 // 人声分离、TTS 面板、环绕声；子片段行挂在素材库“素材”分栏。
 // 控件全部复用现有检查器助手（Section/Note/Slider/Toggle/Choices/
 // Buttons/InspectorAction）+ W5 的 HslCurveEditor 同款 Canvas 拖拽，
@@ -164,7 +164,7 @@ namespace DogSC.Replica {
    if (Doc == null || string.IsNullOrEmpty(Doc.Source)) return;
    Status("正在生成波形图…");
    try {
-    string outPng = Path.Combine(Path.GetTempPath(), "dogsc-eq-waveform.png");
+    string outPng = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "dogsc-eq-waveform.png");
     await Task.Run(() => Waveform.Png(Doc.EffectiveSource(), outPng, 248, 48));
     eqWaveformPath = outPng;
     Changed();
@@ -272,7 +272,7 @@ namespace DogSC.Replica {
    if (!Doc.Audio) { Note("当前素材没有音轨，分离不可用。"); return; }
    Choices("导出时用哪一轨", s.Mode, VocalSepSettings.Modes.Select(m => new[] { m == "关" ? "关（用原音轨）" : m == "人声" ? "只留人声" : "只留伴奏", m }).ToArray(), val => { s.Mode = val; BuildInspector(); });
    Choices("Demucs 模型", s.Model, VocalSepSettings.Models.Select(m => new[] { m, m }).ToArray(), val => s.Model = val);
-   if (!string.IsNullOrEmpty(s.VocalsPath)) Note("人声轨：" + Path.GetFileName(s.VocalsPath) + "\n伴奏轨：" + Path.GetFileName(s.AccompPath));
+   if (!string.IsNullOrEmpty(s.VocalsPath)) Note("人声轨：" + System.IO.Path.GetFileName(s.VocalsPath) + "\n伴奏轨：" + System.IO.Path.GetFileName(s.AccompPath));
    if (!string.IsNullOrEmpty(vocalSepStatus)) Note(vocalSepStatus);
    inspector.Children.Add(InspectorAction("sound", vocalSepBusy ? "正在分离…" : "开始分离", () => { if (!vocalSepBusy) RunVocalSep(); }));
    if (!string.IsNullOrEmpty(s.VocalsPath) && File.Exists(s.VocalsPath)) {
@@ -288,7 +288,7 @@ namespace DogSC.Replica {
    Changed();
    BuildInspector();
    RefreshMediaLibrary();
-   Status("已加入混音：" + Path.GetFileName(path));
+   Status("已加入混音：" + System.IO.Path.GetFileName(path));
   }
   async void RunVocalSep() {
    if (Doc == null || string.IsNullOrEmpty(Doc.Source)) return;
@@ -297,8 +297,8 @@ namespace DogSC.Replica {
    BuildInspector();
    Status("正在分离人声（CPU 慢活，请耐心等）…");
    try {
-    string dir = Path.GetDirectoryName(FilePath ?? Doc.Source);
-    string outDir = Path.Combine(dir, Doc.Name + "-vocalsep");
+    string dir = System.IO.Path.GetDirectoryName(FilePath ?? Doc.Source);
+    string outDir = System.IO.Path.Combine(dir, Doc.Name + "-vocalsep");
     string model = Doc.VocalSep.Model;
     string source = Doc.Source;
     var stems = await Task.Run(() => VocalSep.Separate(source, model, outDir));
@@ -332,7 +332,7 @@ namespace DogSC.Replica {
    Slider("语速", 0.5, 2, t.Speed, "×", val => t.Speed = val);
    Number("起始时间 / 秒", t.Start, val => t.Start = EditDocument.Clamp(val, 0, Doc.Length));
    Slider("增益", -30, 12, t.GainDb, " dB", val => t.GainDb = val);
-   if (!string.IsNullOrEmpty(t.WavPath)) Note("旁白音频：" + Path.GetFileName(t.WavPath) + "（从 " + UI.Time(t.Start) + " 起混入，导出时生效）。");
+   if (!string.IsNullOrEmpty(t.WavPath)) Note("旁白音频：" + System.IO.Path.GetFileName(t.WavPath) + "（从 " + UI.Time(t.Start) + " 起混入，导出时生效）。");
    if (!string.IsNullOrEmpty(ttsStatus)) Note(ttsStatus);
    inspector.Children.Add(InspectorAction("sound", ttsBusy ? "正在合成…" : "生成旁白", () => { if (!ttsBusy) RunTts(); }));
    if (t.HasAudio) inspector.Children.Add(InspectorAction("trash", "清除旁白", () => { Checkpoint(); t.WavPath = ""; ttsStatus = ""; Changed(); BuildInspector(); }, true));
@@ -346,8 +346,8 @@ namespace DogSC.Replica {
    BuildInspector();
    Status("正在合成旁白…");
    try {
-    string dir = Path.GetDirectoryName(FilePath ?? Doc.Source);
-    string outWav = Path.Combine(dir, Doc.Name + "-旁白.wav");
+    string dir = System.IO.Path.GetDirectoryName(FilePath ?? Doc.Source);
+    string outWav = System.IO.Path.Combine(dir, Doc.Name + "-旁白.wav");
     double speed = Doc.Tts.Speed;
     double duration = await Task.Run(() => TtsSynth.Synthesize(text, speed, outWav));
     Checkpoint();
@@ -406,7 +406,7 @@ namespace DogSC.Replica {
    if (c.Gap) { Status("空隙没有源时间，不能建子片段。"); return; }
    try {
     Checkpoint();
-    var sub = Subclips.Create(Doc.MediaLibrary, "m1", "sc-" + Guid.NewGuid().ToString("N").Substring(0, 6), Path.GetFileNameWithoutExtension(Doc.Source) + " 子片段", c.Start, c.End);
+    var sub = Subclips.Create(Doc.MediaLibrary, "m1", "sc-" + Guid.NewGuid().ToString("N").Substring(0, 6), System.IO.Path.GetFileNameWithoutExtension(Doc.Source) + " 子片段", c.Start, c.End);
     Doc.MediaLibrary.Add(sub);
     Changed();
     BuildInspector();
