@@ -51,7 +51,13 @@ namespace DogSC.Replica {
   }
   // 解码成 48kHz 单声道 f32 PCM（Goertzel / RMS 的输入）。
   static float[] Pcm(string file) {
-   using (var p = Media.Start("ffmpeg", "-v error -i " + Media.Q(file) + " -vn -ac 1 -ar 48000 -f f32le -", true)) {
+   // 下混必须是逐声道电平，不能用 -ac 1：ffmpeg 的 -ac 1 是等功率下混
+   // （0.7071+0.7071），双声道同信号会 +3.01dB（实测 -18.06→-15.05），
+   // 单声道源与立体声导出跨声道数对比时会凭空多出 +3dB；单声道直通，
+   // 多声道取 (L+R)/2（pan 的 0.5/0.5 在单声道输入上会把 c1 当 0、
+   // 再 -6dB，所以先按声道数分流）。
+   string af = Media.AudioChannels(file) == 1 ? "" : " -af \"pan=mono|c0=0.5*c0+0.5*c1\"";
+   using (var p = Media.Start("ffmpeg", "-v error -i " + Media.Q(file) + " -vn" + af + " -ar 48000 -f f32le -", true)) {
     var err = p.StandardError.ReadToEndAsync();
     using (var ms = new MemoryStream()) {
      p.StandardOutput.BaseStream.CopyTo(ms);
