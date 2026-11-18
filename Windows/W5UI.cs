@@ -1,4 +1,4 @@
-// W5 检查器 UI（2026-11-18）：Whisper 自动字幕、HSL 曲线编辑器、电平表、
+﻿// W5 检查器 UI（2026-11-18）：Whisper 自动字幕、HSL 曲线编辑器、电平表、
 // 美颜/降噪、录制标记、变速（精细滑杆 + 节拍检测 + 卡点变速）。
 // 控件全部复用现有检查器助手（Section/Note/Slider/Number/Toggle/Buttons/
 // Choices/InspectorAction），不抄任何闭源软件的界面。
@@ -261,6 +261,7 @@ namespace DogSC.Replica {
    inspector.Children.Add(InspectorAction("folder", "选择已有遮罩文件…", () => PickBeautyMask()));
    if (hasMask) inspector.Children.Add(InspectorAction("trash", "清除遮罩并关闭美颜", () => { Checkpoint(); Doc.BeautyMaskPath = ""; Doc.BeautyEnabled = false; Changed(); BuildInspector(); }, true));
    Note("遮罩生成需要系统 Python + onnxruntime + numpy（pip install onnxruntime numpy）；模型（MediaPipe Selfie Segmentation，Apache 2.0）随包分发。美颜链与引擎一致：hqdn3d + 轻微提亮 + unsharp 0.1，遮罩外不动。多机位/变速片段下不可用（引擎 v1 限制）。导出时若时间线含空隙/多片段，会按当前时间线重算遮罩（较慢，一次）。");
+   BuildPortraitBgSection();BuildOutlineSection();
   }
   async void GenerateBeautyMask() {
    if (Doc == null || beautyBusy) return;
