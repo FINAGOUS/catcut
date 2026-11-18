@@ -49,16 +49,29 @@ namespace DogSC.Replica {
    if(qsv)yield return new Plan {Input=gdi,Filter="",Encoding=intel,Name="兼容捕获 · Intel 硬件编码"};
    yield return new Plan {Input=gdi,Filter="",Encoding=software,Name="兼容捕获 · CPU 编码"};
   }
-  public static Task<CaptureSession> Start(IntPtr target,D.Rectangle area,int fps,string microphone,string output,Action<string> status,bool continuous=false){return StartCore(target,area,fps,microphone,output,status,continuous,false);}
-  internal static Task<CaptureSession> StartBenchmark(D.Rectangle area,int fps,string output,bool legacy){return StartCore(IntPtr.Zero,area,fps,null,output,message=>{},true,legacy);}
-  static async Task<CaptureSession> StartCore(IntPtr target,D.Rectangle area,int fps,string microphone,string output,Action<string> status,bool continuous,bool legacy){
+  public static Task<CaptureSession> Start(IntPtr target,D.Rectangle area,int fps,string microphone,string output,Action<string> status,bool continuous=false){return StartCore(target,area,fps,microphone,null,.8,output,status,continuous,false);}
+  // W5：系统声音作第二路 dshow 音频输入（立体声混音）；null = 不混系统声。
+  public static Task<CaptureSession> Start(IntPtr target,D.Rectangle area,int fps,string microphone,string systemAudio,double systemVolume,string output,Action<string> status,bool continuous=false){return StartCore(target,area,fps,microphone,systemAudio,systemVolume,output,status,continuous,false);}
+  internal static Task<CaptureSession> StartBenchmark(D.Rectangle area,int fps,string output,bool legacy){return StartCore(IntPtr.Zero,area,fps,null,null,.8,output,message=>{},true,legacy);}
+  static async Task<CaptureSession> StartCore(IntPtr target,D.Rectangle area,int fps,string microphone,string systemAudio,double systemVolume,string output,Action<string> status,bool continuous,bool legacy){
    if(!legacy)await Prewarm();bool nvenc=await HardwareAvailable(),amf=!legacy&&await AmdAvailable(),qsv=!legacy&&await IntelAvailable();var failures=new List<string>();
    foreach(var plan in Plans(target,area,fps,nvenc,continuous,legacy,amf,qsv)){
     string planKey=plan.Device+plan.Name+"/"+area.Width+"x"+area.Height;bool incompatible;lock(probeLock)incompatible=incompatiblePlans.Contains(planKey);if(!legacy&&incompatible){failures.Add(plan.Name+": 本次运行已检测到不兼容，直接回退。");continue;}
     status(plan.Name+" · 正在启动…");string args="-hide_banner -y -nostats -loglevel warning -stats_period 0.25 -progress pipe:1 -filter_threads 2 -filter_complex_threads 2 "+plan.Device+plan.Input;
-    int audioInput=string.IsNullOrEmpty(plan.Input)?0:1;if(microphone!=null)args+="-thread_queue_size 8 -f dshow -i "+Media.Q("audio="+microphone)+" ";
-    if(plan.Filter.Length>0)args+="-filter_complex "+Media.Q(plan.Filter)+" -map [video] ";else args+="-map 0:v -vf pad=ceil(iw/2)*2:ceil(ih/2)*2 ";
-    if(microphone!=null)args+="-map "+audioInput+":a -c:a aac ";
+    // W5：系统声音作第二路 dshow 音频输入（立体声混音），与麦克风 amix 混入
+    // （normalize=0，麦克风音量不动 1.0，只调系统音量）；只有系统声时直接
+    // 过 volume。混音图拼错会让整条 plan 启动失败，Plan 循环会自动试下一条。
+    int micIdx=string.IsNullOrEmpty(plan.Input)?0:1;int sysIdx=micIdx+(microphone!=null?1:0);
+    if(microphone!=null)args+="-thread_queue_size 8 -f dshow -i "+Media.Q("audio="+microphone)+" ";
+    if(systemAudio!=null)args+="-thread_queue_size 8 -f dshow -i "+Media.Q("audio="+systemAudio)+" ";
+    string audioFilter=SystemAudio.AudioFilter(micIdx,sysIdx,systemVolume,microphone!=null,systemAudio!=null);
+    if(audioFilter.Length>0){
+     if(plan.Filter.Length>0)args+="-filter_complex "+Media.Q(plan.Filter+";"+audioFilter)+" -map [video] -map [aout] -c:a aac ";
+     else args+="-filter_complex "+Media.Q(audioFilter)+" -map 0:v -vf pad=ceil(iw/2)*2:ceil(ih/2)*2 -map [aout] -c:a aac ";
+    }else{
+     if(plan.Filter.Length>0)args+="-filter_complex "+Media.Q(plan.Filter)+" -map [video] ";else args+="-map 0:v -vf pad=ceil(iw/2)*2:ceil(ih/2)*2 ";
+     if(microphone!=null)args+="-map "+micIdx+":a -c:a aac ";
+    }
     // Commit complete fragments while recording, so an interrupted encoder leaves playable footage.
     args+=plan.Encoding+" -r "+fps+" -fps_mode cfr -g "+fps+" -flush_packets 1 -movflags +frag_keyframe+empty_moov+default_base_moof+negative_cts_offsets -frag_duration 500000 "+Media.Q(output);
     var session=new CaptureSession {Backend=plan.Name,HardwareEncoding=!plan.Encoding.Contains("libx264")};try{

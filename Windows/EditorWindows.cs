@@ -50,9 +50,11 @@ namespace DogSC.Replica {
   static int PreferredRate(){int rate;try{if(int.TryParse(File.ReadAllText(ratePreference),out rate)&&new[]{30,60,90}.Contains(rate))return rate;}catch{}return 60;}
   string mode="显示器",microphone;D.Rectangle area;Process capture;CaptureSession captureSession;
   string cameraDevice;CameraRecorder cameraRecorder;Button cameraButton,systemButton;Stopwatch watch=new Stopwatch();double lastStatus;List<PointerSample> points=new List<PointerSample>();bool busy;string sourcePath;IntPtr target;
+  // W5：系统声音（立体声混音，第二路 dshow 输入）+ 录制标记（见 W5Panels.cs）。
+  string systemAudio;double systemAudioVolume=.8;
   Task stopTask;Exception recordingFailure;
   public bool IsRecording{get{return take!=null||busy;}}
-  public RecorderWindow(Studio host){InitializeRecorderSurface(host);}
+  public RecorderWindow(Studio host){var pref=SystemAudio.Load();systemAudio=string.IsNullOrEmpty(pref.Item1)?null:pref.Item1;systemAudioVolume=pref.Item2;InitializeRecorderSurface(host);UpdateSystemAudioOrb();}
   string RecordFolder(){string path=Updates.RecordingFolder;Directory.CreateDirectory(path);return path;}
   void SelectMode(string name){int previous=Math.Max(0,sources.SelectedIndex);mode=name;sources.Items.Clear();sources.DisplayMemberPath="";target=IntPtr.Zero;
    if(name=="窗口"){EnumWindows((handle,state)=>{if(!IsWindowVisible(handle))return true;var text=new StringBuilder(512);GetWindowText(handle,text,512);string title=text.ToString();if(!string.IsNullOrWhiteSpace(title)&&!title.StartsWith("DogSC"))sources.Items.Add(new WindowSource {Handle=handle,Title=title});return true;},IntPtr.Zero);}
@@ -74,12 +76,16 @@ namespace DogSC.Replica {
     menu.PlacementTarget=cameraButton;menu.IsOpen=true;
    }catch(Exception ex){state.Text=ex.Message;}
   }
+  void UpdateSystemAudioOrb(){if(systemButton==null)return;UI.Orb(systemButton,"sound",systemAudio!=null);systemButton.ToolTip=systemAudio==null?"系统声音 · 点击选择（未开启）":"系统声音 · "+systemAudio+"（音量 "+(int)(systemAudioVolume*100)+"%）";}
   async void SystemAudioSurvey(){
    state.Text="正在检测系统声音设备…";
    try{
-    string survey=await Task.Run(()=>CameraDevices.Survey());
-    AppDialogs.Notice(this,"系统声音检测",survey+"\n\n接线状态：系统声音混音接入本批未接（要改录制主路的 ffmpeg 音频图，云端没有该设备、无法验证）。检测到立体声混音设备后，下一步是把它作第二路 dshow 音频输入混入录制。");
-    state.Text="系统声音检测完成。";
+    var result=await Task.Run(()=>SystemAudioDialog.Show(this,systemAudio,systemAudioVolume));
+    if(result==null){state.Text="系统声音设置未改。";return;}
+    systemAudio=result.Item1;systemAudioVolume=result.Item2;
+    SystemAudio.Save(systemAudio,systemAudioVolume);
+    UpdateSystemAudioOrb();
+    state.Text=systemAudio==null?"系统声音已关闭。":"系统声音已选 · "+systemAudio+"（音量 "+(int)(systemAudioVolume*100)+"%）";
    }catch(Exception ex){state.Text=ex.Message;}
   }
   async void ToggleRecording(){if(busy)return;if(take!=null){await Stop();return;}busy=true;start.IsEnabled=false;options.IsEnabled=false;sources.IsEnabled=false;frameRates.IsEnabled=false;
@@ -90,7 +96,7 @@ namespace DogSC.Replica {
     area.Width-=area.Width%2;area.Height-=area.Height%2;if(area.Width<16||area.Height<16)throw new Exception("录制范围过小。");
     var folder=Path.Combine(RecordFolder(),DateTime.Now.ToString("yyyyMMdd-HHmmss")+"-"+Guid.NewGuid().ToString("N").Substring(0,6));Directory.CreateDirectory(folder);sourcePath=Path.Combine(folder,"source.mp4");points=new List<PointerSample>();
     await studio.SuspendForRecording();var warmup=CaptureEngine.Prewarm();Owner=null;studio.Window.Hide();for(int seconds=3;seconds>0;seconds--){state.Text=seconds+" 秒后开始录制";await Task.Delay(1000);}await warmup;
-    take=new RecordingTake(target,area,CaptureRate,microphone,sourcePath);await take.Resume(message=>state.Text=message);if(cameraDevice!=null){try{cameraRecorder=new CameraRecorder(cameraDevice,Path.GetDirectoryName(sourcePath));await cameraRecorder.Start();}catch(Exception ex){cameraRecorder=null;state.Text="摄像头未启动："+ex.Message;}}timer.Interval=TimeSpan.FromMilliseconds(1000.0/Math.Min(60,CaptureRate));BeginSegment();state.ToolTip=take.Backend;start.Content=UI.IconLabel("stop","停止录制",12);start.Background=UI.Brush("#DE5E57");
+    take=new RecordingTake(target,area,CaptureRate,microphone,sourcePath,systemAudio,systemAudioVolume);await take.Resume(message=>state.Text=message);if(cameraDevice!=null){try{cameraRecorder=new CameraRecorder(cameraDevice,Path.GetDirectoryName(sourcePath));await cameraRecorder.Start();}catch(Exception ex){cameraRecorder=null;state.Text="摄像头未启动："+ex.Message;}}timer.Interval=TimeSpan.FromMilliseconds(1000.0/Math.Min(60,CaptureRate));BeginSegment();state.ToolTip=take.Backend;start.Content=UI.IconLabel("stop","停止录制",12);start.Background=UI.Brush("#DE5E57");
    }catch(Exception ex){recordingFailure=ex;StopPointerSampling();if(cameraRecorder!=null){cameraRecorder.Dispose();cameraRecorder=null;}if(take!=null)take.Dispose();take=null;capture=null;captureSession=null;studio.ResumeAfterRecording();studio.Window.Show();Owner=studio.Window;state.Text="录制未启动";if(!testingCapture)AppDialogs.Notice(this,"录制启动失败",ex.Message);options.IsEnabled=true;sources.IsEnabled=true;frameRates.IsEnabled=true;}finally{busy=false;start.IsEnabled=true;UpdatePauseButton();}
   }
   async void Sample(){if(capture==null)return;if(capture.HasExited){await Stop();return;}
@@ -105,14 +111,14 @@ namespace DogSC.Replica {
   }
   Task Stop(){if(stopTask!=null)return stopTask;if(take==null||busy)return Task.FromResult(false);stopTask=StopCore();return stopTask;}
   async Task StopCore(){var stoppedTake=take;busy=true;timer.Stop();StopPointerSampling();start.IsEnabled=false;UpdatePauseButton();state.Text="正在保存素材…";
-   try{bool active=!take.IsPaused;await take.Finish();if(cameraRecorder!=null){try{string camFile=await cameraRecorder.Finish();if(camFile!=null)state.Text="摄像头素材已保存 · "+camFile;}catch(Exception ex){File.WriteAllText(Path.Combine(Path.GetDirectoryName(sourcePath),"camera-error.txt"),ex.ToString());state.Text="摄像头保存失败 · 素材和诊断已保留";}cameraRecorder.Dispose();cameraRecorder=null;}if(active)CommitPointerSegment();capture=null;captureSession=null;take=null;studio.ResumeAfterRecording(false);Hide();studio.Window.Show();studio.Window.Activate();await studio.Recorded(sourcePath,points);busy=false;Close();}
+   try{bool active=!take.IsPaused;await take.Finish();if(cameraRecorder!=null){try{string camFile=await cameraRecorder.Finish();if(camFile!=null)state.Text="摄像头素材已保存 · "+camFile;}catch(Exception ex){File.WriteAllText(Path.Combine(Path.GetDirectoryName(sourcePath),"camera-error.txt"),ex.ToString());state.Text="摄像头保存失败 · 素材和诊断已保留";}cameraRecorder.Dispose();cameraRecorder=null;}if(active)CommitPointerSegment();capture=null;captureSession=null;take=null;studio.ResumeAfterRecording(false);Hide();studio.Window.Show();studio.Window.Activate();await studio.Recorded(sourcePath,points,stoppedTake.Markers);busy=false;Close();}
    catch(Exception ex){recordingFailure=ex;if(cameraRecorder!=null){cameraRecorder.Dispose();cameraRecorder=null;}capture=null;captureSession=null;take=null;state.Text="保存失败 · 素材和诊断已保留";state.ToolTip=Path.GetDirectoryName(sourcePath);File.WriteAllText(Path.Combine(Path.GetDirectoryName(sourcePath),"capture-save-error.txt"),ex.ToString());if(!testingCapture)AppDialogs.Notice(this,"保存录制失败",ex.Message+"\n素材目录："+Path.GetDirectoryName(sourcePath));options.IsEnabled=true;sources.IsEnabled=true;frameRates.IsEnabled=true;start.Content=UI.IconLabel("record","开始录制",12);start.Background=UI.Brush("#343638");}
    finally{stoppedTake.Dispose();studio.ResumeAfterRecording();if(!studio.Window.IsVisible)studio.Window.Show();busy=false;start.IsEnabled=true;UpdatePauseButton();}
   }
  }
  static class ReplicaProgram {
   [STAThread] public static void Main(string[] args){
-   try{Native.SetProcessDPIAware();if(args.Contains("--motion-stability-test")){MotionStabilityTests.Run();return;}if(args.Contains("--export-correctness-test")){ExportCorrectnessTests.Run();return;}if(args.Contains("--export-performance-test")){ExportPerformanceTests.Run(args.Contains("--no-shadow"));return;}if(args.Contains("--update-test")){UpdateTests.Run();return;}if(args.Contains("--editor-test")){EditorTests.Run();return;}if(args.Contains("--w3-test")){FeaturePanelsTests.Run();return;}if(args.Contains("--w4-test")){W4Tests.Run();return;}if(args.Contains("--smoke-test")){SmokeTest.Run();return;}
+   try{Native.SetProcessDPIAware();if(args.Contains("--motion-stability-test")){MotionStabilityTests.Run();return;}if(args.Contains("--export-correctness-test")){ExportCorrectnessTests.Run();return;}if(args.Contains("--export-performance-test")){ExportPerformanceTests.Run(args.Contains("--no-shadow"));return;}if(args.Contains("--update-test")){UpdateTests.Run();return;}if(args.Contains("--editor-test")){EditorTests.Run();return;}if(args.Contains("--w3-test")){FeaturePanelsTests.Run();return;}if(args.Contains("--w4-test")){W4Tests.Run();return;}if(args.Contains("--w5-test")){W5Tests.Run();return;}if(args.Contains("--smoke-test")){SmokeTest.Run();return;}
     var app=new Application();app.ShutdownMode=ShutdownMode.OnMainWindowClose;app.DispatcherUnhandledException+=(s,e)=>{File.WriteAllText(Path.Combine(Media.Root,"bin","last-error.txt"),e.Exception.ToString());if(app.MainWindow!=null&&app.MainWindow.IsVisible)AppDialogs.Notice(app.MainWindow,"操作失败",e.Exception.Message);else MessageBox.Show(e.Exception.Message,"DogSC");e.Handled=true;};
     var studio=new Studio();app.MainWindow=studio.Window;
     if(args.Contains("--playback-rate-test"))studio.Window.Loaded+=async(s,e)=>{try{await studio.VerifyPlaybackRate(Path.Combine(Media.Root,"bin","playback-rate-test",Guid.NewGuid().ToString("N")));}catch(Exception ex){File.WriteAllText(Path.Combine(Media.Root,"bin","playback-rate-results.txt"),"FAIL\n"+ex);Environment.ExitCode=1;}app.Shutdown();};

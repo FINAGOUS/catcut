@@ -19,6 +19,11 @@ $files = @{
     'tools/FFmpeg-LICENSE.txt' = 'Windows/tools/FFmpeg-LICENSE.txt'
     'tools/FFmpeg-README.txt' = 'Windows/tools/FFmpeg-README.txt'
     '../docs/third-party/FFmpeg-SOURCE.txt' = 'Windows/tools/FFmpeg-SOURCE.txt'
+    # W5：人像遮罩脚本 + 模型、Whisper 转写脚本（随包分发；模型 Apache 2.0，见 THIRD_PARTY_NOTICES.md）。
+    'tools/portrait_segment.py' = 'Windows/tools/portrait_segment.py'
+    'tools/beauty_mask.py' = 'Windows/tools/beauty_mask.py'
+    'tools/transcribe.py' = 'Windows/tools/transcribe.py'
+    'tools/models/selfie_segmentation_256x256.onnx' = 'Windows/tools/models/selfie_segmentation_256x256.onnx'
     '../THIRD_PARTY_NOTICES.md' = 'THIRD_PARTY_NOTICES.md'
     '../LICENSE' = 'LICENSE'
     '../Resources/Onboarding/SoftLight.png' = 'Resources/Onboarding/SoftLight.png'

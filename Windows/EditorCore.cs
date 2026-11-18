@@ -42,6 +42,11 @@ namespace DogSC.Replica {
   public List<string> MulticamAngles=new List<string>(); public List<MulticamSwitch> MulticamSwitches=new List<MulticamSwitch>();
   // W4：摄像头画中画轨（模型见 Windows/W4Camera.cs；老工程反序列化为 null，Validate() 里补默认值）。
   public CameraClip Camera;
+  // W5：降噪/美颜/录制标记（模型见 Windows/W5Panels.cs；老工程反序列化
+  // 时 BeautyMaskPath/BeautyMode 为 null、DenoiseStrength 为 0，Validate() 里补默认值）。
+  // 降噪是整条时间线统一强度（引擎是逐片段；C# 解码时作用于已拼好的时间线）。
+  public double DenoiseStrength; public bool BeautyEnabled; public double BeautyStrength=50; public string BeautyMode="single"; public string BeautyMaskPath=""; public double BeautyEdgeFeather=1;
+  public List<RecordingMarker> RecordingMarkers=new List<RecordingMarker>();
   public double Length { get { return Cuts.Sum(c=>c.Length); } }
   public static JavaScriptSerializer Serializer() { return new JavaScriptSerializer { MaxJsonLength=int.MaxValue }; }
   public string Serialize() { return Serializer().Serialize(this); }
@@ -57,12 +62,21 @@ namespace DogSC.Replica {
    if(Grade==null)Grade=new ColorGrade(); if(Grade.HslSat==null||Grade.HslSat.Length!=7)Grade.HslSat=new double[]{1,1,1,1,1,1,1}; if(Grade.HslLum==null||Grade.HslLum.Length!=7)Grade.HslLum=new double[7]; if(Grade.WheelHue==null||Grade.WheelHue.Length!=3)Grade.WheelHue=new double[3]; if(Grade.WheelSat==null||Grade.WheelSat.Length!=3)Grade.WheelSat=new double[]{1,1,1};
    if(Mixer==null)Mixer=new List<MixerChannel>(); if(MulticamAngles==null)MulticamAngles=new List<string>(); if(MulticamSwitches==null)MulticamSwitches=new List<MulticamSwitch>();
    if(Camera==null)Camera=new CameraClip();
+   // W5：老项目缺新字段时补默认值。
+   if(RecordingMarkers==null)RecordingMarkers=new List<RecordingMarker>();
+   if(string.IsNullOrEmpty(BeautyMode))BeautyMode="single"; if(BeautyMaskPath==null)BeautyMaskPath="";
+   if(Grade.HslCurveSat==null)Grade.HslCurveSat=HslCurves.IdentitySat(); if(Grade.HslCurveLum==null)Grade.HslCurveLum=HslCurves.IdentityLum();
    if(!Finite(FrameRate)||FrameRate<=0||FrameRate>240)FrameRate=30;
    if(Cuts.Any(c=>!Finite(c.Start)||!Finite(c.End)||!Finite(c.Speed)||c.Start<0||c.End>Duration+.1||(!c.Gap&&(c.End<=c.Start||c.Speed<.5||c.Speed>2))||(c.Gap&&(!Finite(c.GapDuration)||c.GapDuration<=0||c.End<c.Start)))) throw new Exception("项目的剪辑范围无效。");
    // W3：字幕 / 调色 / 混音 / 代理 / 多机位校验（范围外的值直接拒绝，不静默修正）。
    foreach(var s in Subtitles)if(!Finite(s.Start)||!Finite(s.End)||s.Start<0||s.End<=s.Start||s.End>Length+.1||string.IsNullOrWhiteSpace(s.Text)&&string.IsNullOrWhiteSpace(s.Text2))throw new Exception("字幕时间或文本无效。");
    if(!Finite(Grade.Brightness)||Grade.Brightness<-1||Grade.Brightness>1||!Finite(Grade.Contrast)||Grade.Contrast<0||Grade.Contrast>2||!Finite(Grade.Saturation)||Grade.Saturation<0||Grade.Saturation>2||!Finite(Grade.Temperature)||Grade.Temperature<-1||Grade.Temperature>1||!Finite(Grade.Tint)||Grade.Tint<-1||Grade.Tint>1)throw new Exception("调色参数超出范围。");
    if(Grade.HslSat.Any(v=>!Finite(v)||v<0||v>3)||Grade.HslLum.Any(v=>!Finite(v)||v<-1||v>1)||Grade.WheelHue.Any(v=>!Finite(v)||v<-180||v>180)||Grade.WheelSat.Any(v=>!Finite(v)||v<0||v>3))throw new Exception("HSL 分区或色轮参数超出范围。");
+   // W5：降噪/美颜/曲线/标记校验（范围外的值直接拒绝，不静默修正）。
+   HslCurves.ValidateCurve(Grade.HslCurveSat,"色相-饱和度曲线",0,3);
+   HslCurves.ValidateCurve(Grade.HslCurveLum,"色相-明度曲线",-1,1);
+   if(BeautyEnabled)BeautyFilter.Validate(this);
+   foreach(var m in RecordingMarkers)if(!Finite(m.Time)||m.Time<0||m.Time>Length+.1||string.IsNullOrWhiteSpace(m.Label))throw new Exception("录制标记时间或名称无效。");
    if(!Finite(MasterGainDb)||MasterGainDb<-60||MasterGainDb>12)throw new Exception("总输出增益超出范围。");
    foreach(var ch in Mixer){if(string.IsNullOrEmpty(ch.Role)||!new[]{"对话","音乐","音效","旁白"}.Contains(ch.Role)||!Finite(ch.GainDb)||ch.GainDb<-60||ch.GainDb>12||!Finite(ch.Pan)||ch.Pan<-1||ch.Pan>1)throw new Exception("混音通道参数无效。");if(!string.IsNullOrEmpty(ch.SourcePath)&&!File.Exists(ch.SourcePath))throw new Exception("混音通道的音频文件缺失："+ch.SourcePath);}
    ProxyTools.Validate(this);MulticamModel.Validate(this);
@@ -343,7 +357,24 @@ namespace DogSC.Replica {
     if(!direct){File.WriteAllText(filter,StudioMedia.Filter(doc,doc.Audio),new UTF8Encoding(false));var inputs=string.Join(" ",StudioMedia.InputFiles(doc).Select(f=>"-i "+Media.Q(f)).ToArray());StudioMedia.Run("-v error -y "+inputs+" -/filter_complex "+Media.Q(filter)+" -map [video] "+(doc.Audio?"-map [audio] -c:a aac ":"")+"-c:v libx264 -preset ultrafast -crf 16 -pix_fmt yuv420p -r "+fps+" "+Media.Q(timeline),token);}
     token.ThrowIfCancellationRequested();progress(.1,"渲染画面与运镜");
     int dw=Math.Min(doc.Width,width);dw-=dw%2;int dh=Math.Max(2,(int)Math.Round((double)dw*doc.Height/doc.Width/2)*2);
-    decoder=Media.Start("ffmpeg","-v error "+selection+"-i "+Media.Q(media)+" -an -vf "+(direct?"fps="+fps+",":"")+"scale="+dw+":"+dh+doc.Grade.VideoFilter()+" -pix_fmt bgra -f rawvideo pipe:1",true);var decodeError=decoder.StandardError.ReadToEndAsync();
+    // W5：降噪（整条时间线统一强度）拼进解码 vf；美颜有遮罩时走遮罩图
+    // （第二输入是遮罩文件）。直接路径复用源遮罩、两路同裁；时间线路径
+    // 从 timeline.mp4 重建遮罩——源遮罩与拼好的时间线不对齐（切分/变速/
+    // 空隙）。遮罩图里调色在 overlay 之后贴（W5Media.MaskedFilterComplex
+    // 内部拼 GradeChain），videoFilters 里只放 fps/scale/降噪，不重复贴调色。
+    string effectVf=W5Effects.VideoFilter(doc);
+    string maskFile=null;
+    if(doc.BeautyEnabled){
+     if(direct)maskFile=doc.BeautyMaskPath;
+     else{progress(.1,"生成人像遮罩…");maskFile=BeautyMask.GenerateSync(timeline,doc.BeautyMode,0,doc.Length,fps,dw,dh,Path.Combine(work,"beauty-mask.mp4"),token);}
+    }
+    if(maskFile!=null){
+     string graph=W5Media.MaskedFilterComplex((direct?"fps="+fps+",":"")+"scale="+dw+":"+dh+effectVf,fps,dw.ToString(CultureInfo.InvariantCulture),dh.ToString(CultureInfo.InvariantCulture),doc);
+     decoder=Media.Start("ffmpeg","-v error "+selection+"-i "+Media.Q(media)+" "+selection+"-i "+Media.Q(maskFile)+" -filter_complex "+Media.Q(graph)+" -map [out] -an -pix_fmt bgra -f rawvideo pipe:1",true);
+    }else{
+     decoder=Media.Start("ffmpeg","-v error "+selection+"-i "+Media.Q(media)+" -an -vf "+(direct?"fps="+fps+",":"")+"scale="+dw+":"+dh+doc.Grade.VideoFilter()+effectVf+" -pix_fmt bgra -f rawvideo pipe:1",true);
+    }
+    var decodeError=decoder.StandardError.ReadToEndAsync();
     string musicInputs;string audioArgs=AudioArgs(doc,media,out musicInputs);
     encoder=Media.Start("ffmpeg","-v error -y -f rawvideo -pixel_format bgra -video_size "+width+"x"+height+" -framerate "+fps+" -i pipe:0 "+selection+"-i "+Media.Q(media)+musicInputs+" -map 0:v "+audioArgs+"-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -t "+Media.N(doc.Length)+" -movflags +faststart "+Media.Q(result),false);var encodeError=encoder.StandardError.ReadToEndAsync();
     using(token.Register(()=>{try{decoder.Kill();}catch{}try{encoder.Kill();}catch{}}))

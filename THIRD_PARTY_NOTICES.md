@@ -22,6 +22,14 @@ Windows 程序通过独立进程调用未修改的 `ffmpeg.exe` 和 `ffprobe.exe
 
 发行 ZIP 中保留 `Windows/tools/FFmpeg-LICENSE.txt`、`FFmpeg-README.txt` 与 `FFmpeg-SOURCE.txt`。本项目没有更改或重新授权 FFmpeg，不对其第三方组件主张版权。
 
+## 人像分割模型（W5 美颜遮罩）
+
+美颜功能用的人像分割模型是 MediaPipe Selfie Segmentation（256×256，landscape 模型），以 ONNX 格式随包分发于 `Windows/tools/models/selfie_segmentation_256x256.onnx`，配套推理脚本 `Windows/tools/portrait_segment.py` 与 `Windows/tools/beauty_mask.py`。
+
+- 许可：Apache License 2.0（商用可用，需保留署名与许可声明）。
+- 来源：[MediaPipe Selfie Segmentation](https://developers.google.com/mediapipe/solutions/vision/image_segmenter) / 模型卡片 [mediapipe](https://github.com/google-ai-edge/mediapipe)。
+- 本项目没有更改模型权重；模型只在用户本机运行推理，不上传任何画面。
+
 ## 字体
 
 随附阿里巴巴普惠体 3.0 Regular / Medium / SemiBold，文件保持原样。字体不使用 MIT，也不使用 OFL，按其原始授权声明使用与分发。

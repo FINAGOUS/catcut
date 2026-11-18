@@ -36,13 +36,12 @@
 //   跟进就是波纹开的行为；波纹关时删除改为留一段同等时长的空隙片段
 //   （黑场 + 静音），这才是波纹开关真正改变的东西。
 //
-// 限制（诚实写清）：自动识别字幕（P0b 转写）本批没接——需要 Whisper
-// 可执行文件与模型，未随包分发，面板里只留导入/手动编辑；HSL 曲线
-// 编辑器与 RGB/主曲线本批未接（LUT 烘焙器只含白平衡 + HSL 分区 +
-// 色轮三区）；混音台没有电平表（要音频分析，未做）；美颜/降噪/变速等
-// 其余引擎功能的面板接线不在本批，见构建日志的未接清单。
+// 限制（诚实写清）：W5 已接——自动识别字幕（Whisper，W5Panels.cs /
+// W5UI.cs）与 HSL 曲线编辑器（HslCurveSat/HslCurveLum，烘焙进同一张
+// LUT）。仍未接：RGB/主曲线；混音台的电平表 UI 在 W5UI.cs（BuildLevelMeterSection），
+// 模型在 W5Panels.cs 的 LevelMeter；美颜/降噪/变速的面板接线也在 W5 批。
 // 本机 Linux 跑不了 WPF，验证全靠云端 windows-2025 构建 + 启动检查
-// + 新增的 --w3-test（FeaturePanelsTests.cs）。
+// + 新增的 --w3-test（FeaturePanelsTests.cs）与 --w5-test（W5Tests.cs）。
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -79,6 +78,11 @@ namespace DogSC.Replica {
   // 色轮三区：阴影/中间调/高光，每区色相偏移（度）+ 饱和度倍数。
   public double[] WheelHue=new double[3];
   public double[] WheelSat=new double[]{1,1,1};
+  // HSL 曲线（W5 接线，color.ts 的 huevsat/huevlum）：x = 色相 0–1
+  // （0–360°），y = 饱和度倍数（1 = 不变）/ 明度增量（0 = 不变）。
+  // 烤进同一张 LUT，顺序在色轮之后（color.ts 的 applyCurve 位置）。
+  public List<CurvePoint> HslCurveSat=HslCurves.IdentitySat();
+  public List<CurvePoint> HslCurveLum=HslCurves.IdentityLum();
   public static readonly string[] HslZoneNames=new[]{"红","橙","黄","绿","青","蓝","品红"};
   public static readonly double[] HslZoneCenters=new[]{0.0,30,60,120,180,240,300};
   public static readonly string[] WheelZoneNames=new[]{"阴影","中间调","高光"};
@@ -87,6 +91,8 @@ namespace DogSC.Replica {
    if(!Near(Brightness,0)||!Near(Contrast,1)||!Near(Saturation,1)||!Near(Temperature,0)||!Near(Tint,0))return false;
    for(int i=0;i<7;i++)if(!Near(HslSat[i],1)||!Near(HslLum[i],0))return false;
    for(int i=0;i<3;i++)if(!Near(WheelHue[i],0)||!Near(WheelSat[i],1))return false;
+   if(HslCurveSat!=null&&!HslCurves.IsIdentitySat(HslCurveSat))return false;
+   if(HslCurveLum!=null&&!HslCurves.IsIdentityLum(HslCurveLum))return false;
    return true;
   }
   // 白平衡色调（tint）没有 P0 的 colorbalance 等价写法（colorbalance 只有
@@ -96,6 +102,8 @@ namespace DogSC.Replica {
    if(!Near(Tint,0))return true;
    for(int i=0;i<7;i++)if(!Near(HslSat[i],1)||!Near(HslLum[i],0))return true;
    for(int i=0;i<3;i++)if(!Near(WheelHue[i],0)||!Near(WheelSat[i],1))return true;
+   if(HslCurveSat!=null&&!HslCurves.IsIdentitySat(HslCurveSat))return true;
+   if(HslCurveLum!=null&&!HslCurves.IsIdentityLum(HslCurveLum))return true;
    return false;
   }
   // 解码器 vf 链的追加片段（以逗号开头，直接拼在 scale=... 之后）。
@@ -129,18 +137,22 @@ namespace DogSC.Replica {
    sb.Append(Media.N(Brightness)).Append("/").Append(Media.N(Contrast)).Append("/").Append(Media.N(Saturation)).Append("/").Append(Media.N(Temperature)).Append("/").Append(Media.N(Tint));
    for(int i=0;i<7;i++)sb.Append("/").Append(Media.N(HslSat[i])).Append(",").Append(Media.N(HslLum[i]));
    for(int i=0;i<3;i++)sb.Append("/").Append(Media.N(WheelHue[i])).Append(",").Append(Media.N(WheelSat[i]));
+   if(HslCurveSat!=null)sb.Append("/").Append(HslCurves.Key(HslCurveSat));
+   if(HslCurveLum!=null)sb.Append("/").Append(HslCurves.Key(HslCurveLum));
    return sb.ToString();
   }
   public void Reset(){
    Brightness=0;Contrast=1;Saturation=1;Temperature=0;Tint=0;
    for(int i=0;i<7;i++){HslSat[i]=1;HslLum[i]=0;}
    for(int i=0;i<3;i++){WheelHue[i]=0;WheelSat[i]=1;}
+   HslCurveSat=HslCurves.IdentitySat();HslCurveLum=HslCurves.IdentityLum();
   }
  }
 
  // color.ts 的 applyAdvancedColorToRgb / buildColorLut / lutToCube 的 C# 移植。
  // 数学逐行照抄 TS（白平衡增益、HSL 分区权重、色轮 smoothstep 权重、HSL 互转）；
- // 不含曲线（curves / hslCurves）：那两个编辑器本批未接，烘焙器也不含它们。
+ // 曲线（huevsat/huevlum）W5 已接：顺序在色轮之后，见 Apply 末尾。
+ // 仍不含 RGB/主曲线（curves）——那个编辑器未接。
  static class ColorLut {
   static double Clamp01(double v){return Math.Max(0,Math.Min(1,v));}
   static double HueDistance(double a,double b){double d=Math.Abs(a-b)%360;return d>180?360-d:d;}
@@ -172,7 +184,8 @@ namespace DogSC.Replica {
    bool anyZone=false,anyWheel=false;
    for(int i=0;i<7;i++)if(Math.Abs(grade.HslSat[i]-1)>.000001||Math.Abs(grade.HslLum[i])>.000001)anyZone=true;
    for(int i=0;i<3;i++)if(Math.Abs(grade.WheelHue[i])>.000001||Math.Abs(grade.WheelSat[i]-1)>.000001)anyWheel=true;
-   if(anyZone||anyWheel||Math.Abs(t)>.000001||Math.Abs(tint)>.000001){
+   bool anyCurve=(grade.HslCurveSat!=null&&!HslCurves.IsIdentitySat(grade.HslCurveSat))||(grade.HslCurveLum!=null&&!HslCurves.IsIdentityLum(grade.HslCurveLum));
+   if(anyZone||anyWheel||anyCurve||Math.Abs(t)>.000001||Math.Abs(tint)>.000001){
     var hsl=RgbToHsl(r,g,b);double h=hsl[0],s=hsl[1],l=hsl[2];
     for(int i=0;i<7;i++){
      double w=Math.Max(0,1-HueDistance(h,ColorGrade.HslZoneCenters[i])/45);
@@ -183,6 +196,12 @@ namespace DogSC.Replica {
      double w=WheelWeight(k,l);if(w==0)continue;
      h=(((h+grade.WheelHue[k]*w)%360)+360)%360;
      s=Clamp01(s*(1+(grade.WheelSat[k]-1)*w));
+    }
+    // HSL 曲线（color.ts 的 applyCurve 位置：白平衡 → 分区 → 色轮 → 曲线）：
+    // huevsat 乘饱和度，huevlum 加明度；x = 色相/360。
+    if(anyCurve){
+     if(grade.HslCurveSat!=null)s=Clamp01(s*HslCurves.ApplyCurve(grade.HslCurveSat,h/360));
+     if(grade.HslCurveLum!=null)l=Clamp01(l+HslCurves.ApplyCurve(grade.HslCurveLum,h/360));
     }
     var rgb=HslToRgb(h,s,l);r=rgb[0];g=rgb[1];b=rgb[2];
    }
