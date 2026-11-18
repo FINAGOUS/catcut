@@ -41,9 +41,11 @@ namespace DogSC.Replica {
    return Probe("-v error -select_streams v:0 -show_entries stream=codec_name,width,height,pix_fmt,color_primaries,color_transfer,color_space -of default=noprint_wrappers=1 " + Media.Q(file));
   }
   static int ChapterCount(string file) {
+   // -of default=noprint_wrappers=1 不输出 [CHAPTER] 包裹头，只剩字段行；
+   // 每章恰好一行 index=，按它计数。
    string text = Probe("-v error -show_chapters -of default=noprint_wrappers=1 " + Media.Q(file));
-   int n = 0, at = 0;
-   while ((at = text.IndexOf("[CHAPTER]", at, StringComparison.Ordinal)) >= 0) { n++; at += 9; }
+   int n = 0;
+   foreach (string line in text.Split('\n')) if (line.Trim().StartsWith("index=", StringComparison.Ordinal)) n++;
    return n;
   }
   static string ChapterTitles(string file) {
