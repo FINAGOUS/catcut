@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -226,7 +226,7 @@ namespace DogSC.Replica {
     Toggle("启用自动缩放",a.AutoZoom,v=>a.AutoZoom=v);Toggle("自动跟随鼠标",a.Follow,v=>a.Follow=v);Slider("自动缩放倍率",1,3,a.ZoomScale,"×",v=>{a.ZoomScale=v;foreach(var z in Doc.Zooms.Where(z=>z.Automatic))z.Scale=v;});inspector.Children.Add(UI.Button("重新生成自动运镜",()=>{Checkpoint();Doc.GenerateZooms();Changed();BuildInspector();}));
     if(selectedZoom>=0&&selectedZoom<Doc.Zooms.Count){var z=Doc.Zooms[selectedZoom];Section(z.Automatic?"自动缩放片段":"手动缩放片段");Number("开始 / 秒",z.Start,v=>z.Start=EditDocument.Clamp(v,0,z.End-.05));Number("结束 / 秒",z.End,v=>z.End=EditDocument.Clamp(v,z.Start+.05,Doc.Length));Slider("目标大小",1,3,z.Scale,"×",v=>z.Scale=v);Slider("过渡时长",.05,2,z.Transition," 秒",v=>z.Transition=v);if(!z.Automatic){Section("缩放焦点");PositionPad(z.X,z.Y,(x,y)=>{z.X=x;z.Y=y;});}}
     else{Note(Doc.Pointer.Count==0?"当前素材没有鼠标轨迹，可添加手动缩放，并调整焦点。":"点击时间线上的缩放片段，可以修改范围、倍率和过渡时长。");inspector.Children.Add(UI.Button("＋ 添加手动缩放",AddZoom));}
-    BuildFlashSection();BuildMorphSection();
+    BuildFlashSection();BuildMorphSection();BuildStabilizeSection();BuildSceneCutSection();
    }else if(tab=="开场"){Section("开场动效");Buttons(new[]{"无","轻柔进入"},a.Opening>0?"轻柔进入":"无",v=>{Checkpoint();a.Opening=v=="无"?0:.8;Changed();BuildInspector();});if(a.Opening>0)Slider("动效时长",.2,2,a.Opening," 秒",v=>a.Opening=v);Note("淡入与轻微缩放会同时用于播放预览和导出。");}
    else if(tab=="声音"){Section("素材音轨");if(Doc.Audio){Slider("音量",0,1,a.Volume,"",v=>{a.Volume=v;audio.Volume=v;});Note("音轨随片段裁剪、重排和变速同步导出。");}else Note("当前素材没有音轨。新录制时可从录制条选择麦克风。");BuildAudioTypeSection();BuildSilenceCutSection();}
   }
