@@ -1,4 +1,4 @@
-name: Build test (cloud)
+﻿name: Build test (cloud)
 
 # First cloud-build check for the FINAGOUS/catcut fork.
 # Manual trigger only. Builds the WPF app exactly like the upstream
@@ -104,6 +104,22 @@ jobs:
         with:
           name: w8effects-results
           path: Windows/bin/w8effects-results.txt
+          if-no-files-found: warn
+
+      - name: W8 audio checks
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/DogSC.Windows.exe') -ArgumentList '--w8audio-test' -WindowStyle Hidden -PassThru -Wait
+          Get-Content 'Windows/bin/w8audio-results.txt' -Raw
+          if ($test.ExitCode -ne 0 -or -not ((Get-Content 'Windows/bin/w8audio-results.txt' -Raw).StartsWith('PASS:'))) { throw 'W8 audio checks failed.' }
+
+      - name: Upload W8 audio results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w8audio-results
+          path: Windows/bin/w8audio-results.txt
+          if-no-files-found: warn
           if-no-files-found: warn
 
       - name: Package portable ZIP
