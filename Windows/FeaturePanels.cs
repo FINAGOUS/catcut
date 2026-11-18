@@ -255,8 +255,9 @@ namespace DogSC.Replica {
    if(!File.Exists(path))File.WriteAllText(path,BuildCube(grade),new UTF8Encoding(false));
    return path;
   }
-  // lut3dFilter（color.ts）：反斜杠翻倍、单引号转义后包进单引号。
-  public static string Lut3dFilter(string path){return "lut3d='"+path.Replace("\\","\\\\").Replace("'","'\\''")+"'";}
+  // lut3dFilter（color.ts）：反斜杠翻倍、冒号转义（盘符 D: 不转义会被滤镜
+  // 解析器当成选项分隔符吃掉，单引号包不住）、单引号转义后包进单引号。
+  public static string Lut3dFilter(string path){return "lut3d='"+path.Replace("\\","\\\\").Replace(":","\\:").Replace("'","'\\''")+"'";}
  }
 
  static class SubtitleFiles {

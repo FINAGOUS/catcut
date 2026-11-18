@@ -94,6 +94,13 @@ namespace DogSC.Replica {
   // （模型见 Windows/W8TimelinePanels.cs；老工程反序列化为 null/默认，
   // Validate() 里补默认值与范围校验）。
   public bool LinkSelection=true; public List<AdjustmentLayer> AdjustmentLayers=new List<AdjustmentLayer>(); public List<CompoundClip> CompoundClips=new List<CompoundClip>();
+  // W8：调色高级（模型见 Windows/W8ColourPanels.cs；老工程反序列化为 null，
+  // Validate() 里补默认值与范围校验）。InputSpace 是片段级（本项目单源，
+  // 存在 doc 上），Working/Output 是项目级；CompareWipe 默认 0.5。
+  public string InputSpace="rec709"; public string WorkingSpace="rec709"; public string OutputSpace="rec709";
+  public GradeNodeGraph GradeNodes; public ColourMatch Match; public TrackedWindow TrackedWin;
+  public string AppliedLutPath=""; public ChromaKey Chroma;
+  public string CompareMode="split"; public double CompareWipe=0.5;
   public double Length { get { return Cuts.Sum(c=>c.Length); } }
   public static JavaScriptSerializer Serializer() { return new JavaScriptSerializer { MaxJsonLength=int.MaxValue }; }
   public string Serialize() { return Serializer().Serialize(this); }
@@ -194,6 +201,12 @@ namespace DogSC.Replica {
    if(!Finite(MasterGainDb)||MasterGainDb<-60||MasterGainDb>12)throw new Exception("总输出增益超出范围。");
    foreach(var ch in Mixer){if(string.IsNullOrEmpty(ch.Role)||!new[]{"对话","音乐","音效","旁白"}.Contains(ch.Role)||!Finite(ch.GainDb)||ch.GainDb<-60||ch.GainDb>12||!Finite(ch.Pan)||ch.Pan<-1||ch.Pan>1||!Finite(ch.Start)||ch.Start<0||ch.Start>Length)throw new Exception("混音通道参数无效。");if(!string.IsNullOrEmpty(ch.SourcePath)&&!File.Exists(ch.SourcePath))throw new Exception("混音通道的音频文件缺失："+ch.SourcePath);}
    ProxyTools.Validate(this);MulticamModel.Validate(this);
+   // W8：老项目缺新字段时补默认值；高级调色校验（节点图/色彩管理/镜头匹配/
+   // 跟踪窗口/LUT 库/色度键/对比 + 美颜互斥）。
+   if(string.IsNullOrEmpty(InputSpace))InputSpace="rec709"; if(string.IsNullOrEmpty(WorkingSpace))WorkingSpace="rec709"; if(string.IsNullOrEmpty(OutputSpace))OutputSpace="rec709";
+   if(string.IsNullOrEmpty(CompareMode))CompareMode="split"; if(!Finite(CompareWipe)||CompareWipe<=0||CompareWipe>=1)CompareWipe=0.5;
+   if(AppliedLutPath==null)AppliedLutPath="";
+   W8ColourFilters.Validate(this);
    // W4：画中画开时素材缺失是硬错（与代理/混音通道同款语义，不静默回退）。
    if(Camera.Enabled){
     if(string.IsNullOrEmpty(Camera.SourcePath)||!File.Exists(Camera.SourcePath))throw new Exception("摄像头画中画素材缺失："+(string.IsNullOrEmpty(Camera.SourcePath)?"（未关联）":Camera.SourcePath)+"。请重新关联或关闭画中画。");
@@ -617,10 +630,15 @@ namespace DogSC.Replica {
      double pDur=direct?doc.Cuts[0].End-doc.Cuts[0].Start:doc.Length;
      portraitMask=BeautyMask.GenerateSync(media,"multi",pFrom,pDur,fps,dw,dh,Path.Combine(work,"portrait-mask.mp4"),token);
     }
+    // W8：蒙版节点/跟踪窗口/色度键走 filter_complex 解码器（遮罩 LUT +
+    // 蒙版文件在 work 目录里现烘）；其余调色只加 lut3d，走 -vf 链。
+    StagePrep w8prep=null;
+    if(W8ColourFilters.NeedsComplexDecoder(doc)){progress(.1,"准备高级调色遮罩…");w8prep=W8ColourExport.Prepare(doc,work,dw,dh,fps,token);}
     if(maskFile!=null){
      string graph=W5Media.MaskedFilterComplex((direct?"fps="+fps+",":"")+"scale="+dw+":"+dh+effectVf,fps,dw.ToString(CultureInfo.InvariantCulture),dh.ToString(CultureInfo.InvariantCulture),doc);
      decoder=Media.Start("ffmpeg","-v error "+selection+"-i "+Media.Q(media)+" "+selection+"-i "+Media.Q(maskFile)+" -filter_complex "+Media.Q(graph)+" -map [out] -an -pix_fmt bgra -f rawvideo pipe:1",true);
-    }else if(portraitMask!=null){
+    }
+    else if(portraitMask!=null){
      // W8：人像抠像背景——遮罩从已拼好的时间线媒体（防抖/跟踪之后）
      // 重算（源遮罩与拼好的时间线不对齐，不能复用，与 W5 美颜同款理由）。
      // 直接路径用片段的源时间，非直接路径用整条时间线。
@@ -628,8 +646,10 @@ namespace DogSC.Replica {
      string pInputs="-v error "+selection+"-i "+Media.Q(media)+" -i "+Media.Q(portraitMask);
      if(doc.PortraitBgMode=="image")pInputs+=" -i "+Media.Q(doc.PortraitBgImage);
      decoder=Media.Start("ffmpeg",pInputs+" -filter_complex "+Media.Q(pGraph)+" -map [out] -an -pix_fmt bgra -f rawvideo pipe:1",true);
+    }else if(w8prep!=null){
+     decoder=Media.Start("ffmpeg",W8ColourExport.DecoderArgs(doc,w8prep,media,selection,dw,dh,fps,direct?"fps="+fps+",":"",effectVf),true);
     }else{
-     decoder=Media.Start("ffmpeg","-v error "+selection+"-i "+Media.Q(media)+" -an -vf "+(direct?"fps="+fps+",":"")+"scale="+dw+":"+dh+doc.Grade.VideoFilter()+effectVf+" -pix_fmt bgra -f rawvideo pipe:1",true);
+     decoder=Media.Start("ffmpeg","-v error "+selection+"-i "+Media.Q(media)+" -an -vf "+(direct?"fps="+fps+",":"")+"scale="+dw+":"+dh+W8ColourFilters.Chain(doc)+effectVf+" -pix_fmt bgra -f rawvideo pipe:1",true);
     }
     var decodeError=decoder.StandardError.ReadToEndAsync();
     string musicInputs="";string audioArgs=options.OnlyMode=="video"?"-an ":AudioArgs(doc,audioMedia,out musicInputs);
