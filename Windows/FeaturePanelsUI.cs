@@ -51,6 +51,14 @@ namespace DogSC.Replica {
    inspector.Children.Add(presets);
    inspector.Children.Add(UI.Button("重置调色",()=>{Checkpoint();g.Reset();Changed();BuildInspector();}));
    Note("基础调节走 eq / colorbalance（与 TS 引擎 filtergraph.ts 同款滤镜串）；色轮、HSL 分区、HSL 曲线、RGB/主曲线、白平衡色调烘进 17³ .cube，经 lut3d 应用到解码帧，预览与导出一致。");
+   BuildNodeGraphSection();
+   BuildColourMgmtSection();
+   BuildColourMatchSection();
+   BuildTrackedWindowSection();
+   BuildLutLibrarySection();
+   BuildCompareSection();
+   BuildChromaKeySection();
+   BuildScopesSection();
   }
   void ApplyColorPreset(string name){
    if(Doc==null)return;Checkpoint();var g=Doc.Grade;g.Reset();
