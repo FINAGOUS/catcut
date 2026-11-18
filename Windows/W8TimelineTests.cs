@@ -49,8 +49,11 @@ namespace DogSC.Replica {
     if (p.ExitCode != 0) throw new Exception("volumedetect 失败：" + err.Result);
     foreach (string raw in err.Result.Split('\n')) {
      string line = raw.Trim();
-     if (line.StartsWith("mean_volume:", StringComparison.Ordinal)) {
-      string v = line.Substring(12).Trim();
+     // ffmpeg 9 的行是 "[Parsed_volumedetect_0 @ ...] mean_volume: -24.1 dB"，
+     // 不能要求行首就是 mean_volume:，用 IndexOf 找。
+     int mi = line.IndexOf("mean_volume:", StringComparison.Ordinal);
+     if (mi >= 0) {
+      string v = line.Substring(mi + 12).Trim();
       if (v.StartsWith("-inf", StringComparison.Ordinal)) return -91;
       int sp = v.IndexOf(' ');
       if (sp >= 0) v = v.Substring(0, sp);
