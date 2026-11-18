@@ -23,6 +23,15 @@ namespace DogSC.Replica {
    string savedOverride=AutoSave.AppDataOverride;
    AutoSave.AppDataOverride=Path.Combine(folder,"appdata");
    try{
+    // 0. 改名迁移：旧 DogSC.Windows 目录与旧录制目录整目录搬到 CatCut；两边都有时不动。
+    string oldApp=Path.Combine(folder,"old-appdata");string newApp=Path.Combine(folder,"new-appdata");
+    string oldRec=Path.Combine(folder,"old-rec");string newRec=Path.Combine(folder,"new-rec");
+    Directory.CreateDirectory(oldApp);File.WriteAllText(Path.Combine(oldApp,"keep.txt"),"keep");
+    Directory.CreateDirectory(oldRec);File.WriteAllText(Path.Combine(oldRec,"r.mp4"),"x");
+    Require(AppIdentity.Migrate(oldApp,newApp,oldRec,newRec),"migration moves old dirs");
+    Require(File.Exists(Path.Combine(newApp,"keep.txt"))&&File.Exists(Path.Combine(newRec,"r.mp4"))&&!Directory.Exists(oldApp)&&!Directory.Exists(oldRec),"migrated files land in new dirs, old dirs gone");
+    Directory.CreateDirectory(oldApp);Directory.CreateDirectory(newApp);
+    Require(!AppIdentity.Migrate(oldApp,newApp,oldRec,newRec),"migration leaves both dirs alone when new exists");
     // 1. 自动保存：写 7 份、最新一份可读回、只留 5 份。
     string source=Path.Combine(folder,"source.mp4");
     StudioMedia.Run("-v error -y -f lavfi -i testsrc2=size=640x360:rate=30 -f lavfi -i sine=frequency=440:sample_rate=48000 -t 3 -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac "+Media.Q(source),CancellationToken.None);
@@ -128,7 +137,7 @@ namespace DogSC.Replica {
      var f3=stream.FrameAt(10);
      Require(f3!=null,"camera stream past EOF returns last frame");
     }
-    File.WriteAllText(log,"PASS: autosave 7 backups + latest round-trip + prune to 5; crash flag+backup semantics; settings round-trip; cache slice rejects speed/out-of-range, gap slice 1.5s, key deterministic 16 hex + changes on edit; cache miss renders 1.5s + hit keeps mtime + clear empties dir; dshow parse 2 video/2 audio + stereo mix classification + live enumeration no-throw; camera validation missing-file/shape/size; PiP red centre pixel + null provider no-throw; camera stream forward/seek-back/EOF.\nLive devices on this runner: video "+liveVideo.Count+", audio "+liveAudio.Count+" (no camera expected on a cloud runner).\n");
+    File.WriteAllText(log,"PASS: autosave 7 backups + latest round-trip + prune to 5; crash flag+backup semantics; settings round-trip; cache slice rejects speed/out-of-range, gap slice 1.5s, key deterministic 16 hex + changes on edit; cache miss renders 1.5s + hit keeps mtime + clear empties dir; dshow parse 2 video/2 audio + stereo mix classification + live enumeration no-throw; camera validation missing-file/shape/size; PiP red centre pixel + null provider no-throw; camera stream forward/seek-back/EOF; rename migration moves old dirs + leaves both alone when new exists.\nLive devices on this runner: video "+liveVideo.Count+", audio "+liveAudio.Count+" (no camera expected on a cloud runner).\n");
    }catch(Exception ex){File.WriteAllText(log,"FAIL\n"+ex);Environment.ExitCode=1;}
    finally{AutoSave.AppDataOverride=savedOverride;}
   }
