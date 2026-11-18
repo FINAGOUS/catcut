@@ -1,13 +1,13 @@
-DogSC Windows 体验版 · 录制优化、屏幕 3D 与暂停录制
+CatCut Windows 体验版 · 录制优化、屏幕 3D 与暂停录制
 
 这是根据神烦老狗的 DogSC 二次创作的非官方 Windows 版本，当前还不完善。
 原作：https://github.com/laogou717/dogsc
-Windows 源码：https://github.com/adrian147258/dogsc
+Windows 源码：https://github.com/FINAGOUS/catcut
 原作与改编源码采用 MIT，保留原作者版权；FFmpeg 和字体遵循各自许可。
 
 使用方法
-安装版：运行安装程序，根据提示完成安装，然后从开始菜单打开 dogsc。
-ZIP 版：完整解压到可写文件夹，双击 Windows/bin/DogSC.Windows.exe；也可双击 Start-DogSC.cmd。保留整个文件夹，不要只移动 EXE。
+安装版：运行安装程序，根据提示完成安装，然后从开始菜单打开 CatCut。
+ZIP 版：完整解压到可写文件夹，双击 Windows/bin/CatCut.exe；也可双击 Start-CatCut.cmd。保留整个文件夹，不要只移动 EXE。
 安装版启动时自动检查更新，也可以从项目菜单点击“检查更新”。选择下载后验证文件，再关闭程序并安装更新。
 
 运行环境：Windows 10/11 64 位、.NET Framework 4.8。
@@ -33,7 +33,7 @@ ZIP 版：完整解压到可写文件夹，双击 Windows/bin/DogSC.Windows.exe�
 录制与保存
 - 停止录制后自动保存原始视频和编辑项目，不需要另点保存才能保留原素材。
 - 新项目与鼠标轨迹先保存，再切换到编辑器；取消切换时原项目修改保留，新录制也保存在录制目录。
-- ZIP 版录制文件位于本文件夹的 Windows/recordings/日期时间/；安装版的新录制位于“文档/DogSC/recordings/日期时间/”。
+- ZIP 版录制文件位于本文件夹的 Windows/recordings/日期时间/；安装版的新录制位于“文档/CatCut/recordings/日期时间/”。
 - 旧 ZIP 版的录屏和项目继续保留在原位置；项目引用原视频，请勿单独移动或删除旧素材。
 - source.mp4 为原始视频，project.dogscwin 为编辑项目；保留原视频才能重开项目。
 - 修改项目后按 Ctrl+S 保存；带光标、贴图、背景、缩放等效果的成品需要点击“导出”。
@@ -45,7 +45,7 @@ ZIP 版：完整解压到可写文件夹，双击 Windows/bin/DogSC.Windows.exe�
 
 备忘录
 - 从录制浮条右侧便笺按钮或项目菜单打开。
-- 文稿和设置保存到当前用户的 %LOCALAPPDATA%/DogSC.Windows/。
+- 文稿和设置保存到当前用户的 %LOCALAPPDATA%/CatCut/。
 - 体验包不包含发送者的录屏、项目、备忘录或个人设置。
 
 这是根据 DogSC 开源项目适配的 Windows 开发体验版，并非原作者官方发行版。
