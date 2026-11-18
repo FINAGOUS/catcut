@@ -56,7 +56,7 @@ namespace DogSC.Replica {
   static int[] PngPixel(string path, int x, int y) {
    using (var bmp = new D.Bitmap(path)) {
     var c = bmp.GetPixel(x, y);
-    return new[] { c.R, c.G, c.B };
+    return new[] { (int)c.R, (int)c.G, (int)c.B };
    }
   }
   static byte[] RunRaw(string args) {
