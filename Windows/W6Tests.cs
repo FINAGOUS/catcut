@@ -9,6 +9,7 @@
 // 真机录音、GPU 预览、摄像头画中画仍待 Simon 在自己电脑上测。
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
