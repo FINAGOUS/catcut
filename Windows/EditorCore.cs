@@ -54,6 +54,17 @@ namespace DogSC.Replica {
   public bool FlashEnabled; public int FlashFrames=2; public double FlashIntensity=1; public List<double> FlashBeats=new List<double>();
   public bool MorphEnabled; public double MorphSeconds=0.2;
   public bool Spherical360;
+  // W8：音频高级（模型见 Windows/W8AudioPanels.cs；老工程反序列化
+  // 时为 null，Validate() 里补默认值与范围校验）。SurroundLayout
+  // 默认立体声；VocalSepMode 默认关；Tts 只有生成后才有 WavPath。
+  public AudioRepairSettings Repair = new AudioRepairSettings();
+  public VoiceChangeSettings VoiceChange = new VoiceChangeSettings();
+  public EqSettings Eq = new EqSettings();
+  public CompressorSettings Compressor = new CompressorSettings();
+  public string SurroundLayout = "立体声"; public string SurroundCodec = "自动";
+  public VocalSepSettings VocalSep = new VocalSepSettings();
+  public TtsSettings Tts = new TtsSettings();
+  public List<MediaLibraryItem> MediaLibrary = new List<MediaLibraryItem>();
   public double Length { get { return Cuts.Sum(c=>c.Length); } }
   public static JavaScriptSerializer Serializer() { return new JavaScriptSerializer { MaxJsonLength=int.MaxValue }; }
   public string Serialize() { return Serializer().Serialize(this); }
@@ -92,6 +103,18 @@ namespace DogSC.Replica {
    HslCurves.ValidateCurve(Grade.RgbB,"蓝通道曲线",0,1);
    HslCurves.ValidateCurve(Grade.RgbMaster,"主曲线",0,1);
    if(!AudioTypePreset.Types.Contains(AudioType))throw new Exception("音频类型无效。");
+   // W8：老项目缺新字段时补默认值，再按 W8 规则校验（范围外直接拒绝）。
+   if(Repair==null)Repair=new AudioRepairSettings();
+   if(VoiceChange==null)VoiceChange=new VoiceChangeSettings(); if(string.IsNullOrEmpty(VoiceChange.Kind))VoiceChange.Kind="无";
+   if(Eq==null)Eq=new EqSettings(); if(Eq.Bands==null)Eq.Bands=new List<EqBand>();
+   if(Compressor==null)Compressor=new CompressorSettings();
+   if(string.IsNullOrEmpty(SurroundLayout))SurroundLayout="立体声";
+   if(string.IsNullOrEmpty(SurroundCodec))SurroundCodec="自动";
+   if(VocalSep==null)VocalSep=new VocalSepSettings(); if(string.IsNullOrEmpty(VocalSep.Mode))VocalSep.Mode="关"; if(string.IsNullOrEmpty(VocalSep.Model))VocalSep.Model="htdemucs"; if(VocalSep.VocalsPath==null)VocalSep.VocalsPath=""; if(VocalSep.AccompPath==null)VocalSep.AccompPath="";
+   if(Tts==null)Tts=new TtsSettings(); if(string.IsNullOrEmpty(Tts.Voice))Tts.Voice="aishell3 女声"; if(Tts.WavPath==null)Tts.WavPath="";
+   if(MediaLibrary==null)MediaLibrary=new List<MediaLibraryItem>();
+   if(MediaLibrary.Count==0)MediaLibrary.Add(new MediaLibraryItem { Id = "m1", Name = Path.GetFileNameWithoutExtension(Source), File = Source, Kind = "media", Duration = Duration });
+   W8AudioChain.Validate(this);
    if(!Finite(FlashIntensity)||FlashIntensity<0||FlashIntensity>1||FlashFrames<1||FlashFrames>10)throw new Exception("闪白参数超出范围。");
    foreach(var b in FlashBeats)if(!Finite(b)||b<0||b>Length+.1)throw new Exception("闪白点超出时间线范围。");
    if(!Finite(MorphSeconds)||MorphSeconds<.1||MorphSeconds>.5)throw new Exception("Morph 过渡时长超出范围（0.1–0.5 秒）。");
@@ -193,7 +216,10 @@ namespace DogSC.Replica {
     var format=(Dictionary<string,object>)json["format"];double duration=double.Parse(format["duration"].ToString(),CultureInfo.InvariantCulture);
     var d=new EditDocument {Source=Path.GetFullPath(path),Name=Path.GetFileNameWithoutExtension(path),Width=Convert.ToInt32(video["width"]),Height=Convert.ToInt32(video["height"]),Duration=duration,Audio=streams.Cast<Dictionary<string,object>>().Any(s=>(string)s["codec_type"]=="audio")};
     object rate;if(video.TryGetValue("avg_frame_rate",out rate)){var parts=rate.ToString().Split('/');double numerator,denominator;if(parts.Length==2&&double.TryParse(parts[0],NumberStyles.Float,CultureInfo.InvariantCulture,out numerator)&&double.TryParse(parts[1],NumberStyles.Float,CultureInfo.InvariantCulture,out denominator)&&denominator>0&&numerator>0)d.FrameRate=numerator/denominator;}
-    d.Cuts.Add(new Cut {Start=0,End=duration});return d;
+    d.Cuts.Add(new Cut {Start=0,End=duration});
+    // W8：素材库主项就是源文件本身；子片段挂在这个主项下（只存引用）。
+    d.MediaLibrary.Add(new MediaLibraryItem { Id = "m1", Name = Path.GetFileNameWithoutExtension(path), File = Path.GetFullPath(path), Kind = "media", Duration = duration });
+    return d;
    }
   }
   public static void Run(string args,CancellationToken token) {
@@ -354,6 +380,8 @@ namespace DogSC.Replica {
    }
    }
   }
+  // W8：把空滤镜段拼成一条链（空段跳过，不留多余逗号）。
+  static string JoinFilters(params string[] parts){var list=new List<string>();foreach(var p in parts)if(!string.IsNullOrEmpty(p))list.Add(p);return string.Join(",",list.ToArray());}
   // W3 混音台导出音频参数（roles.ts 的 roleFilter 规则；音乐床用 amix）。
   // 只有主音轨、无增益/声像/总增益时，返回与老版本逐字一致的 -af volume=，
   // 老项目导出行为零变化。extraInputs 是追加的音乐输入（-stream_loop -1 -i …），
@@ -362,24 +390,40 @@ namespace DogSC.Replica {
    extraInputs="";
    var music=MixerAudio.MusicChannels(doc);
    var source=doc.Audio?MixerAudio.SourceChannel(doc):null;
-   if(source==null&&music.Count==0)return "-an ";
+   // W8：TTS 旁白 wav 也是一路音频（无主音轨时也能单独成片）。
+   bool hasTts=doc.Tts!=null&&doc.Tts.HasAudio;
+   if(source==null&&music.Count==0&&!hasTts)return "-an ";
    // W6：音频类型预设作用于主音轨；有预设时不再走 plain 直通（行为与老版本
    // 逐字一致的条件里加了 preset 为空，老项目无预设时仍走老路）。
    string preset=AudioTypePreset.FilterFor(doc.AudioType);
-   bool plain=source!=null&&music.Count==0&&Math.Abs(doc.MasterGainDb)<.000001&&Math.Abs(source.GainDb)<.000001&&source.Pan==0&&string.IsNullOrEmpty(preset);
+   // W8：高级音频链（变声→EQ→压缩→修复）插在预设之前——EQ/压缩在 loudnorm
+   // 之前，频段比过 loudnorm 后仍在（引擎 audiofx.ts 的顺序）；环绕上混在
+   // 混音末尾。编码器按环绕布局定（5.1 默认 AC-3，7.1 默认 AAC）。
+   string w8=W8AudioChain.BuildChain(doc);
+   string codec=Surround.AudioCodec(doc.SurroundLayout,doc.SurroundCodec);
+   string codecTail=" -c:a "+codec;
+   string br=Surround.Bitrate(doc.SurroundLayout,codec);
+   if(!string.IsNullOrEmpty(br))codecTail+=" -b:a "+br;
+   codecTail+=" ";
+   string upmix=Surround.UpmixFilter(doc.SurroundLayout);
+   bool plain=source!=null&&music.Count==0&&!hasTts&&Math.Abs(doc.MasterGainDb)<.000001&&Math.Abs(source.GainDb)<.000001&&source.Pan==0&&string.IsNullOrEmpty(preset)&&string.IsNullOrEmpty(w8)&&doc.SurroundLayout=="立体声";
    if(plain)return "-map 1:a:0 -af volume="+Media.N(doc.Style.Volume)+" -c:a aac ";
-   if(music.Count==0){
+   if(music.Count==0&&!hasTts){
     int channels=Media.AudioChannels(media);
-    if(doc.Style.Volume<=.001)return "-map 1:a:0 -af volume=0 -c:a aac ";
+    if(doc.Style.Volume<=.001)return "-map 1:a:0 -af volume=0"+(string.IsNullOrEmpty(upmix)?"":","+upmix)+codecTail;
     double totalDb=20*Math.Log10(doc.Style.Volume)+doc.MasterGainDb+source.GainDb;
     var ch=new MixerChannel {Role="对话",GainDb=totalDb,Pan=source.Pan};
     string rf=MixerAudio.RoleFilter(ch,false,channels);
-    return "-map 1:a:0 -af "+(string.IsNullOrEmpty(preset)?rf:preset+","+rf)+" -c:a aac ";
+    string chain=JoinFilters(w8,preset,rf);
+    if(!string.IsNullOrEmpty(upmix))chain+=","+upmix;
+    return "-map 1:a:0 -af "+chain+codecTail;
    }
    var graph=new StringBuilder();var labels=new List<string>();
    // W6：音乐床（循环）与配音遍（不循环、按 Start 对齐）分开处理。
    var beds=music.Where(c=>c.Role!="旁白").ToList();
    var takes=music.Where(c=>c.Role=="旁白").ToList();
+   // W8：TTS 旁白与配音遍同路（不循环、按 Start 对齐、8kHz 重采样到 48kHz 走 RoleFilter）。
+   if(hasTts)takes.Add(new MixerChannel { Role = "旁白", GainDb = doc.Tts.GainDb, Pan = 0, SourcePath = doc.Tts.WavPath, Start = doc.Tts.Start });
    bool duck=doc.AudioDucking&&source!=null&&beds.Count>0;
    if(source!=null){
     int channels=Media.AudioChannels(media);
@@ -387,7 +431,7 @@ namespace DogSC.Replica {
     double totalDb=muted?0:20*Math.Log10(doc.Style.Volume)+doc.MasterGainDb+source.GainDb;
     var ch=new MixerChannel {Role="对话",GainDb=totalDb,Pan=source.Pan};
     string rf=MixerAudio.RoleFilter(ch,muted,channels);
-    if(!string.IsNullOrEmpty(preset)&&!muted)rf=preset+","+rf;
+    if(!muted){string head=JoinFilters(w8,preset);if(!string.IsNullOrEmpty(head))rf=head+","+rf;}
     if(duck){
      var parts=new List<string>();parts.Add("[a0]");
      for(int i=0;i<beds.Count;i++)parts.Add("[a0sc"+i+"]");
@@ -417,7 +461,10 @@ namespace DogSC.Replica {
     labels.Add(label);
    }
    graph.Append(string.Join("",labels.ToArray())+"amix=inputs="+labels.Count+":duration=first:normalize=0,atrim=duration="+Media.N(doc.Length)+"[aout]");
-   return "-filter_complex "+Media.Q(graph.ToString())+" -map [aout] -c:a aac ";
+   // W8：环绕上混在混音末尾（amix 之后），编码器按布局定。
+   string outLabel="[aout]";
+   if(!string.IsNullOrEmpty(upmix)){graph.Append(";"+outLabel+upmix+"[aout2]");outLabel="[aout2]";}
+   return "-filter_complex "+Media.Q(graph.ToString())+" -map "+outLabel+codecTail;
   }
   // W7：导出设置走 ExportOptions（编码器/HDR/章节）；老签名保留，默认 SDR H.264，
   // 老项目与旧测试行为不变。
@@ -433,6 +480,11 @@ namespace DogSC.Replica {
    try {
     string timeline=Path.Combine(work,"timeline.mp4"),filter=Path.Combine(work,"timeline.txt"),result=Path.Combine(work,"result.mp4");
     progress(0,"整理时间线");bool direct=doc.Cuts.Count==1&&Math.Abs(doc.Cuts[0].Speed-1)<.000001&&!doc.Cuts[0].Gap&&!MulticamModel.Active(doc);string media=direct?doc.Source:timeline;string selection=direct?"-ss "+Media.N(doc.Cuts[0].Start)+" -t "+Media.N(doc.Cuts[0].End-doc.Cuts[0].Start)+" ":"";
+    // W8：人声分离导出时音频走分离后的音轨文件（只支持单片段直接导出，
+    // 多段请把音轨加进混音轨）；视频解码仍走 media，音频输入走 audioMedia。
+    // 非直接导出时音频走时间线中间片；分离模式 + 多段会在这里直接报错。
+    string audioMedia=W8AudioChain.AudioSourceForExport(doc,direct);
+    if(!direct)audioMedia=media;
     if(!direct){File.WriteAllText(filter,StudioMedia.Filter(doc,doc.Audio),new UTF8Encoding(false));var inputs=string.Join(" ",StudioMedia.InputFiles(doc).Select(f=>"-i "+Media.Q(f)).ToArray());StudioMedia.Run("-v error -y "+inputs+" -/filter_complex "+Media.Q(filter)+" -map [video] "+(doc.Audio?"-map [audio] -c:a aac ":"")+"-c:v libx264 -preset ultrafast -crf 16 -pix_fmt yuv420p -r "+fps+" "+Media.Q(timeline),token);}
     token.ThrowIfCancellationRequested();progress(.1,"渲染画面与运镜");
     int dw=Math.Min(doc.Width,width);dw-=dw%2;int dh=Math.Max(2,(int)Math.Round((double)dw*doc.Height/doc.Width/2)*2);
@@ -454,8 +506,8 @@ namespace DogSC.Replica {
      decoder=Media.Start("ffmpeg","-v error "+selection+"-i "+Media.Q(media)+" -an -vf "+(direct?"fps="+fps+",":"")+"scale="+dw+":"+dh+doc.Grade.VideoFilter()+effectVf+" -pix_fmt bgra -f rawvideo pipe:1",true);
     }
     var decodeError=decoder.StandardError.ReadToEndAsync();
-    string musicInputs;string audioArgs=AudioArgs(doc,media,out musicInputs);
-    encoder=Media.Start("ffmpeg","-v error -y -f rawvideo -pixel_format bgra -video_size "+width+"x"+height+" -framerate "+fps+" -i pipe:0 "+selection+"-i "+Media.Q(media)+musicInputs+" -map 0:v "+audioArgs+options.VideoEncoderArgs()+" -t "+Media.N(doc.Length)+" -movflags +faststart "+Media.Q(result),false);var encodeError=encoder.StandardError.ReadToEndAsync();
+    string musicInputs;string audioArgs=AudioArgs(doc,audioMedia,out musicInputs);
+    encoder=Media.Start("ffmpeg","-v error -y -f rawvideo -pixel_format bgra -video_size "+width+"x"+height+" -framerate "+fps+" -i pipe:0 "+selection+"-i "+Media.Q(audioMedia)+musicInputs+" -map 0:v "+audioArgs+options.VideoEncoderArgs()+" -t "+Media.N(doc.Length)+" -movflags +faststart "+Media.Q(result),false);var encodeError=encoder.StandardError.ReadToEndAsync();
     using(token.Register(()=>{try{decoder.Kill();}catch{}try{encoder.Kill();}catch{}}))
     using(var source=new Bitmap(dw,dh,PixelFormat.Format32bppArgb))using(var canvas=new Bitmap(width,height,PixelFormat.Format32bppArgb))using(var g=Graphics.FromImage(canvas))
     using(var wall=doc.Style.Background=="image"&&File.Exists(doc.Style.ImagePath)?Image.FromFile(doc.Style.ImagePath):null)
