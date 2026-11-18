@@ -384,9 +384,9 @@ namespace DogSC.Replica {
    try {
     var sampled = await Task.Run(() => {
      var rgb = ColourMatchOps.DecodeFrameRgb24(source, sourceTime, 160, 90, CancellationToken.None);
-     var res = ScopeAnalysis.AnalyzeRgbFrame(rgb, 160, 90, source, sourceTime);
+     var analysis = ScopeAnalysis.AnalyzeRgbFrame(rgb, 160, 90, source, sourceTime);
      var png = ScopeAnalysis.DrawScopePng(rgb, 160, 90, scopeKind, 320, 180);
-     return Tuple.Create(res, png);
+     return Tuple.Create(analysis, png);
     });
     scopeLastTime = time;
     var res = sampled.Item1;
