@@ -55,6 +55,9 @@ namespace DogSC.Replica {
   public int Crf = 18;
   public bool Hdr;
   public bool WriteChapters = true;
+  // W8：仅导出模式（deliver.ts 的 ExportOnlyMode 同款）：none/video/audio/subtitle，
+  // 三者互斥（见 ExportOnly.Resolve），默认 none = 正常导出。
+  public string OnlyMode = "none";
   public static ExportOptions Sdr(int height, int fps) {
    return new ExportOptions { PresetName = "SDR", Height = height, Fps = fps, Codec = "h264", Crf = 18, Hdr = false };
   }
@@ -64,6 +67,7 @@ namespace DogSC.Replica {
    if (Codec != "h264" && Codec != "h265") throw new Exception("导出编码器无效：" + Codec + "。");
    if (Crf < 0 || Crf > 51) throw new Exception("CRF 无效：" + Crf + "（0–51）。");
    if (Hdr && Codec != "h265") throw new Exception("HDR 只能用 H.265 编码（H.264 没有 10-bit PQ 路）。");
+   if (OnlyMode != "none" && OnlyMode != "video" && OnlyMode != "audio" && OnlyMode != "subtitle") throw new Exception("仅导出模式无效：" + OnlyMode + "（none/video/audio/subtitle）。");
   }
   // 最终编码器的视频参数（时间线中间片仍是 libx264——它只负责解码成 bgra，
   // 不决定成片编码）。HDR 走 x265-params 写色彩元数据：直接写
@@ -115,7 +119,7 @@ namespace DogSC.Replica {
    options.Validate();
    string d = Dir(dir);
    Directory.CreateDirectory(d);
-   var o = new ExportOptions { PresetName = name, Height = options.Height, Fps = options.Fps, Codec = options.Codec, Crf = options.Crf, Hdr = options.Hdr, WriteChapters = options.WriteChapters };
+   var o = new ExportOptions { PresetName = name, Height = options.Height, Fps = options.Fps, Codec = options.Codec, Crf = options.Crf, Hdr = options.Hdr, WriteChapters = options.WriteChapters, OnlyMode = options.OnlyMode };
    File.WriteAllText(Path.Combine(d, name + ".json"), EditDocument.Serializer().Serialize(o), new UTF8Encoding(false));
   }
   public static ExportOptions Load(string name, string dir = null) {

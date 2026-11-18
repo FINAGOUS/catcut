@@ -213,12 +213,13 @@ namespace DogSC.Replica {
    if(tab=="配音"){BuildVoiceoverInspector();return;}
    if(selectedCut>=0&&selectedCut<Doc.Cuts.Count){var c=Doc.Cuts[selectedCut];
     if(c.Gap){Section("空隙片段");Number("空隙时长 / 秒",c.GapDuration,v=>{c.GapDuration=EditDocument.Clamp(v,.05,Doc.Length);});Note("空隙是黑场 + 静音；波纹关闭时删除片段会留空隙。");inspector.Children.Add(UI.Button("删除空隙",()=>{Delete();}));inspector.Children.Add(UI.Button("返回画面设置",()=>{selectedCut=-1;tab="画面";BuildInspector();}));return;}
-    Section("片段范围");Number("素材起点 / 秒",c.Start,v=>{c.Start=EditDocument.Clamp(v,0,c.End-.05);Doc.GenerateZooms();});Number("素材终点 / 秒",c.End,v=>{c.End=EditDocument.Clamp(v,c.Start+.05,Doc.Duration);Doc.GenerateZooms();});Section("播放速度");Buttons(new[]{"0.5×","1×","1.5×","2×"},c.Speed+"×",v=>{Checkpoint();c.Speed=double.Parse(v.TrimEnd('×'),CultureInfo.InvariantCulture);Doc.GenerateZooms();Changed();BuildInspector();});BuildSpeedSection(c);Note("拖动时间线片段两端可裁短；分割后可删除或左右重排。");inspector.Children.Add(UI.Button("返回画面设置",()=>{selectedCut=-1;tab="画面";BuildInspector();}));return;}
+    Section("片段范围");Number("素材起点 / 秒",c.Start,v=>{c.Start=EditDocument.Clamp(v,0,c.End-.05);Doc.GenerateZooms();});Number("素材终点 / 秒",c.End,v=>{c.End=EditDocument.Clamp(v,c.Start+.05,Doc.Duration);Doc.GenerateZooms();});Section("播放速度");Buttons(new[]{"0.5×","1×","1.5×","2×"},c.Speed+"×",v=>{Checkpoint();c.Speed=double.Parse(v.TrimEnd('×'),CultureInfo.InvariantCulture);Doc.GenerateZooms();Changed();BuildInspector();});BuildSpeedSection(c);BuildJlSection(c);BuildPasteSection(c);Note("拖动时间线片段两端可裁短；分割后可删除或左右重排。");inspector.Children.Add(UI.Button("返回画面设置",()=>{selectedCut=-1;tab="画面";BuildInspector();}));return;}
    if(tab=="画面"){
-    Buttons(new[]{"背景","布局","样机","调色","360°"},frameTab,v=>{frameTab=v;BuildInspector();});
+    Buttons(new[]{"背景","布局","样机","调色","360°","时间线"},frameTab,v=>{frameTab=v;BuildInspector();});
     if(frameTab=="布局"){Section("画面留白");Slider("边距",0,180,a.Padding,"",v=>a.Padding=v);Section("位置与大小");PositionPad(a.X,a.Y,SetStylePosition);Slider("素材缩放",.5,1.5,a.Scale,"×",v=>a.Scale=v);InspectorResetLayout(()=>{Checkpoint();SetStylePosition(.5,.5);a.Scale=1;Changed();BuildInspector();});Section("圆角、描边与阴影");Slider("内容圆角",0,60,a.Radius,"",v=>a.Radius=v);Slider("外描边",0,8,a.Border,"",v=>a.Border=v);Slider("阴影强度",0,60,a.Shadow,"",v=>a.Shadow=v);}
     else if(frameTab=="调色"){BuildColorInspector();}
     else if(frameTab=="360°"){BuildSphericalInspector();}
+    else if(frameTab=="时间线"){BuildTimelineAdvancedSection();}
     else if(frameTab=="样机"){Section("屏幕外框");Buttons(new[]{"无","浅色窗口","深色窗口"},a.Frame=="none"?"无":a.Frame=="dark"?"深色窗口":"浅色窗口",v=>{Checkpoint();a.Frame=v=="无"?"none":v=="深色窗口"?"dark":"window";Changed();BuildInspector();});Note("窗口外框与预览、导出保持一致。");}
     else BuildBackgroundInspector();
    }else if(tab=="运镜"){
@@ -228,18 +229,16 @@ namespace DogSC.Replica {
     else{Note(Doc.Pointer.Count==0?"当前素材没有鼠标轨迹，可添加手动缩放，并调整焦点。":"点击时间线上的缩放片段，可以修改范围、倍率和过渡时长。");inspector.Children.Add(UI.Button("＋ 添加手动缩放",AddZoom));}
     BuildFlashSection();BuildMorphSection();BuildStabilizeSection();BuildSceneCutSection();
    }else if(tab=="开场"){Section("开场动效");Buttons(new[]{"无","轻柔进入"},a.Opening>0?"轻柔进入":"无",v=>{Checkpoint();a.Opening=v=="无"?0:.8;Changed();BuildInspector();});if(a.Opening>0)Slider("动效时长",.2,2,a.Opening," 秒",v=>a.Opening=v);Note("淡入与轻微缩放会同时用于播放预览和导出。");}
-   else if(tab=="声音"){Section("素材音轨");if(Doc.Audio){Slider("音量",0,1,a.Volume,"",v=>{a.Volume=v;audio.Volume=v;});Note("音轨随片段裁剪、重排和变速同步导出。");}else Note("当前素材没有音轨。新录制时可从录制条选择麦克风。");BuildAudioTypeSection();BuildSilenceCutSection();BuildRepairSection();BuildEqSection();BuildCompressorSection();BuildVoiceChangeSection();BuildVocalSepSection();BuildTtsSection();BuildSurroundSection();}
+   else if(tab=="声音"){Section("素材音轨");if(Doc.Audio){Slider("音量",0,1,a.Volume,"",v=>{a.Volume=v;audio.Volume=v;});Note("音轨随片段裁剪、重排和变速同步导出。");}else Note("当前素材没有音轨。新录制时可从录制条选择麦克风。");BuildAudioTypeSection();BuildSilenceCutSection();BuildRepairSection();BuildEqSection();BuildCompressorSection();BuildVoiceChangeSection();BuildVocalSepSection();BuildTtsSection();BuildSurroundSection();BuildTextCutSection();BuildRemixSection();}
   }
   void Ratios(){if(Doc==null)return;Menu(Find<Button>("Ratio"),new[]{"适应","16:9","4:3","1:1","9:16"},i=>{Checkpoint();Doc.Style.Ratio=new[]{"适应","16:9","4:3","1:1","9:16"}[i];Changed();});}
   void Presets(){PresetGallery();}
   void Split(){if(Doc==null)return;if(selectedScreen>=0){SplitScreenMotion();return;}int i;double source=Doc.SourceTime(position,out i);var c=Doc.Cuts[i];
    if(c.Gap){double offset=0;for(int k=0;k<i;k++)offset+=Doc.Cuts[k].Length;double at=position-offset;if(at<.05||c.GapDuration-at<.05){Status("请将播放头放在空隙中间再分割。");return;}Checkpoint();double rest=c.GapDuration-at;c.GapDuration=at;Doc.Cuts.Insert(i+1,new Cut {Gap=true,GapDuration=rest,Start=c.Start,End=c.Start});selectedCut=i;selectedZoom=selectedOverlay=selectedScreen=-1;Changed();BuildInspector();return;}
    if(source-c.Start<.05||c.End-source<.05){Status("请将播放头放在片段中间再分割。");return;}Checkpoint();double end=c.End;c.End=source;Doc.Cuts.Insert(i+1,new Cut {Start=source,End=end,Speed=c.Speed});selectedCut=i;selectedZoom=selectedOverlay=selectedScreen=-1;Changed();BuildInspector();}
-  void Delete(){if(Doc==null)return;if(selectedScreen>=0&&selectedScreen<Doc.ScreenMotions.Count){Checkpoint();Doc.ScreenMotions.RemoveAt(selectedScreen);selectedScreen=-1;}else if(selectedOverlay>=0&&selectedOverlay<Doc.Overlays.Count){Checkpoint();Doc.Overlays.RemoveAt(selectedOverlay);selectedOverlay=-1;}else if(selectedZoom>=0&&selectedZoom<Doc.Zooms.Count){Checkpoint();Doc.Zooms.RemoveAt(selectedZoom);selectedZoom=-1;}else if(selectedCut>=0&&Doc.Cuts.Count>1){Checkpoint();var cut=Doc.Cuts[selectedCut];
-   // W3 波纹：开 = 删掉片段、后续自动跟进（Cut 首尾相接，本来就这样）；
-   // 关 = 留一段同等时长的空隙（黑场 + 静音）；空隙本身删除时直接去掉。
-   if(cut.Gap||ripple)Doc.Cuts.RemoveAt(selectedCut);
-   else Doc.Cuts[selectedCut]=new Cut {Gap=true,GapDuration=cut.Length,Start=cut.Start,End=cut.Start,Speed=cut.Speed};
+  void Delete(){if(Doc==null)return;if(selectedScreen>=0&&selectedScreen<Doc.ScreenMotions.Count){Checkpoint();Doc.ScreenMotions.RemoveAt(selectedScreen);selectedScreen=-1;}else if(selectedOverlay>=0&&selectedOverlay<Doc.Overlays.Count){Checkpoint();Doc.Overlays.RemoveAt(selectedOverlay);selectedOverlay=-1;}else if(selectedZoom>=0&&selectedZoom<Doc.Zooms.Count){Checkpoint();Doc.Zooms.RemoveAt(selectedZoom);selectedZoom=-1;}else if(selectedCut>=0&&Doc.Cuts.Count>1){Checkpoint();TimelineLink.DeleteCut(Doc,selectedCut,ripple,Keyboard.IsKeyDown(Key.LeftAlt)||Keyboard.IsKeyDown(Key.RightAlt));
+   // W8 音画联动：开 = 删整段；关（或按住 Alt 临时取反）= 只删视频留音频；
+   // 波纹关且联动开时删片段留空隙（W3 老行为，见 TimelineLink.DeleteCut）。
    selectedCut=-1;Doc.GenerateZooms();}else{Status("选择要删除的片段；至少保留一个录屏片段。");return;}Changed();BuildInspector();}
   void MoveCut(int direction){if(Doc==null||selectedCut<0)return;int target=selectedCut+direction;if(target<0||target>=Doc.Cuts.Count)return;Checkpoint();var c=Doc.Cuts[selectedCut];Doc.Cuts.RemoveAt(selectedCut);Doc.Cuts.Insert(target,c);selectedCut=target;Doc.GenerateZooms();Changed();}
   void AddZoom(){if(Doc==null)return;Checkpoint();double start=Math.Min(position,Math.Max(0,Doc.Length-.2));Doc.Zooms.Add(new Zoom {Start=start,End=Math.Min(Doc.Length,start+3),Scale=1.6});selectedZoom=Doc.Zooms.Count-1;position=start+Math.Min(1,(Doc.Zooms.Last().End-start)/2);selectedCut=selectedScreen=selectedOverlay=-1;motionTab="缩放";tab="运镜";Changed();BuildRail();BuildInspector();}
