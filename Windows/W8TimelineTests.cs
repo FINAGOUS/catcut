@@ -142,13 +142,15 @@ namespace DogSC.Replica {
     var badPreset = ExportQueue.Run(new List<ExportQueueItem> { new ExportQueueItem { Id = "qp", Label = "坏预设", Doc = qdocShort, Output = Path.Combine(Folder, "qp.mp4"), Options = new ExportOptions { PresetName = "不存在的预设", Height = 360, Fps = 30, Codec = "h264", Crf = 18 } } }, (v, s) => { }, CancellationToken.None);
     Require(badPreset.Count == 1 && badPreset[0].Status == "failed" && badPreset[0].Error.Contains("未知导出预设"), "queue unknown preset fails only that item");
     Mark("STEP 2 export queue OK");
-    // 3. J/L 剪辑：视频 [0,2]（本是静音段），音频窗口 [2,4]（有音段）→ 前 2 秒应有音。
+    // 3. J/L 剪辑：视频 [0,2]（本是静音段），音频窗口 [1,3]（与视频窗口重叠，
+    //    后半段 [2,3] 有音）→ 前 2 秒后半段应有音；窗口须与视频重叠是引擎
+    //    validateJLClip 的硬性要求（完全不重叠的窗口应被拒绝，见下面反向用例）。
     var jlDoc = StudioMedia.Import(srcA);
-    jlDoc.Cuts = new List<Cut> { new Cut { Start = 0, End = 2, AudioIn = 2, AudioOut = 4 }, new Cut { Start = 2, End = 4 } };
+    jlDoc.Cuts = new List<Cut> { new Cut { Start = 0, End = 2, AudioIn = 1, AudioOut = 3 }, new Cut { Start = 2, End = 4 } };
     string jlOut = Path.Combine(Folder, "jl-out.mp4");
     StudioRenderer.Export(jlDoc, jlOut, 360, 30, (v, s) => { }, CancellationToken.None);
     double jlVol = MeanVolume(jlOut, 0, 2);
-    Require(jlVol > -30, "J cut: audio window [2,4] on video [0,2] brings tone into first 2s (mean " + jlVol.ToString("0.0") + " dB)");
+    Require(jlVol > -30, "J cut: audio window [1,3] on video [0,2] brings tone into first 2s (mean " + jlVol.ToString("0.0") + " dB)");
     var ctlDoc = StudioMedia.Import(srcA);
     ctlDoc.Cuts = new List<Cut> { new Cut { Start = 0, End = 2 }, new Cut { Start = 2, End = 4 } };
     string ctlOut = Path.Combine(Folder, "jl-ctl.mp4");
@@ -326,7 +328,7 @@ namespace DogSC.Replica {
     string soSrt = Path.Combine(Folder, "so-out.srt");
     Require(File.Exists(soSrt) && File.ReadAllText(soSrt).Contains("测试字幕") && !File.Exists(soOut), "subtitle-only export writes only the .srt sidecar (no mp4 rendered)");
     Mark("STEP 11 export-only switches OK");
-    File.WriteAllText(log, "PASS: compound collapsed 2 rows / expanded 3 rows [6,7]+[7,8] depth 1, depth-2/window-overrun rejected, intermediate render.mp4 2.0s; queue move/reorder + run done/done/failed in order (q1/q3 exist, q2 none), duplicate/move/remove rejected, unknown preset fails only that item; J cut audio [2,4] on video [0,2] mean " + jlVol.ToString("0.0") + " dB vs control " + ctlVol.ToString("0.0") + " dB, no-overlap/speed-change rejected; linked delete 3->2 cuts length 6->4, Alt delete keeps audio-only (count 3, length 6, black luma " + blackLuma.ToString("0.0") + " vs live " + liveLuma.ToString("0.0") + ", kept audio " + keptVol.ToString("0.0") + " dB), ripple-off leaves gap; search hits marker 1.0s / subtitle 3.0s / role / clip 0s, empty/no-match none; three-point insert 4 cuts length 6->7, overwrite 3 cuts length stays 6, replace keeps edit points, short-file/speed-change rejected; paste copies speed 0.5x + brightness +0.5, source unchanged, no-fields/gap rejected; adjustment layer filter eq + enable=between(t,1,3), luma " + outLuma.ToString("0.0") + " outside -> " + inLuma.ToString("0.0") + " inside, overrun/no-effect rejected; text cut removes 2.0s (6->4), export 4.0s, no-timestamps/delete-all rejected; remix beat " + grid.Bpm.ToString("0.00") + " BPM/" + grid.Beats.Count + " beats, plan 6.0s all 1x, export 6.0s, <2 beats/target 0 rejected; export-only resolve + mutual exclusion + bad mode rejected, video-only no audio 2.0s, audio-only no video 2.0s, subtitle-only .srt only.\n");
+    File.WriteAllText(log, "PASS: compound collapsed 2 rows / expanded 3 rows [6,7]+[7,8] depth 1, depth-2/window-overrun rejected, intermediate render.mp4 2.0s; queue move/reorder + run done/done/failed in order (q1/q3 exist, q2 none), duplicate/move/remove rejected, unknown preset fails only that item; J cut audio [1,3] on video [0,2] mean " + jlVol.ToString("0.0") + " dB vs control " + ctlVol.ToString("0.0") + " dB, no-overlap/speed-change rejected; linked delete 3->2 cuts length 6->4, Alt delete keeps audio-only (count 3, length 6, black luma " + blackLuma.ToString("0.0") + " vs live " + liveLuma.ToString("0.0") + ", kept audio " + keptVol.ToString("0.0") + " dB), ripple-off leaves gap; search hits marker 1.0s / subtitle 3.0s / role / clip 0s, empty/no-match none; three-point insert 4 cuts length 6->7, overwrite 3 cuts length stays 6, replace keeps edit points, short-file/speed-change rejected; paste copies speed 0.5x + brightness +0.5, source unchanged, no-fields/gap rejected; adjustment layer filter eq + enable=between(t,1,3), luma " + outLuma.ToString("0.0") + " outside -> " + inLuma.ToString("0.0") + " inside, overrun/no-effect rejected; text cut removes 2.0s (6->4), export 4.0s, no-timestamps/delete-all rejected; remix beat " + grid.Bpm.ToString("0.00") + " BPM/" + grid.Beats.Count + " beats, plan 6.0s all 1x, export 6.0s, <2 beats/target 0 rejected; export-only resolve + mutual exclusion + bad mode rejected, video-only no audio 2.0s, audio-only no video 2.0s, subtitle-only .srt only.\n");
    }
    catch (Exception ex) { File.AppendAllText(log, "FAIL\n" + ex + "\n"); Mark("FAIL: " + ex.Message); Environment.ExitCode = 1; }
   }
