@@ -15,6 +15,6 @@ if ($TestBuild) { $compilerArgs += @('/DTestBuild=1', "/O$(Join-Path (Split-Path
 & $Compiler @compilerArgs (Join-Path $PSScriptRoot 'installer.iss')
 if ($LASTEXITCODE -ne 0) { throw '安装程序构建失败。' }
 $outputName = if ($TestBuild) { 'installer-output-test' } else { 'installer-output' }
-$installer = Join-Path (Split-Path $packageRoot) "$outputName/dogsc-$tag-setup-x64.exe"
+$installer = Join-Path (Split-Path $packageRoot) "$outputName/CatCut-$tag-setup-x64.exe"
 if (-not (Test-Path -LiteralPath $installer)) { throw '找不到生成的安装程序。' }
 Write-Output "Installer: $installer"
