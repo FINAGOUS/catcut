@@ -10,6 +10,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -22,13 +23,15 @@ namespace DogSC.Replica {
  public partial class ExportWindow:Window {
   EditDocument doc;StackPanel panel;TextBlock summary,status;ProgressBar progress;Button start,cancel;
   int outputHeight=1080,outputFps=30;CancellationTokenSource cancellation;bool done,closeAfterCancel;TextBox fileName;string outputFolder,completedOutput;
+  // W7：导出设置（编码器/CRF/HDR/章节/预设名），默认值 = SDR 1080p H.264。
+  string outputCodec="h264";int outputCrf=18;bool outputHdr;bool writeChapters=true;string presetName="SDR 1080p";UniformGrid presetChoices;UniformGrid resolutionChoices;UniformGrid rateChoices;ComboBox savedPresetBox;TextBox presetNameBox;
   public ExportWindow(Studio studio,EditDocument document,ImageSource preview){InitializeExportSurface(studio,document,preview);}
   void bump(Panel p,string selected){SelectExportChoice(p,selected);}
   void UpdateSummary(){UpdateExportSummary();}
   void CancelOrOpen(){if(cancellation!=null){cancellation.Cancel();status.Text="正在取消…";cancel.IsEnabled=false;}else if(done)Process.Start("explorer.exe","/select,"+Media.Q(completedOutput));else Close();}
   async void BeginExport(){if(done){Close();return;}if(cancellation!=null)return;string name=fileName.Text.Trim();if(string.IsNullOrWhiteSpace(name)||name.IndexOfAny(Path.GetInvalidFileNameChars())>=0||name.EndsWith(".")||name.EndsWith(" ")){AppDialogs.Notice(this,"文件名不可用","请输入有效的文件名，不要使用 \\ / : * ? \" < > | 等字符。");fileName.Focus();return;}if(!name.EndsWith(".mp4",StringComparison.OrdinalIgnoreCase))name+=".mp4";string output=Path.Combine(outputFolder,name);if(File.Exists(output)){AppDialogs.Notice(this,"文件已存在","请选择新文件名，以保留已有视频。");fileName.Focus();fileName.SelectAll();return;}
    cancellation=new CancellationTokenSource();progress.Visibility=Visibility.Visible;start.IsEnabled=false;panel.IsEnabled=false;cancel.Content="取消导出";var watch=Stopwatch.StartNew();
-   try{await Task.Run(()=>StudioRenderer.Export(doc,output,outputHeight,outputFps,(fraction,stage)=>Dispatcher.BeginInvoke(new Action(()=>{if(cancellation==null||cancellation.IsCancellationRequested)return;progress.Value=fraction*100;status.Text=stage+" · "+(fraction*100).ToString("0")+"% · 已用 "+UI.Time(watch.Elapsed.TotalSeconds);})),cancellation.Token));done=true;completedOutput=output;status.Text="已导出到 "+output;start.Content="完成";cancel.Content="打开文件夹";progress.Value=100;}
+   try{await Task.Run(()=>StudioRenderer.Export(doc,output,new ExportOptions {PresetName=presetName,Height=outputHeight,Fps=outputFps,Codec=outputCodec,Crf=outputCrf,Hdr=outputHdr,WriteChapters=writeChapters},(fraction,stage)=>Dispatcher.BeginInvoke(new Action(()=>{if(cancellation==null||cancellation.IsCancellationRequested)return;progress.Value=fraction*100;status.Text=stage+" · "+(fraction*100).ToString("0")+"% · 已用 "+UI.Time(watch.Elapsed.TotalSeconds);})),cancellation.Token));done=true;completedOutput=output;status.Text="已导出到 "+output;start.Content="完成";cancel.Content="打开文件夹";progress.Value=100;}
    catch(OperationCanceledException){status.Text="已取消；项目和原始素材已保留。";cancel.Content="取消";}
    catch(Exception ex){status.Text="导出失败";cancel.Content="取消";AppDialogs.Notice(this,"导出失败",ex.Message);}
    finally{cancellation.Dispose();cancellation=null;start.IsEnabled=true;panel.IsEnabled=true;cancel.IsEnabled=true;if(closeAfterCancel)Close();}
@@ -118,7 +121,7 @@ namespace DogSC.Replica {
  }
  static class ReplicaProgram {
   [STAThread] public static void Main(string[] args){
-   try{Native.SetProcessDPIAware();if(args.Contains("--motion-stability-test")){MotionStabilityTests.Run();return;}if(args.Contains("--export-correctness-test")){ExportCorrectnessTests.Run();return;}if(args.Contains("--export-performance-test")){ExportPerformanceTests.Run(args.Contains("--no-shadow"));return;}if(args.Contains("--update-test")){UpdateTests.Run();return;}if(args.Contains("--editor-test")){EditorTests.Run();return;}if(args.Contains("--w3-test")){FeaturePanelsTests.Run();return;}if(args.Contains("--w4-test")){W4Tests.Run();return;}if(args.Contains("--w5-test")){W5Tests.Run();return;}if(args.Contains("--w6-test")){W6Tests.Run();return;}if(args.Contains("--smoke-test")){SmokeTest.Run();return;}
+   try{Native.SetProcessDPIAware();if(args.Contains("--motion-stability-test")){MotionStabilityTests.Run();return;}if(args.Contains("--export-correctness-test")){ExportCorrectnessTests.Run();return;}if(args.Contains("--export-performance-test")){ExportPerformanceTests.Run(args.Contains("--no-shadow"));return;}if(args.Contains("--update-test")){UpdateTests.Run();return;}if(args.Contains("--editor-test")){EditorTests.Run();return;}if(args.Contains("--w3-test")){FeaturePanelsTests.Run();return;}if(args.Contains("--w4-test")){W4Tests.Run();return;}if(args.Contains("--w5-test")){W5Tests.Run();return;}if(args.Contains("--w6-test")){W6Tests.Run();return;}if(args.Contains("--w7-test")){W7Tests.Run();return;}if(args.Contains("--smoke-test")){SmokeTest.Run();return;}
     var app=new Application();app.ShutdownMode=ShutdownMode.OnMainWindowClose;app.DispatcherUnhandledException+=(s,e)=>{File.WriteAllText(Path.Combine(Media.Root,"bin","last-error.txt"),e.Exception.ToString());if(app.MainWindow!=null&&app.MainWindow.IsVisible)AppDialogs.Notice(app.MainWindow,"操作失败",e.Exception.Message);else MessageBox.Show(e.Exception.Message,"DogSC");e.Handled=true;};
     var studio=new Studio();app.MainWindow=studio.Window;
     if(args.Contains("--playback-rate-test"))studio.Window.Loaded+=async(s,e)=>{try{await studio.VerifyPlaybackRate(Path.Combine(Media.Root,"bin","playback-rate-test",Guid.NewGuid().ToString("N")));}catch(Exception ex){File.WriteAllText(Path.Combine(Media.Root,"bin","playback-rate-results.txt"),"FAIL\n"+ex);Environment.ExitCode=1;}app.Shutdown();};

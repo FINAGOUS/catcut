@@ -5,6 +5,7 @@
 // Choices/InspectorAction），不抄任何闭源软件的界面。
 // 诚实说明写在各面板的 Note 里；没接的（RGB/主曲线）只写“未接”，不画假控件。
 // W5 已接：自动识别字幕（Whisper）、HSL 曲线编辑器、电平表（W5UI.cs）。
+// W7 已接：色轮三区可拖拽圆盘（W7UI.cs）。
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -36,6 +37,7 @@ namespace DogSC.Replica {
     Slider(ColorGrade.WheelZoneNames[zone]+" · 色相偏移",-180,180,g.WheelHue[zone],"°",v=>g.WheelHue[zone]=v);
     Slider(ColorGrade.WheelZoneNames[zone]+" · 饱和度",0,3,g.WheelSat[zone],"×",v=>g.WheelSat[zone]=v);
    }
+   BuildColorWheelSection();
    Section("HSL 分区");
    for(int z=0;z<7;z++){int zone=z;
     Slider(ColorGrade.HslZoneNames[zone]+" · 饱和度",0,3,g.HslSat[zone],"×",v=>g.HslSat[zone]=v);
