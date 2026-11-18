@@ -405,10 +405,14 @@ namespace DogSC.Replica {
     Require(mframe[mci] < 230 && mframe[mki] > 250, "masked node: inside is graded (B " + mframe[mci] + "), outside is untouched (B " + mframe[mki] + ")");
     Mark("STEP 10 decoder graph frames OK");
     // 11. 整条导出（色度键走 complex 解码器分支）：文件 + 时长。
-    var edoc = StudioMedia.Import(keySrc);
+    // 导出高度下限 240（ExportOptions.Validate），所以导出源单独做 320x240，
+    // 与 Height=240 一致，不缩放。
+    string expSrc = Path.Combine(Folder, "export-src.mp4");
+    RunFfmpeg("-v error -y -f lavfi -i color=c=0x00ff00:s=320x240:d=2 -vf drawbox=x=110:y=60:w=100:h=60:color=red:t=fill -c:v libx264 -pix_fmt yuv420p -r 30 " + Media.Q(expSrc));
+    var edoc = StudioMedia.Import(expSrc);
     edoc.Chroma = new ChromaKey { Color = "0x00ff00", Similarity = 0.1, Blend = 0, Despill = true };
     string expOut = Path.Combine(Folder, "chroma-export.mp4");
-    StudioRenderer.Export(edoc, expOut, new ExportOptions { PresetName = "test", Height = 180, Fps = 30, Codec = "h264", Crf = 18, Hdr = false, WriteChapters = false }, (v, s) => { }, CancellationToken.None);
+    StudioRenderer.Export(edoc, expOut, new ExportOptions { PresetName = "test", Height = 240, Fps = 30, Codec = "h264", Crf = 18, Hdr = false, WriteChapters = false }, (v, s) => { }, CancellationToken.None);
     Require(File.Exists(expOut) && Math.Abs(StudioMedia.Import(expOut).Duration - 2) < 0.15, "full export with chroma key is 2.0s");
     Mark("STEP 11 full export with chroma OK");
     File.WriteAllText(log, "PASS: node serial/parallel-multiply (0.31,0.25,0.19) + out-of-order topo + masked stage LUT (0.63,0.50,0.38) + mask PNG centre 255/corner 0 + cycle/duplicate/masked-reads-masked/dangling-masked/brightness-in-node/bad-blend rejected; slog3 anchors 0.18/0.90, rec709 OETF(0.18)=0.409, slog3->rec709 LUT 0.47, log100/hlg setparams+zscale, pq Hable, unknown space rejected; match (100,30,30)->(199,48,49) numeric + real lut3d pixel, strength 0 identity; track centre 0.25->0.5->0.75, lost parks, mask buffer centre/corner, mask video 2.0s; LUT library film filter/search/categories/favourite/duplicate/missing/bad-cube rejected, thumbnail 160x90; compare split left grey/right temp+1, wipe 0.25, still round-trip + tampered sidecar rejected + list 1; chroma filter 0.1 + despill green/blue, similarity 0/1.5 rejected, pixel pick green; scopes red luma 54.2/hue 0/sat 1.0, grey hue null, white highlight 1.0, black shadow 1.0, red/blue hue peaks 128/128, real frame + deterministic, scope PNGs; chain input+match+grade = 3 lut3d, plain chain == Grade.VideoFilter(), node+linear/beauty+node rejected, preview chroma vf, complex decoder detection; decoder frames: chroma corner black + centre red, tracked window inside B<230/outside B>250, masked node same; full chroma export 2.0s.\n");
