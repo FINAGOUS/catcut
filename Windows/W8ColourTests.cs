@@ -338,6 +338,7 @@ namespace DogSC.Replica {
     cdoc.InputSpace = "slog3";
     cdoc.Match = new ColourMatch { ReferenceFrame = refPng, Strength = 1 };
     cdoc.Grade.Temperature = 0.5;
+    cdoc.Grade.WheelHue[0] = 30; // 触发 NeedsLut：温度单独只走 colorbalance，不进 LUT；色轮偏移才让线性调色烤出第 3 张 LUT。
     string fullChain = W8ColourFilters.Chain(cdoc, false);
     int lutCount = 0, at = 0;
     while ((at = fullChain.IndexOf("lut3d=", at, StringComparison.Ordinal)) >= 0) { lutCount++; at += 6; }
