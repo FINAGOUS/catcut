@@ -419,9 +419,15 @@ namespace DogSC.Replica {
    graph.Append(string.Join("",labels.ToArray())+"amix=inputs="+labels.Count+":duration=first:normalize=0,atrim=duration="+Media.N(doc.Length)+"[aout]");
    return "-filter_complex "+Media.Q(graph.ToString())+" -map [aout] -c:a aac ";
   }
+  // W7：导出设置走 ExportOptions（编码器/HDR/章节）；老签名保留，默认 SDR H.264，
+  // 老项目与旧测试行为不变。
   public static void Export(EditDocument doc,string output,int height,int fps,Action<double,string> progress,CancellationToken token,Action<string> diagnostics=null) {
-   doc.Validate();if(File.Exists(output))throw new Exception("请选择一个新的导出文件名。");
-   var size=SceneLayout.OutputSize(doc,height);int width=size[0];height=size[1];
+   Export(doc,output,ExportOptions.Sdr(height,fps),progress,token,diagnostics);
+  }
+  public static void Export(EditDocument doc,string output,ExportOptions options,Action<double,string> progress,CancellationToken token,Action<string> diagnostics=null) {
+   doc.Validate();if(options==null)options=ExportOptions.Sdr(1080,30);options.Validate();int fps=options.Fps;
+   if(File.Exists(output))throw new Exception("请选择一个新的导出文件名。");
+   var size=SceneLayout.OutputSize(doc,options.Height);int width=size[0];int height=size[1];
    string work=Path.Combine(Path.GetDirectoryName(output),".dogsc-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(work);
    Process decoder=null,encoder=null;CameraFrameStream cameraStream=null;
    try {
@@ -449,7 +455,7 @@ namespace DogSC.Replica {
     }
     var decodeError=decoder.StandardError.ReadToEndAsync();
     string musicInputs;string audioArgs=AudioArgs(doc,media,out musicInputs);
-    encoder=Media.Start("ffmpeg","-v error -y -f rawvideo -pixel_format bgra -video_size "+width+"x"+height+" -framerate "+fps+" -i pipe:0 "+selection+"-i "+Media.Q(media)+musicInputs+" -map 0:v "+audioArgs+"-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -t "+Media.N(doc.Length)+" -movflags +faststart "+Media.Q(result),false);var encodeError=encoder.StandardError.ReadToEndAsync();
+    encoder=Media.Start("ffmpeg","-v error -y -f rawvideo -pixel_format bgra -video_size "+width+"x"+height+" -framerate "+fps+" -i pipe:0 "+selection+"-i "+Media.Q(media)+musicInputs+" -map 0:v "+audioArgs+options.VideoEncoderArgs()+" -t "+Media.N(doc.Length)+" -movflags +faststart "+Media.Q(result),false);var encodeError=encoder.StandardError.ReadToEndAsync();
     using(token.Register(()=>{try{decoder.Kill();}catch{}try{encoder.Kill();}catch{}}))
     using(var source=new Bitmap(dw,dh,PixelFormat.Format32bppArgb))using(var canvas=new Bitmap(width,height,PixelFormat.Format32bppArgb))using(var g=Graphics.FromImage(canvas))
     using(var wall=doc.Style.Background=="image"&&File.Exists(doc.Style.ImagePath)?Image.FromFile(doc.Style.ImagePath):null)
@@ -472,6 +478,10 @@ namespace DogSC.Replica {
      if(cameraStream!=null)cameraStream.Dispose();
     }
     File.Move(result,output);
+    // W7：导出写 MP4 章节（时间线标记 → ffmetadata → -c copy 重混，不重编码；
+    // 没有标记或章节数为 0 时什么都不做）。章节在 360° 注入之前写——注入
+    // 直接改 MP4 box，重混之后的文件仍是合法 MP4。
+    if(options.WriteChapters&&doc.RecordingMarkers!=null&&Chapters.ChapterCount(doc.RecordingMarkers,doc.Length)>0){progress(.99,"写入 MP4 章节");Chapters.WriteTo(output,doc.RecordingMarkers,doc.Length,token);}
     // W6 360°：导出时注入 Spherical Video V2 球面元数据；注入失败直接报错，
     // 不会静默出一份普通视频。
     if(doc.Spherical360){progress(.99,"注入 360° 球面元数据");Spherical.Inject(output);}
