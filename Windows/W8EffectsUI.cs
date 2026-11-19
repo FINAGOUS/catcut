@@ -195,14 +195,35 @@ namespace DogSC.Replica {
   string scriptText = "";
   double scriptLineDuration = 3;
   List<string> scriptImages = new List<string>();
+  // W9：配音默认开（有模型时）、节拍同步默认关（不改现有行为）。
+  bool scriptNarration = true;
+  string scriptVoice = "aishell3 女声";
+  bool scriptBeatSync = false;
+  string scriptMusic = "";
   void BuildScriptVideoSection() {
    Section("脚本转视频");
-   Note("脚本或图片+文字自动组装成片：每行一段静帧 + 文字烧录 + .srt 边车。不含云端生成画面；旁白 TTS 未接（P3f TTS 待接），现在是静音，行时长由你定；音乐卡点不做。脚本不随项目保存。");
+   Note("脚本或图片+文字自动组装成片：每行一段静帧 + 文字烧录 + .srt 边车。不含云端生成画面。配音默认开：每段文案调本地 Sherpa-ONNX 合成旁白（aishell3 女声），段长由旁白实测时长定；节拍同步默认关。脚本不随项目保存。");
    var script = new TextBox { Text = scriptText, AcceptsReturn = true, MinHeight = 66, TextWrapping = TextWrapping.Wrap, FontSize = 13, Margin = new Thickness(0, 4, 0, 9) };
    script.LostKeyboardFocus += (s, e) => { scriptText = script.Text; };
    inspector.Children.Add(UI.Text("脚本（每行一段）", 12, "#63696D"));
    inspector.Children.Add(script);
    Number("每行时长 / 秒", scriptLineDuration, v => scriptLineDuration = EditDocument.Clamp(v, 0.5, 60));
+   Note("“每行时长”只在配音关时定段长；配音开时段长由每段旁白实测时长定。");
+   Toggle("配音（TTS）", scriptNarration, v => { scriptNarration = v; BuildInspector(); });
+   if (scriptNarration) {
+    Choices("配音声音", scriptVoice, new[] { new[] { "aishell3 女声（开源，v1 仅此一个）", "aishell3 女声" } }, v => scriptVoice = v);
+    Note("旁白不足 apad 垫满段长、超长截断；TTS 模型缺失时组装会诚实报错、不出假配音（模型放 tools/models/vits-icefall-zh-aishell3/，见 TTS 面板）。");
+   } else Note("配音关：成片是静音，行时长由你定。");
+   Toggle("节拍同步（音乐卡点）", scriptBeatSync, v => { scriptBeatSync = v; BuildInspector(); });
+   if (scriptBeatSync) {
+    Note(string.IsNullOrEmpty(scriptMusic) ? "还没选音乐：选一段音乐床，段边界贴到最近的节拍点（0.35 秒内向前贴）；没选音乐或检不出节拍时退回等长分段，不报错。" : "音乐床：" + scriptMusic + "（音量 30%，段边界贴 0.35 秒内的节拍点；检不出节拍退回等长分段）。");
+    inspector.Children.Add(InspectorAction("folder", "选音乐床…（mp3/wav/m4a/flac）", () => {
+     var dlg = new Microsoft.Win32.OpenFileDialog { Filter = "音频|*.mp3;*.wav;*.m4a;*.flac" };
+     if (dlg.ShowDialog(Window) != true) return;
+     scriptMusic = dlg.FileName;
+     BuildInspector();
+    }));
+   }
    Note(scriptImages.Count == 0 ? "还没有配图：每行没有图时用纯色静帧。" : "已配图 " + scriptImages.Count + " 张（按行顺序用，多余的行用纯色）。");
    inspector.Children.Add(InspectorAction("folder", "为各行配图…（多选，按顺序）", () => {
     var dlg = new Microsoft.Win32.OpenFileDialog { Filter = "图片|*.png;*.jpg;*.jpeg;*.bmp", Multiselect = true };
@@ -218,8 +239,10 @@ namespace DogSC.Replica {
       .Select((t, i) => new AutoVideoLine { Text = t, Image = i < scriptImages.Count ? scriptImages[i] : "", Duration = scriptLineDuration }).ToList();
      string dir = string.IsNullOrEmpty(FilePath) ? Path.GetDirectoryName(Doc.Source) : Path.GetDirectoryName(FilePath);
      string output = Path.Combine(dir, (string.IsNullOrEmpty(Doc.Name) ? "脚本成片" : Doc.Name) + "-脚本成片.mp4");
-     await Task.Run(() => AutoVideo.Build(lines, Doc.TemplateId, output, CancellationToken.None));
-     Status("脚本成片已生成 · " + output + "（.srt 边车在同目录）。");
+     var options = new AutoVideoOptions { NarrationEnabled = scriptNarration, Voice = scriptVoice, TtsSpeed = 1, BeatSyncEnabled = scriptBeatSync, MusicPath = scriptMusic };
+     var segments = await Task.Run(() => AutoVideo.BuildDetailed(lines, Doc.TemplateId, output, options, CancellationToken.None));
+     int snapped = segments.Count(s => s.Snapped);
+     Status("脚本成片已生成 · " + output + "（.srt 边车在同目录；共 " + segments.Count + " 段" + (scriptNarration ? "，带配音" : "，静音") + (snapped > 0 ? "，" + snapped + " 处边界贴到节拍" : "") + "）。");
     } catch (Exception ex) { Error(ex); }
    }));
    if (!string.IsNullOrEmpty(Doc.TemplateId)) Note("成片会套当前模板：" + Doc.TemplateId + "。");
