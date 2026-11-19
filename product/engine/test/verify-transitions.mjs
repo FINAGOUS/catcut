@@ -154,10 +154,26 @@ check('library: dissolve is the canonical xfade, all defaults 0.5s',
     clips: [clip('a', 'red'), clip('b', 'blue'), clip('c', 'lime')] };
   check('reject: unknown transition type',
     throws(() => buildFilterGraph({ ...two, transitions: ['spin'] }, FONT)));
-  check('reject: transitions length != clips-1',
-    throws(() => buildFilterGraph({ ...three, transitions: ['fade'] }, FONT)));
-  check('reject: transitionDurations length mismatch',
-    throws(() => buildFilterGraph({ ...three, transitions: ['fade', 'dissolve'], transitionDurations: [1.0] }, FONT)));
+  check('reject: transitions LONGER than clips-1',
+    throws(() => buildFilterGraph({ ...three, transitions: ['fade', 'dissolve', 'fade'] }, FONT)));
+  check('reject: transitionDurations LONGER than the junctions',
+    throws(() => buildFilterGraph({ ...three, transitions: ['fade', 'dissolve'], transitionDurations: [1.0, 0.5, 0.5] }, FONT)));
+  {
+    // Short arrays are the engine's established convention (verify-p1c
+    // exports 16 clips with transitions: []): missing junctions are cuts.
+    let shortOk = true;
+    let shortGraph = '';
+    try {
+      shortGraph = buildFilterGraph({ ...three, transitions: ['fade'] }, FONT).filterComplex;
+    } catch { shortOk = false; }
+    check('allow: transitions SHORTER than clips-1 (missing junctions are cuts)',
+      shortOk && shortGraph.includes('xfade=transition=fade') && shortGraph.includes('concat=n=2:v=1:a=0'),
+      shortOk ? 'junction 0 xfades, junction 1 concats' : 'threw');
+    check('allow: short transitions keep duration math (3x2s - fade 0.5 = 5.5s)',
+      Math.abs(projectDuration({ ...three, transitions: ['fade'] }) - 5.5) < 1e-9);
+    check('allow: transitionDurations SHORTER than junctions (missing fall back to global)',
+      JSON.stringify(resolveTransitionDurations({ ...three, transitions: ['fade', 'dissolve'], transitionDurations: [1.0] })) === JSON.stringify([1.0, 0.5]));
+  }
   check('reject: duration 0 (below 0.1s)',
     throws(() => buildFilterGraph({ ...two, transitions: ['fade'], transitionDurations: [0] }, FONT)));
   check('reject: duration 6 (above 5s)',
