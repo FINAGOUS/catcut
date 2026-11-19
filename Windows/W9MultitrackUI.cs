@@ -45,6 +45,7 @@ namespace DogSC.Replica {
     var text = UI.Text(UI.Time(t), 10, "#8C9498"); Canvas.SetLeft(text, t * px + 3); Canvas.SetTop(text, 5); timeline.Children.Add(text);
     timeline.Children.Add(new Line { X1 = t * px, X2 = t * px, Y1 = 24, Y2 = 170, Stroke = UI.Brush(dark ? "#2D3135" : "#F0F1F2"), StrokeThickness = 1 });
    }
+   if (Doc.Length <= 0) { var ph = UI.Text("时长未知 · 时间线暂不可用", 10, "#8C9498"); Canvas.SetLeft(ph, 3); Canvas.SetTop(ph, 5); timeline.Children.Add(ph); }
    Action<string, double> labelRow = (text, h) => {
     var label = UI.Text(text, 11, dark ? "#DCE0E0" : "#545D62");
     label.VerticalAlignment = VerticalAlignment.Center;
