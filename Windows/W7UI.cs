@@ -115,12 +115,14 @@ namespace DogSC.Replica {
 
   // ---- 2. 一键删静音（声音 tab，音频类型面板之后）----
   double silenceThresholdDb = -40;
+  string silenceMode = "delete";
   List<SilenceCut.Span> detectedSilence;
   string silenceStatus = "";
   void BuildSilenceCutSection() {
    Section("一键删静音");
-   Note("用 silencedetect 找静音段（源时间），抠掉后字幕/标记/缩放/贴图跟随前移。卡点闪白的节拍是源时间，删静音后会错位——删完需重新检测节拍。片尾静音不删（不影响成片）。");
+   Note("用 silencedetect 找静音段（源时间）。删除：抠掉静音段；压缩 0.3x：静音段不删，改以 0.3x 慢放（原声保留、拉长，时间线变长静音段×(1/0.3−1)）。两种模式字幕/标记/缩放/贴图都跟随新时间轴。卡点闪白的节拍是源时间，处理完会错位——处理完需重新检测节拍。片尾静音不删（不影响成片）。压缩只支持 1× 常速片段。");
    Choices("静音阈值", silenceThresholdDb.ToString("0", System.Globalization.CultureInfo.InvariantCulture), new[] { new[] { "-50 dB（更敏感）", "-50" }, new[] { "-40 dB", "-40" }, new[] { "-30 dB（只删真静音）", "-30" } }, v => { silenceThresholdDb = double.Parse(v, System.Globalization.CultureInfo.InvariantCulture); });
+   Choices("处理方式", silenceMode, new[] { new[] { "删除静音段", "delete" }, new[] { "压缩 0.3x（拉长，保留原声）", "compress" } }, v => { silenceMode = v; });
    if (detectedSilence != null) {
     double total = detectedSilence.Sum(s => s.Length);
     Note("已找到 " + detectedSilence.Count + " 段静音，共 " + total.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture) + " 秒：" + string.Join("、", detectedSilence.Select(s => s.Start.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "–" + s.End.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "s").ToArray()) + "。");
@@ -140,17 +142,18 @@ namespace DogSC.Replica {
     } catch (Exception ex) { Error(ex); }
    }));
    if (detectedSilence != null && detectedSilence.Count > 0) {
-    inspector.Children.Add(InspectorAction("trash", "删掉这 " + detectedSilence.Count + " 段静音", () => {
+    bool compress = silenceMode == "compress";
+    inspector.Children.Add(InspectorAction("trash", compress ? "压缩这 " + detectedSilence.Count + " 段静音（0.3x 拉长）" : "删掉这 " + detectedSilence.Count + " 段静音", () => {
      if (Doc == null) return;
      try {
       Checkpoint();
-      double removed = SilenceCut.Apply(Doc, detectedSilence);
+      double changed = compress ? SilenceCut.ApplyCompress(Doc, detectedSilence) : SilenceCut.Apply(Doc, detectedSilence);
       detectedSilence = null;
-      silenceStatus = "已删静音 " + removed.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture) + " 秒。卡点闪白如在用，请重新检测节拍。";
+      silenceStatus = compress ? "已压缩静音 " + changed.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture) + " 秒（静音段以 0.3x 拉长，原声保留）。卡点闪白如在用，请重新检测节拍。" : "已删静音 " + changed.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture) + " 秒。卡点闪白如在用，请重新检测节拍。";
       Changed();
       BuildInspector();
       DrawTimeline();
-      Status("已删静音 " + removed.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture) + " 秒。");
+      Status(silenceStatus);
      } catch (Exception ex) { Error(ex); }
     }, true));
    }
