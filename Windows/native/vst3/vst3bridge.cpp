@@ -262,11 +262,17 @@ struct Bridge
             error = "激活插件组件失败。";
             return false;
         }
-        if (processor->setProcessing (true) != kResultOk)
+        // 注意：AudioEffect::setProcessing 默认返回 kNotImplemented，AGain 没有重写它，
+        // 所以这里 kNotImplemented 也算成功（VST3 规范：setProcessing 是可选的，
+        // 插件不实现就照常处理）。只认 kResultOk 会把所有没重写它的插件全拒掉。
         {
-            component->setActive (false);
-            error = "开始插件处理失败。";
-            return false;
+            tresult pr = processor->setProcessing (true);
+            if (pr != kResultOk && pr != kNotImplemented)
+            {
+                component->setActive (false);
+                error = "开始插件处理失败。";
+                return false;
+            }
         }
         processingActive = true;
         activeSampleRate = sampleRate;
