@@ -83,6 +83,22 @@ namespace DogSC.Windows {
   }
   public static string N(double v) { return v.ToString("0.######", CultureInfo.InvariantCulture); }
  }
+ // W10 hotfix：崩溃落盘唯一入口（P0：真机闪退后没有 last-error.txt）。
+ // 旧版只有 DispatcherUnhandledException 一个 handler 会写 last-error.txt，
+ // 且写之前不建目录、写本身失败会二次抛错；后台线程 / Task 未观察异常根本没人接。
+ // 本类：写之前建目录、写失败静默吞掉（落盘本身绝不能再崩）；路径与旧版一致，
+ // Root\bin\last-error.txt（Root = exe 目录的上一级）。
+ static class CrashReport {
+  public static string LastErrorPath { get { return Path.Combine(Media.Root, "bin", "last-error.txt"); } }
+  public static void Write(Exception ex) { Write(ex == null ? "未知异常" : ex.ToString()); }
+  public static void Write(string text) {
+   try {
+    string path = LastErrorPath;
+    Directory.CreateDirectory(Path.GetDirectoryName(path));
+    File.WriteAllText(path, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "\n" + text + "\n");
+   } catch { }
+  }
+ }
  public class Camera {
   readonly List<PointerSample> samples; readonly List<double[]> envelopes = new List<double[]>(); int index;
   double cx = .5, cy = .5;

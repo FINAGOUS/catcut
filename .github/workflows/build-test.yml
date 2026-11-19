@@ -1,4 +1,4 @@
-﻿name: Build test (cloud)
+name: Build test (cloud)
 
 # First cloud-build check for the FINAGOUS/catcut fork.
 # Manual trigger only. Builds the WPF app exactly like the upstream
@@ -224,6 +224,21 @@ jobs:
         with:
           name: w9mt-results
           path: Windows/bin/w9mt-results.txt
+          if-no-files-found: warn
+
+      - name: W10 import checks
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/CatCut.exe') -ArgumentList '--w9import-test' -WindowStyle Hidden -PassThru -Wait
+          Get-Content 'Windows/bin/w10-import-results.txt' -Raw
+          if ($test.ExitCode -ne 0 -or -not ((Get-Content 'Windows/bin/w10-import-results.txt' -Raw).Contains('PASS: W10 import hotfix'))) { throw 'W10 import checks failed.' }
+
+      - name: Upload W10 import results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w10-import-results
+          path: Windows/bin/w10-import-results.txt
           if-no-files-found: warn
 
       - name: Package portable ZIP

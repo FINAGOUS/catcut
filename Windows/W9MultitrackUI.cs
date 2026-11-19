@@ -45,6 +45,7 @@ namespace DogSC.Replica {
     var text = UI.Text(UI.Time(t), 10, "#8C9498"); Canvas.SetLeft(text, t * px + 3); Canvas.SetTop(text, 5); timeline.Children.Add(text);
     timeline.Children.Add(new Line { X1 = t * px, X2 = t * px, Y1 = 24, Y2 = 170, Stroke = UI.Brush(dark ? "#2D3135" : "#F0F1F2"), StrokeThickness = 1 });
    }
+   if (Doc.Length <= 0) { var ph = UI.Text("时长未知 · 时间线暂不可用", 10, "#8C9498"); Canvas.SetLeft(ph, 3); Canvas.SetTop(ph, 5); timeline.Children.Add(ph); }
    Action<string, double> labelRow = (text, h) => {
     var label = UI.Text(text, 11, dark ? "#DCE0E0" : "#545D62");
     label.VerticalAlignment = VerticalAlignment.Center;
@@ -56,6 +57,7 @@ namespace DogSC.Replica {
    var videoTracks = Doc.VideoTracks.ToList();
    videoTracks.Reverse();
    foreach (var tr in videoTracks) {
+    if (tr == null) continue;
     double laneY = y;
     labelRow((tr.Name ?? tr.Id) + (tr.Visible == false ? " · 隐藏" : "") + (tr.Locked ? " · 锁定" : ""), 56);
     mtLanes.Add(new MtLaneGeom { Kind = "video", TrackId = tr.Id, Y0 = laneY, Y1 = laneY + 56 });
@@ -63,6 +65,7 @@ namespace DogSC.Replica {
     y += 56;
    }
    if (Doc.AudioTracks != null) foreach (var tr in Doc.AudioTracks) {
+    if (tr == null) continue;
     double laneY = y;
     string state = (tr.Mute ? " · 静音" : "") + (tr.Solo ? " · 独奏" : "");
     labelRow((tr.Name ?? tr.Id) + state, 36);
@@ -89,9 +92,11 @@ namespace DogSC.Replica {
    timeline.MouseLeftButtonDown -= TimelineSeek; timeline.MouseLeftButtonDown += TimelineSeek;
   }
   void DrawMtClips(List<MtClip> clips, string kind, string trackId, double laneY, double boxH, double px, string color) {
+   if (clips == null) return;
    for (int i = 0; i < clips.Count; i++) {
     int clipIndex = i;
     var clip = clips[i];
+    if (clip == null) continue;
     var box = new Border {
      Width = Math.Max(4, clip.Duration * px - 3), Height = boxH, CornerRadius = new CornerRadius(7),
      BorderThickness = new Thickness(MtHasSelection() && mtSelKind == kind && mtSelTrack == trackId && mtSelClip == clipIndex ? 2 : 1),
