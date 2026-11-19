@@ -36,7 +36,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Web.Script.Serialization;
 using DogSC.Windows;
 
 namespace DogSC.Replica {
@@ -223,8 +222,7 @@ namespace DogSC.Replica {
   // Version/SDKVersion/Flags 缺了就留空照样列出，老 bundle 不会因此消失）。
   public static void ParseModuleInfo(string json, PluginInfo info) {
    if (string.IsNullOrWhiteSpace(json)) throw new Exception("moduleinfo.json 为空。");
-   var ser = new JavaScriptSerializer();
-   var root = ser.DeserializeObject(json) as Dictionary<string, object>;
+   var root = MiniJson.Parse(json) as Dictionary<string, object>;
    if (root == null) throw new Exception("moduleinfo.json 顶层不是对象。");
    string name, version;
    if (TryStr(root, "Name", out name)) info.ModuleName = name;
@@ -236,7 +234,7 @@ namespace DogSC.Replica {
    }
    object classesObj;
    if (!root.TryGetValue("Classes", out classesObj)) throw new Exception("moduleinfo.json 缺少 Classes。");
-   var classes = classesObj as System.Collections.ArrayList;
+   var classes = classesObj as List<object>;
    if (classes == null) throw new Exception("moduleinfo.json 的 Classes 不是数组。");
    foreach (object item in classes) {
     var c = item as Dictionary<string, object>;
@@ -250,7 +248,7 @@ namespace DogSC.Replica {
     if (TryStr(c, "SDKVersion", out s)) ci.SdkVersion = s;
     object subs;
     if (c.TryGetValue("Sub Categories", out subs)) {
-     var arr = subs as System.Collections.ArrayList;
+     var arr = subs as List<object>;
      if (arr != null) foreach (object sub in arr) if (sub is string) ci.SubCategories.Add((string)sub);
     }
     info.Classes.Add(ci);
@@ -268,6 +266,103 @@ namespace DogSC.Replica {
   }
  }
 
+ // ---- 极小 JSON 解析器（只为读 moduleinfo.json；不依赖 JavaScriptSerializer
+// 对数组返回类型的版本差异——云端实测曾因此丢掉 Classes 数组。
+// 只认对象 / 数组 / 字符串 / 数字 / true / false / null；严格，
+// 畸形 JSON 直接抛错，调用方记成“解析失败”而不是静默吞掉。）
+static class MiniJson {
+ public static object Parse(string json) {
+  if (string.IsNullOrWhiteSpace(json)) throw new Exception("JSON 为空。");
+  var p = new Parser(json);
+  object v = p.Value();
+  p.SkipWs();
+  if (p.Pos != json.Length) throw new Exception("JSON 末尾有多余字符。");
+  return v;
+ }
+ class Parser {
+  readonly string s; public int Pos;
+  public Parser(string s) { this.s = s; }
+  public void SkipWs() { while (Pos < s.Length && (s[Pos] == ' ' || s[Pos] == '\t' || s[Pos] == '\n' || s[Pos] == '\r')) Pos++; }
+  char Peek() { SkipWs(); if (Pos >= s.Length) throw new Exception("JSON 意外结束。"); return s[Pos]; }
+  void Expect(char c) { if (Peek() != c) throw new Exception("JSON 在位置 " + Pos + " 期待 '" + c + "'。"); Pos++; }
+  public object Value() {
+   char c = Peek();
+   if (c == '{') return Obj();
+   if (c == '[') return Arr();
+   if (c == '"') return Str();
+   if (c == 't') { Lit("true"); return true; }
+   if (c == 'f') { Lit("false"); return false; }
+   if (c == 'n') { Lit("null"); return null; }
+   return Num();
+  }
+  void Lit(string lit) { if (Pos + lit.Length > s.Length || s.Substring(Pos, lit.Length) != lit) throw new Exception("JSON 在位置 " + Pos + " 期待 " + lit + "。"); Pos += lit.Length; }
+  Dictionary<string, object> Obj() {
+   var d = new Dictionary<string, object>();
+   Expect('{');
+   if (Peek() == '}') { Pos++; return d; }
+   while (true) {
+    string key = Str();
+    Expect(':');
+    d[key] = Value();
+    char c = Peek();
+    if (c == ',') { Pos++; continue; }
+    if (c == '}') { Pos++; return d; }
+    throw new Exception("JSON 对象在位置 " + Pos + " 期待 ',' 或 '}'。");
+   }
+  }
+  List<object> Arr() {
+   var list = new List<object>();
+   Expect('[');
+   if (Peek() == ']') { Pos++; return list; }
+   while (true) {
+    list.Add(Value());
+    char c = Peek();
+    if (c == ',') { Pos++; continue; }
+    if (c == ']') { Pos++; return list; }
+    throw new Exception("JSON 数组在位置 " + Pos + " 期待 ',' 或 ']'。");
+   }
+  }
+  string Str() {
+   Expect('"');
+   var sb = new System.Text.StringBuilder();
+   while (true) {
+    if (Pos >= s.Length) throw new Exception("JSON 字符串未闭合。");
+    char c = s[Pos++];
+    if (c == '"') return sb.ToString();
+    if (c == '\\') {
+     if (Pos >= s.Length) throw new Exception("JSON 转义未闭合。");
+     char e = s[Pos++];
+     if (e == '"') sb.Append('"');
+     else if (e == '\\') sb.Append('\\');
+     else if (e == '/') sb.Append('/');
+     else if (e == 'b') sb.Append('\b');
+     else if (e == 'f') sb.Append('\f');
+     else if (e == 'n') sb.Append('\n');
+     else if (e == 'r') sb.Append('\r');
+     else if (e == 't') sb.Append('\t');
+     else if (e == 'u') {
+      if (Pos + 4 > s.Length) throw new Exception("JSON \\u 转义不完整。");
+      int code;
+      if (!int.TryParse(s.Substring(Pos, 4), System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out code)) throw new Exception("JSON \\u 转义无效。");
+      Pos += 4;
+      sb.Append((char)code);
+     } else throw new Exception("JSON 未知转义 \\" + e + "。");
+    } else sb.Append(c);
+   }
+  }
+  object Num() {
+   int start = Pos;
+   while (Pos < s.Length && "+-0123456789.eE".IndexOf(s[Pos]) >= 0) Pos++;
+   if (Pos == start) throw new Exception("JSON 在位置 " + start + " 不是合法值。");
+   string tok = s.Substring(start, Pos - start);
+   long l;
+   if (long.TryParse(tok, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out l)) return l;
+   double d;
+   if (double.TryParse(tok, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out d)) return d;
+   throw new Exception("JSON 数字无效：" + tok + "。");
+  }
+ }
+}
  // ---- 未来宿主的接缝：现在只有一句诚实报错，没有任何“假加载”入口 ----
  static class PluginHostSeam {
   public const string NotBuilt =
