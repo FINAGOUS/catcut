@@ -94,6 +94,11 @@ namespace DogSC.Replica {
   // （模型见 Windows/W8TimelinePanels.cs；老工程反序列化为 null/默认，
   // Validate() 里补默认值与范围校验）。
   public bool LinkSelection=true; public List<AdjustmentLayer> AdjustmentLayers=new List<AdjustmentLayer>(); public List<CompoundClip> CompoundClips=new List<CompoundClip>();
+  // W9：多轨时间线（模型见 Windows/W9MultitrackPanels.cs；老项目文件
+  // 反序列化为 null，Validate() 里补空列表；保存时一并写出，旧版读不到
+  // tracks 字段时退化成 Cuts 单轨——Cuts 由 MultitrackDoc.SyncLegacyCuts
+  // 从视频轨 0 回填，轨本身不丢）。
+  public List<MtVideoTrack> VideoTracks; public List<MtAudioTrack> AudioTracks;
   // W8：调色高级（模型见 Windows/W8ColourPanels.cs；老工程反序列化为 null，
   // Validate() 里补默认值与范围校验）。InputSpace 是片段级（本项目单源，
   // 存在 doc 上），Working/Output 是项目级；CompareWipe 默认 0.5。
@@ -101,7 +106,7 @@ namespace DogSC.Replica {
   public GradeNodeGraph GradeNodes; public ColourMatch Match; public TrackedWindow TrackedWin;
   public string AppliedLutPath=""; public ChromaKey Chroma;
   public string CompareMode="split"; public double CompareWipe=0.5;
-  public double Length { get { return Cuts.Sum(c=>c.Length); } }
+  public double Length { get { if (VideoTracks != null && (VideoTracks.Count > 0 || (AudioTracks != null && AudioTracks.Count > 0))) return MultitrackDoc.Duration(this); return Cuts.Sum(c=>c.Length); } }
   public static JavaScriptSerializer Serializer() { return new JavaScriptSerializer { MaxJsonLength=int.MaxValue }; }
   public string Serialize() { return Serializer().Serialize(this); }
   public static EditDocument Deserialize(string text) { return Serializer().Deserialize<EditDocument>(text); }
@@ -148,6 +153,9 @@ namespace DogSC.Replica {
    // W8：老项目缺新字段时补默认值；J/L 音频窗口、调整层、复合片段逐项校验。
    if(AdjustmentLayers==null)AdjustmentLayers=new List<AdjustmentLayer>();
    if(CompoundClips==null)CompoundClips=new List<CompoundClip>();
+   // W9：老项目缺轨字段时补空列表；有轨时按引擎 validateMultitrackProject 校验。
+   if(VideoTracks==null)VideoTracks=new List<MtVideoTrack>(); if(AudioTracks==null)AudioTracks=new List<MtAudioTrack>();
+   MultitrackDoc.Validate(this);
    JlAudio.ValidateAll(this);
    foreach(var layer in AdjustmentLayers)AdjustmentLayerFilter.Validate(layer,Length);
    foreach(var cc in CompoundClips){if(cc==null)throw new Exception("复合片段为空。");if(cc.Depth<0||cc.Depth>=CompoundTimeline.MaxDepth)throw new Exception("复合片段嵌套超过 2 层上限。");if(!Finite(cc.In)||!Finite(cc.Out)||cc.In<0||cc.Out<=cc.In)throw new Exception("复合片段窗口无效。");if(!string.IsNullOrEmpty(cc.ProjectPath)&&!File.Exists(cc.ProjectPath))throw new Exception("复合片段的子项目文件缺失："+cc.ProjectPath);}
@@ -478,10 +486,17 @@ namespace DogSC.Replica {
   // 只有主音轨、无增益/声像/总增益时，返回与老版本逐字一致的 -af volume=，
   // 老项目导出行为零变化。extraInputs 是追加的音乐输入（-stream_loop -1 -i …），
   // 由调用方拼在 -i <media> 之后、-map 之前。
-  static string AudioArgs(EditDocument doc,string media,out string extraInputs){
+  static string AudioArgs(EditDocument doc,string media,out string extraInputs){return AudioArgs(doc,media,out extraInputs,doc.Audio);}
+  // W9：audioPresent 允许调用方说明“时间线中间片里确实有音频”（多轨导出时
+  // doc.Audio 说的是源文件有没有音轨，中间片的音频要以实际渲染结果为准）。
+  static string AudioArgs(EditDocument doc,string media,out string extraInputs,bool audioPresent){
    extraInputs="";
    var music=MixerAudio.MusicChannels(doc);
-   var source=doc.Audio?MixerAudio.SourceChannel(doc):null;
+   var source=audioPresent?MixerAudio.SourceChannel(doc):null;
+   // W9：audioPresent 时时间线中间片就是主音轨；混音台里只有音乐床（没有空
+   // SourcePath 的对话通道）时补一个默认对话通道，否则中间片的混音会被静默丢掉
+   // （SourceChannel 只在 doc.Audio 时才补默认通道，见 MixerAudio.Audible）。
+   if(source==null&&audioPresent)source=new MixerChannel{Role="对话",GainDb=0,Pan=0};
    // W8：TTS 旁白 wav 也是一路音频（无主音轨时也能单独成片）。
    bool hasTts=doc.Tts!=null&&doc.Tts.HasAudio;
    if(source==null&&music.Count==0&&!hasTts)return "-an ";
@@ -565,6 +580,8 @@ namespace DogSC.Replica {
   }
   public static void Export(EditDocument doc,string output,ExportOptions options,Action<double,string> progress,CancellationToken token,Action<string> diagnostics=null) {
    doc.Validate();if(options==null)options=ExportOptions.Sdr(1080,30);options.Validate();int fps=options.Fps;
+   // W9：多轨导出前检查——人声分离在多轨上直接拒绝（引擎无 track-aware 实现）。
+   MultitrackGuard.CheckExport(doc);
    // W8 仅导出字幕：只写字幕边车文件，不渲染视频（deliver.ts 的 subtitleOnly 同款）。
    if(options.OnlyMode=="subtitle"){
     if(doc.Subtitles==null||doc.Subtitles.Count==0)throw new Exception("没有字幕可导出：先添加字幕。");
@@ -581,13 +598,17 @@ namespace DogSC.Replica {
    Process decoder=null,encoder=null;CameraFrameStream cameraStream=null;
    try {
     string timeline=Path.Combine(work,"timeline.mp4"),filter=Path.Combine(work,"timeline.txt"),result=Path.Combine(work,"result.mp4");
-    progress(0,"整理时间线");bool direct=doc.Cuts.Count==1&&Math.Abs(doc.Cuts[0].Speed-1)<.000001&&!doc.Cuts[0].Gap&&!MulticamModel.Active(doc);string media=direct?doc.Source:timeline;string selection=direct?"-ss "+Media.N(doc.Cuts[0].Start)+" -t "+Media.N(doc.Cuts[0].End-doc.Cuts[0].Start)+" ":"";
+    progress(0,"整理时间线");bool direct=!MultitrackDoc.HasTracks(doc)&&doc.Cuts.Count==1&&Math.Abs(doc.Cuts[0].Speed-1)<.000001&&!doc.Cuts[0].Gap&&!MulticamModel.Active(doc);string media=direct?doc.Source:timeline;string selection=direct?"-ss "+Media.N(doc.Cuts[0].Start)+" -t "+Media.N(doc.Cuts[0].End-doc.Cuts[0].Start)+" ":"";
+    // W9：多轨没有单段直通；时间线中间片走引擎的多轨合成图（逐轨组装后 overlay/blend，音频 amix），不走单轨 Filter。
     // W8：人声分离导出时音频走分离后的音轨文件（只支持单片段直接导出，
     // 多段请把音轨加进混音轨）；视频解码仍走 media，音频输入走 audioMedia。
     // 非直接导出时音频走时间线中间片；分离模式 + 多段会在这里直接报错。
     string audioMedia=W8AudioChain.AudioSourceForExport(doc,direct);
     if(!direct)audioMedia=media;
-    if(!direct){File.WriteAllText(filter,StudioMedia.Filter(doc,doc.Audio),new UTF8Encoding(false));var inputs=string.Join(" ",StudioMedia.InputFiles(doc).Select(f=>"-i "+Media.Q(f)).ToArray());StudioMedia.Run("-v error -y "+inputs+" -/filter_complex "+Media.Q(filter)+" -map [video] "+(doc.Audio?"-map [audio] -c:a aac ":"")+"-c:v libx264 -preset ultrafast -crf 16 -pix_fmt yuv420p -r "+fps+" "+Media.Q(timeline),token);}
+    // W9：多轨时间线中间片（mtAudio = 中间片里是否有真实音频；没有也照常出片，
+    // 只是最终不映射音频）。单轨走老 Filter 路径，行为不变。
+    bool mtAudio=false;
+    if(!direct){if(MultitrackDoc.HasTracks(doc)){progress(0,"合成多轨时间线");mtAudio=MultitrackFilter.RenderTimeline(doc,timeline,fps,token);}else{File.WriteAllText(filter,StudioMedia.Filter(doc,doc.Audio),new UTF8Encoding(false));var inputs=string.Join(" ",StudioMedia.InputFiles(doc).Select(f=>"-i "+Media.Q(f)).ToArray());StudioMedia.Run("-v error -y "+inputs+" -/filter_complex "+Media.Q(filter)+" -map [video] "+(doc.Audio?"-map [audio] -c:a aac ":"")+"-c:v libx264 -preset ultrafast -crf 16 -pix_fmt yuv420p -r "+fps+" "+Media.Q(timeline),token);}}
     // W8：防抖与对象跟踪是媒体预处理——先对拼好的 timeline.mp4（或
     // 直接路径的源文件）各做一遍转码，再走原有解码管线。顺序：先防抖，
     // 再跟踪（跟踪跑在防抖后的画面上）。代理/优化媒体不参与——导出
@@ -598,7 +619,7 @@ namespace DogSC.Replica {
     // 输入 0 是 anullsrc 占位（AudioArgs 的 -map 1:a:0 与音乐床输入序号都按
     // media 在 1 号位算），不混入输出。
     if(options.OnlyMode=="audio"){
-     string musicInputs2;string aargs=AudioArgs(doc,audioMedia,out musicInputs2);
+     string musicInputs2;string aargs=MultitrackDoc.HasTracks(doc)?AudioArgs(doc,audioMedia,out musicInputs2,mtAudio):AudioArgs(doc,audioMedia,out musicInputs2);
      if(aargs.Trim()=="-an")throw new Exception("当前项目没有可导出的音频。");
      StudioMedia.Run("-v error -y -f lavfi -i anullsrc=r=48000:cl=stereo -i "+Media.Q(media)+musicInputs2+" "+aargs+" -vn -t "+Media.N(doc.Length)+" "+Media.Q(result),token);
      File.Move(result,output);SubtitleFiles.WriteSidecar(doc,output);progress(1,"导出完成");return;
@@ -665,7 +686,7 @@ namespace DogSC.Replica {
      decoder=Media.Start("ffmpeg","-v error "+selection+"-i "+Media.Q(media)+" -an -vf "+(direct?"fps="+fps+",":"")+"scale="+dw+":"+dh+W8ColourFilters.Chain(doc)+effectVf+" -pix_fmt bgra -f rawvideo pipe:1",true);
     }
     var decodeError=decoder.StandardError.ReadToEndAsync();
-    string musicInputs="";string audioArgs=options.OnlyMode=="video"?"-an ":AudioArgs(doc,audioMedia,out musicInputs);
+    string musicInputs="";string audioArgs=options.OnlyMode=="video"?"-an ":(MultitrackDoc.HasTracks(doc)?AudioArgs(doc,audioMedia,out musicInputs,mtAudio):AudioArgs(doc,audioMedia,out musicInputs));
     encoder=Media.Start("ffmpeg","-v error -y -f rawvideo -pixel_format bgra -video_size "+width+"x"+height+" -framerate "+fps+" -i pipe:0 "+selection+"-i "+Media.Q(audioMedia)+musicInputs+" -map 0:v "+audioArgs+options.VideoEncoderArgs()+" -t "+Media.N(doc.Length)+" -movflags +faststart "+Media.Q(result),false);var encodeError=encoder.StandardError.ReadToEndAsync();
     using(token.Register(()=>{try{decoder.Kill();}catch{}try{encoder.Kill();}catch{}}))
     using(var source=new Bitmap(dw,dh,PixelFormat.Format32bppArgb))using(var canvas=new Bitmap(width,height,PixelFormat.Format32bppArgb))using(var g=Graphics.FromImage(canvas))

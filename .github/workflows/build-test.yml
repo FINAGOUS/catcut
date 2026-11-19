@@ -211,6 +211,21 @@ jobs:
           path: Windows/bin/w9plugin-results.txt
           if-no-files-found: warn
 
+      - name: W9 multitrack checks
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/CatCut.exe') -ArgumentList '--w9mt-test' -WindowStyle Hidden -PassThru -Wait
+          Get-Content 'Windows/bin/w9mt-results.txt' -Raw
+          if ($test.ExitCode -ne 0 -or -not ((Get-Content 'Windows/bin/w9mt-results.txt' -Raw).StartsWith('PASS:'))) { throw 'W9 multitrack checks failed.' }
+
+      - name: Upload W9 multitrack results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w9mt-results
+          path: Windows/bin/w9mt-results.txt
+          if-no-files-found: warn
+
       - name: Package portable ZIP
         run: |
           $ErrorActionPreference = 'Stop'
