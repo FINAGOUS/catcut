@@ -251,7 +251,7 @@ namespace DogSC.Replica {
     if(frameTab=="布局"){Section("画面留白");Slider("边距",0,180,a.Padding,"",v=>a.Padding=v);Section("位置与大小");PositionPad(a.X,a.Y,SetStylePosition);Slider("素材缩放",.5,1.5,a.Scale,"×",v=>a.Scale=v);InspectorResetLayout(()=>{Checkpoint();SetStylePosition(.5,.5);a.Scale=1;Changed();BuildInspector();});Section("圆角、描边与阴影");Slider("内容圆角",0,60,a.Radius,"",v=>a.Radius=v);Slider("外描边",0,8,a.Border,"",v=>a.Border=v);Slider("阴影强度",0,60,a.Shadow,"",v=>a.Shadow=v);}
     else if(frameTab=="调色"){BuildColorInspector();}
     else if(frameTab=="360°"){BuildSphericalInspector();}
-    else if(frameTab=="时间线"){BuildTimelineAdvancedSection();BuildMultitrackSection();}
+    else if(frameTab=="时间线"){BuildTimelineAdvancedSection();BuildTransitionsSection();BuildMultitrackSection();}
     else if(frameTab=="样机"){Section("屏幕外框");Buttons(new[]{"无","浅色窗口","深色窗口"},a.Frame=="none"?"无":a.Frame=="dark"?"深色窗口":"浅色窗口",v=>{Checkpoint();a.Frame=v=="无"?"none":v=="深色窗口"?"dark":"window";Changed();BuildInspector();});Note("窗口外框与预览、导出保持一致。");}
     else BuildBackgroundInspector();
    }else if(tab=="运镜"){
