@@ -71,6 +71,7 @@ import {
   replaceClipWithSplits,
   validateTimelineProject,
 } from './timeline.js';
+import { resolveProjectAuditions } from './auditions.js';
 import {
   compressSilences,
   cutSilences,
@@ -269,6 +270,23 @@ export {
   validateTimelineProject,
 } from './timeline.js';
 export type { AdjustmentLayer, AlternateClip, PasteableField, TimelineHit, TimelineMarker } from './timeline.js';
+export {
+  addAudition,
+  getActiveAudition,
+  listAuditions,
+  migrateAlternatesToAuditions,
+  normalizeProjectAuditions,
+  removeAudition,
+  renameAudition,
+  resolveClip,
+  resolveProjectAuditions,
+  setActiveAudition,
+  updateAudition,
+  validateAudition,
+  validateAuditionOverride,
+  validateAuditions,
+} from './auditions.js';
+export type { ClipAudition, ClipAuditionOverride } from './auditions.js';
 export {
   clampSilences,
   compressSilences,
@@ -1033,7 +1051,15 @@ async function renderProjectWithStab(
   depth: number,
 ): Promise<ExportReport> {
   const outDir = dirname(output);
-  const resolved = await resolveCompoundClips(project, outDir, opts, ffmpeg, depth);
+  // W10 auditions: resolve each clip to its ACTIVE audition version
+  // BEFORE compound resolution / timeline prep / stabilization see
+  // the clips, so every prep pass and the graph build render the
+  // version the user switched to. Validates every audition (a
+  // dangling activeAuditionId throws here instead of exporting the
+  // wrong version). Old projects (no auditions) pass through
+  // unchanged; the input project is untouched.
+  const auditioned = resolveProjectAuditions(project);
+  const resolved = await resolveCompoundClips(auditioned, outDir, opts, ffmpeg, depth);
   // P3e prep (silence cut / text cut / remix) runs on the resolved
   // project, before stabilization prep sees the clips.
   const prepped = await applyTimelinePrep(resolved, outDir, opts, ffmpeg);
