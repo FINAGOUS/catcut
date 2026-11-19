@@ -361,8 +361,8 @@ namespace DogSC.Replica {
    return best;
   }
   void ShowSnapLine(double t){
-   if(snapLine==null||Doc==null)return;
-   double x=t/Doc.Length*TimelineWidth;snapLine.X1=snapLine.X2=x;snapLine.Visibility=Visibility.Visible;
+   if(snapLine==null||Doc==null||Doc.Length<=0){HideSnapLine();return;}
+   double x=t/Doc.Length*TimelineWidth;if(!double.IsFinite(x)){HideSnapLine();return;}x=Math.Max(0,Math.Min(TimelineWidth,x));snapLine.X1=snapLine.X2=x;snapLine.Visibility=Visibility.Visible;
   }
   void HideSnapLine(){if(snapLine!=null)snapLine.Visibility=Visibility.Collapsed;}
  }
