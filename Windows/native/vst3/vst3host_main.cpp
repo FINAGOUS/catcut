@@ -66,9 +66,12 @@ int fail (int code, const std::string& msg)
 
 int runLoad (const std::string& plugin, int64_t& handle, char* err, int errSize)
 {
+    // 阶段打点（stderr，子进程被超时杀掉时 C# 把它带回——第 9 跑挂死时没有任何线索）。
+    printErr ("[host] load start");
     int32_t rc = vst3_load (plugin.c_str (), &handle, err, errSize);
     if (rc != 0)
         return fail (2, std::string ("加载插件失败：") + err);
+    printErr ("[host] load ok");
     return 0;
 }
 
@@ -125,6 +128,7 @@ int main (int argc, char* argv[])
         }
         std::printf ("%s\n", json);
         vst3_unload (handle, err, (int32_t)sizeof (err));
+        printErr ("[host] unload done");
         return 0;
     }
     if (cmd == "process")
@@ -160,15 +164,19 @@ int main (int argc, char* argv[])
             }
         }
         char summary[1024] = {0};
+        printErr ("[host] process start");
         int32_t r = vst3_process_file (handle, inWav.c_str (), outWav.c_str (), rate, summary,
                                        (int32_t)sizeof (summary), err, (int32_t)sizeof (err));
+        printErr (std::string ("[host] process done rc=") + std::to_string (r));
         if (r != 0)
         {
             vst3_unload (handle, err, (int32_t)sizeof (err));
+            printErr ("[host] unload done (after process error)");
             return fail (3, std::string ("处理失败：") + err);
         }
         std::printf ("%s\n", summary);
         vst3_unload (handle, err, (int32_t)sizeof (err));
+        printErr ("[host] unload done");
         return 0;
     }
     return fail (1, "未知命令：" + cmd + "（version / classes / params / process）。");
