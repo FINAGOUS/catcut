@@ -196,6 +196,21 @@ jobs:
           path: Windows/bin/w9fixes-results.txt
           if-no-files-found: warn
 
+      - name: W9 plugin checks
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/CatCut.exe') -ArgumentList '--w9plugin-test' -WindowStyle Hidden -PassThru -Wait
+          Get-Content 'Windows/bin/w9plugin-results.txt' -Raw
+          if ($test.ExitCode -ne 0 -or -not ((Get-Content 'Windows/bin/w9plugin-results.txt' -Raw).StartsWith('PASS:'))) { throw 'W9 plugin checks failed.' }
+
+      - name: Upload W9 plugin results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w9plugin-results
+          path: Windows/bin/w9plugin-results.txt
+          if-no-files-found: warn
+
       - name: Package portable ZIP
         run: |
           $ErrorActionPreference = 'Stop'

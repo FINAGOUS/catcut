@@ -30,6 +30,16 @@ Windows 程序通过独立进程调用未修改的 `ffmpeg.exe` 和 `ffprobe.exe
 - 来源：[MediaPipe Selfie Segmentation](https://developers.google.com/mediapipe/solutions/vision/image_segmenter) / 模型卡片 [mediapipe](https://github.com/google-ai-edge/mediapipe)。
 - 本项目没有更改模型权重；模型只在用户本机运行推理，不上传任何画面。
 
+## 插件宿主（W9，B 级：只扫描，不加载）
+
+- VST3 / OFX 插件只做发现与元数据展示：VST3 读 bundle 里的 `moduleinfo.json`，
+  OFX 只认 bundle 结构与 `Win64/*.ofx` 二进制在不在；不加载任何插件代码。
+  完整宿主（原生 C++ 桥 + AGain 实测）见 [插件评估与路线图](docs/windows/plugins.md)。
+- 许可：VST3 SDK 3.8.0 起是 MIT（不再需要签 Steinberg 许可协议）；
+  OFX API 与 Support 库是 BSD-3-Clause。本仓库没有引入两者的代码。
+  “VST” 是 Steinberg Media Technologies GmbH 的注册商标，仅作格式名称使用。
+- VST2 已废弃、AAX / AU 是别家专用格式，一律不扫描、不加载。
+
 ## 字体
 
 随附阿里巴巴普惠体 3.0 Regular / Medium / SemiBold，文件保持原样。字体不使用 MIT，也不使用 OFL，按其原始授权声明使用与分发。
