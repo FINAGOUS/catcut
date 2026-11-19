@@ -57,3 +57,37 @@ export function validateFrameInterp(
 export function minterpolateFilter(targetFps: number): string {
   return `minterpolate=fps=${targetFps}:mi_mode=mci:mc_mode=aobmc:vsbmc=1`;
 }
+
+/**
+ * Whole-film frame-interp switch (W10, export level). The switch lives
+ * on the EXPORT, not the project, so the UI can toggle it per export
+ * without editing the project file — and so it can never leak into an
+ * export preset (presets carry codec/size/fps only).
+ *
+ * - `exportSwitch === undefined` (switch untouched): follow the
+ *   project's own `frameInterp` (back-compat: old projects keep
+ *   their behaviour, new projects default to off).
+ * - `exportSwitch === null` (switch OFF): force off even when the
+ *   project sets `frameInterp` — the export must then be identical
+ *   to a project that never set it (verify-frameinterp pins this
+ *   byte-for-byte).
+ * - `exportSwitch === { targetFps }` (switch ON): force on at that
+ *   target, overriding any project setting.
+ *
+ * The result is validated against the project fps, so a bad target
+ * fails here — before any ffmpeg work starts — instead of failing
+ * halfway through an export. The caller must also drive the
+ * encoder's -r from the result: minterpolate emits targetFps frames
+ * and a stale `-r <preset fps>` would drop them again at encode
+ * time (the pre-W10 trap: a 30 fps preset silently ate a 24->60
+ * interpolation).
+ */
+export function resolveExportFrameInterp(
+  projectFrameInterp: FrameInterpOptions | undefined,
+  exportSwitch: FrameInterpOptions | null | undefined,
+  projectFps: number,
+): FrameInterpOptions | undefined {
+  if (exportSwitch === null) return undefined;
+  const effective = exportSwitch === undefined ? projectFrameInterp : exportSwitch;
+  return validateFrameInterp(effective, projectFps);
+}
