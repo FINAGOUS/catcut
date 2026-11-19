@@ -80,6 +80,10 @@ import {
   type SubjectTrack,
 } from './smartcut.js';
 import {
+  resolveTransitionDurations,
+  validateTransitions,
+} from './transitions.js';
+import {
   beatFlashFilters,
   validateBeatFlash,
   validateBeatSpeed,
@@ -157,7 +161,7 @@ function audioAssemblyChains(
   inputs: string[],
   transitions: TransitionType[],
   durations: number[],
-  transitionDuration: number,
+  transitionDurations: number[],
   outLabel: string,
   tag: string,
 ): string[] {
@@ -168,13 +172,15 @@ function audioAssemblyChains(
     chains.push(`${inputs.join('')}concat=n=${n}:v=0:a=1${outLabel}`);
     return chains;
   }
-  const d = transitionDuration;
   let aPrev = inputs[0];
   let acc = durations[0];
   inputs.slice(1).forEach((next, k) => {
     const type = transitions[k];
     const isLast = k === n - 2;
     if (type !== 'cut') {
+      // W10: per-junction duration — the acrossfade overlap matches the
+      // video xfade overlap for this junction (same offset math).
+      const d = transitionDurations[k];
       const offset = Math.max(0, acc - d);
       const aX = isLast ? outLabel : `[${tag}x${k}]`;
       chains.push(`${aPrev}${next}acrossfade=d=${d}${aX}`);
@@ -1938,6 +1944,10 @@ export function buildFilterGraph(
   // The role-stem tail below reads this; the multitrack branch does
   // not use it (stems throw for multitrack projects).
   const durations = flat.map((f) => clipDuration(f.clip));
+  // W10: per-junction durations for the legacy video xfade chain, the
+  // audio acrossfade chain and the role stems below (all share this
+  // array; the multitrack branch never reads it).
+  const durs = resolveTransitionDurations(project);
   if (isMt) {
     // Multitrack assembly: video tracks composited bottom-to-top
     // onto a black canvas (gaps stay black), audio tracks mixed
@@ -1951,6 +1961,12 @@ export function buildFilterGraph(
     videoOut = assembled.videoOut;
     audioOut = assembled.audioOut;
   } else {
+  // W10: per-junction transition model — length / type / duration are
+  // validated here, before any legacy chain is built, so a bad
+  // transition fails fast instead of silently corrupting the export.
+  // (Multitrack projects never reach this branch; their arrivals are
+  // validated by validateMultitrackProject above.)
+  validateTransitions(project);
   const hasXfade = project.transitions.some((t) => t !== 'cut');
   // Mix inputs: role-processed audio when roles are in use — [arm<i>]
   // (the asplit mix branch) with stems, [ar<i>] without — else the
@@ -1965,14 +1981,15 @@ export function buildFilterGraph(
   } else {
   // Chained xfade. Offset of the k-th transition (0-based) is the
   // accumulated timeline duration before clip k+1, minus the overlaps already
-  // applied (each non-cut transition overlaps transitionDuration).
-  const d = project.transitionDuration;
+  // applied (each non-cut transition overlaps its OWN per-junction
+  // duration — W10; the legacy form just repeats the global duration).
   let vPrev = '[v0]';
   let acc = clipDuration(project.clips[0]);
   project.clips.slice(1).forEach((_, k) => {
     const type = project.transitions[k];
     const vNext = `[v${k + 1}]`;
     if (type !== 'cut') {
+      const d = durs[k];
       const offset = Math.max(0, acc - d);
       const vX = k === project.clips.length - 2 ? '[vout]' : `[vx${k}]`;
       chains.push(
@@ -2008,9 +2025,9 @@ export function buildFilterGraph(
     chains.push(`${videoOut}${minterpolateFilter(frameInterp.targetFps)}[vint]`);
     videoOut = '[vint]';
   }
-  // Audio assembly (mix): same offsets as the video xfade chain.
+  // Audio assembly (mix): same per-junction offsets as the video xfade chain.
   chains.push(
-    ...audioAssemblyChains(mixInputs, project.transitions, durations, project.transitionDuration, '[aout]', 'a'),
+    ...audioAssemblyChains(mixInputs, project.transitions, durations, durs, '[aout]', 'a'),
   );
   }
 
@@ -2056,7 +2073,7 @@ export function buildFilterGraph(
       });
       chains.push(
         ...audioAssemblyChains(
-          inputs, project.transitions, durations, project.transitionDuration, stemLabel, `s${j}`,
+          inputs, project.transitions, durations, durs, stemLabel, `s${j}`,
         ),
       );
     });
