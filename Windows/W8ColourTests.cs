@@ -355,9 +355,10 @@ namespace DogSC.Replica {
     bdoc.BeautyEnabled = true;
     bdoc.BeautyMaskPath = Path.Combine(Folder, "beauty-mask.mp4");
     bdoc.GradeNodes = ndoc.GradeNodes;
-    threw = false;
-    try { W8ColourFilters.Validate(bdoc); } catch { threw = true; }
-    Require(threw, "beauty + node graph together is rejected");
+    // W9：美颜 + 节点图不再互斥——Validate 通过，调色链里仍有节点 LUT，
+    // 导出走合成图（见 W9FixesTests 的真实导出）。旧的互斥报错已删。
+    W8ColourFilters.Validate(bdoc);
+    Require(W8ColourFilters.Chain(bdoc, false).Contains("lut3d="), "beauty + node graph validates and the chain still carries the node LUT");
     Require(W8ColourFilters.Chain(cdoc, true).Contains("chromakey") == false, "chain without chroma has no chromakey");
     var kdoc = StudioMedia.Import(chainSrc);
     kdoc.Chroma = new ChromaKey { Color = "0x00ff00" };
@@ -415,7 +416,7 @@ namespace DogSC.Replica {
     StudioRenderer.Export(edoc, expOut, new ExportOptions { PresetName = "test", Height = 240, Fps = 30, Codec = "h264", Crf = 18, Hdr = false, WriteChapters = false }, (v, s) => { }, CancellationToken.None);
     Require(File.Exists(expOut) && Math.Abs(StudioMedia.Import(expOut).Duration - 2) < 0.15, "full export with chroma key is 2.0s");
     Mark("STEP 11 full export with chroma OK");
-    File.WriteAllText(log, "PASS: node serial/parallel-multiply (0.31,0.25,0.19) + out-of-order topo + masked stage LUT (0.63,0.50,0.38) + mask PNG centre 255/corner 0 + cycle/duplicate/masked-reads-masked/dangling-masked/brightness-in-node/bad-blend rejected; slog3 anchors 0.18/0.90, rec709 OETF(0.18)=0.409, slog3->rec709 LUT 0.47, log100/hlg setparams+zscale, pq Hable, unknown space rejected; match (100,30,30)->(199,48,49) numeric + real lut3d pixel, strength 0 identity; track centre 0.25->0.5->0.75, lost parks, mask buffer centre/corner, mask video 2.0s; LUT library film filter/search/categories/favourite/duplicate/missing/bad-cube rejected, thumbnail 160x90; compare split left grey/right temp+1, wipe 0.25, still round-trip + tampered sidecar rejected + list 1; chroma filter 0.1 + despill green/blue, similarity 0/1.5 rejected, pixel pick green; scopes red luma 54.2/hue 0/sat 1.0, grey hue null, white highlight 1.0, black shadow 1.0, red/blue hue peaks 128/128, real frame + deterministic, scope PNGs; chain input+match+grade = 3 lut3d, plain chain == Grade.VideoFilter(), node+linear/beauty+node rejected, preview chroma vf, complex decoder detection; decoder frames: chroma corner black + centre red, tracked window inside B<230/outside B>250, masked node same; full chroma export 2.0s.\n");
+    File.WriteAllText(log, "PASS: node serial/parallel-multiply (0.31,0.25,0.19) + out-of-order topo + masked stage LUT (0.63,0.50,0.38) + mask PNG centre 255/corner 0 + cycle/duplicate/masked-reads-masked/dangling-masked/brightness-in-node/bad-blend rejected; slog3 anchors 0.18/0.90, rec709 OETF(0.18)=0.409, slog3->rec709 LUT 0.47, log100/hlg setparams+zscale, pq Hable, unknown space rejected; match (100,30,30)->(199,48,49) numeric + real lut3d pixel, strength 0 identity; track centre 0.25->0.5->0.75, lost parks, mask buffer centre/corner, mask video 2.0s; LUT library film filter/search/categories/favourite/duplicate/missing/bad-cube rejected, thumbnail 160x90; compare split left grey/right temp+1, wipe 0.25, still round-trip + tampered sidecar rejected + list 1; chroma filter 0.1 + despill green/blue, similarity 0/1.5 rejected, pixel pick green; scopes red luma 54.2/hue 0/sat 1.0, grey hue null, white highlight 1.0, black shadow 1.0, red/blue hue peaks 128/128, real frame + deterministic, scope PNGs; chain input+match+grade = 3 lut3d, plain chain == Grade.VideoFilter(), node+linear rejected, beauty+node validates (W9: composes instead of rejecting), preview chroma vf, complex decoder detection; decoder frames: chroma corner black + centre red, tracked window inside B<230/outside B>250, masked node same; full chroma export 2.0s.\n");
    }
    catch (Exception ex) { File.AppendAllText(log, "FAIL\n" + ex + "\n"); Mark("FAIL: " + ex.Message); Environment.ExitCode = 1; }
   }
