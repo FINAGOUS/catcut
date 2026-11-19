@@ -34,6 +34,9 @@ namespace DogSC.Replica {
  public class EditDocument {
   public string Format="dogsc-windows-editor"; public int Version=2; public string Name="未命名项目";
   public string Source; public int Width; public int Height; public double Duration; public bool Audio;public double FrameRate=30;
+  // W10 hotfix：时长未知标记（ffprobe 读不到任何可用时长时 Duration=0 且本位为 true，
+  // UI 显示“时长未知”，Validate 允许 0 时长项目保存/重开，不静默编一个假时长）。
+  public bool DurationUnknown;
   public Appearance Style=new Appearance(); public List<Cut> Cuts=new List<Cut>();public bool IndependentCursor=false;public CursorSettings Cursor=new CursorSettings();public List<OverlayClip> Overlays=new List<OverlayClip>();
   public List<PointerSample> Pointer=new List<PointerSample>(); public List<Zoom> Zooms=new List<Zoom>();
   public ScreenMotionState ScreenBase;public List<ScreenMotionClip> ScreenMotions=new List<ScreenMotionClip>();
@@ -115,7 +118,7 @@ namespace DogSC.Replica {
    if(File.Exists(path)) File.Replace(pending,path,null); else File.Move(pending,path);
   }
   public void Validate() {
-   if(Format!="dogsc-windows-editor"||Version!=2||!File.Exists(Source)||Width<2||Height<2||!Finite(Duration)||Duration<=0||Style==null||Cuts==null||Cuts.Count==0||Pointer==null||Zooms==null) throw new Exception("项目不完整、版本不支持，或找不到视频素材。");
+   if(Format!="dogsc-windows-editor"||Version!=2||!File.Exists(Source)||Width<2||Height<2||!Finite(Duration)||(Duration<=0&&!DurationUnknown)||Style==null||Cuts==null||Cuts.Count==0||Pointer==null||Zooms==null) throw new Exception("项目不完整、版本不支持，或找不到视频素材。");
    // W3：老项目文件缺新字段时补默认值（反序列化后为 null）。
    if(Subtitles==null)Subtitles=new List<SubtitleCue>(); if(string.IsNullOrEmpty(SubtitleSidecar))SubtitleSidecar="srt";
    if(Grade==null)Grade=new ColorGrade(); if(Grade.HslSat==null||Grade.HslSat.Length!=7)Grade.HslSat=new double[]{1,1,1,1,1,1,1}; if(Grade.HslLum==null||Grade.HslLum.Length!=7)Grade.HslLum=new double[7]; if(Grade.WheelHue==null||Grade.WheelHue.Length!=3)Grade.WheelHue=new double[3]; if(Grade.WheelSat==null||Grade.WheelSat.Length!=3)Grade.WheelSat=new double[]{1,1,1};
@@ -162,7 +165,7 @@ namespace DogSC.Replica {
    if(!Finite(FrameRate)||FrameRate<=0||FrameRate>240)FrameRate=30;
    // W9：片段速度下限 0.3（不是 0.5）——只有一键删静音的压缩模式会造出
    // 0.3x 片段；界面上的速度滑杆/按钮仍是 0.5–2×，用户手调不到 0.3。
-   if(Cuts.Any(c=>!Finite(c.Start)||!Finite(c.End)||!Finite(c.Speed)||c.Start<0||c.End>Duration+.1||(!c.Gap&&(c.End<=c.Start||c.Speed<.3||c.Speed>2))||(c.Gap&&(!Finite(c.GapDuration)||c.GapDuration<=0||c.End<c.Start)))) throw new Exception("项目的剪辑范围无效。");
+   if(Cuts.Any(c=>!Finite(c.Start)||!Finite(c.End)||!Finite(c.Speed)||c.Start<0||c.End>Duration+.1||(!c.Gap&&((c.End<=c.Start&&!(DurationUnknown&&Duration==0))||c.Speed<.3||c.Speed>2))||(c.Gap&&(!Finite(c.GapDuration)||c.GapDuration<=0||c.End<c.Start)))) throw new Exception("项目的剪辑范围无效。");
    // W3：字幕 / 调色 / 混音 / 代理 / 多机位校验（范围外的值直接拒绝，不静默修正）。
    foreach(var s in Subtitles)if(!Finite(s.Start)||!Finite(s.End)||s.Start<0||s.End<=s.Start||s.End>Length+.1||string.IsNullOrWhiteSpace(s.Text)&&string.IsNullOrWhiteSpace(s.Text2))throw new Exception("字幕时间或文本无效。");
    if(!Finite(Grade.Brightness)||Grade.Brightness<-1||Grade.Brightness>1||!Finite(Grade.Contrast)||Grade.Contrast<0||Grade.Contrast>2||!Finite(Grade.Saturation)||Grade.Saturation<0||Grade.Saturation>2||!Finite(Grade.Temperature)||Grade.Temperature<-1||Grade.Temperature>1||!Finite(Grade.Tint)||Grade.Tint<-1||Grade.Tint>1)throw new Exception("调色参数超出范围。");
@@ -302,20 +305,62 @@ namespace DogSC.Replica {
   }
  }
  static class StudioMedia {
+  // W10 hotfix：Import 全面加固（P0：真机导入 15 秒视频反复闪退、无 last-error.txt）。
+  // 原则：ffprobe/元数据里任何一项缺失或异常都不许变成未处理抛错——能估算就估算，
+  // 估算不了就用安全默认值 + DurationUnknown 标记；实在打不开的文件只抛一个带文件名
+  // 和原因的友好异常，由调用方弹框，绝不闪退。旧版的裸抛点：ffprobe exit 非 0 时裸抛
+  // stderr、format.duration="N/A" 时 double.Parse 抛错、streams 强转失败、无视频轨
+  // 时的裸中文抛错、avg_frame_rate="0/0" 时静默 30（这次显式走同一条回退并记下来）。
   public static EditDocument Import(string path) {
-   using(var p=Media.Start("ffprobe","-v error -show_entries stream=codec_type,width,height,avg_frame_rate:format=duration -of json "+Media.Q(path),true)) {
-    var err=p.StandardError.ReadToEndAsync();string text=p.StandardOutput.ReadToEnd();p.WaitForExit();if(p.ExitCode!=0)throw new Exception(err.Result);
-    var json=EditDocument.Serializer().Deserialize<Dictionary<string,object>>(text);var streams=(System.Collections.ArrayList)json["streams"];
-    var video=streams.Cast<Dictionary<string,object>>().FirstOrDefault(s=>(string)s["codec_type"]=="video");if(video==null)throw new Exception("文件中没有视频轨道。");
-    var format=(Dictionary<string,object>)json["format"];double duration=double.Parse(format["duration"].ToString(),CultureInfo.InvariantCulture);
-    var d=new EditDocument {Source=Path.GetFullPath(path),Name=Path.GetFileNameWithoutExtension(path),Width=Convert.ToInt32(video["width"]),Height=Convert.ToInt32(video["height"]),Duration=duration,Audio=streams.Cast<Dictionary<string,object>>().Any(s=>(string)s["codec_type"]=="audio")};
-    object rate;if(video.TryGetValue("avg_frame_rate",out rate)){var parts=rate.ToString().Split('/');double numerator,denominator;if(parts.Length==2&&double.TryParse(parts[0],NumberStyles.Float,CultureInfo.InvariantCulture,out numerator)&&double.TryParse(parts[1],NumberStyles.Float,CultureInfo.InvariantCulture,out denominator)&&denominator>0&&numerator>0)d.FrameRate=numerator/denominator;}
-    d.Cuts.Add(new Cut {Start=0,End=duration});
-    // W8：素材库主项就是源文件本身；子片段挂在这个主项下（只存引用）。
-    d.MediaLibrary.Add(new MediaLibraryItem { Id = "m1", Name = Path.GetFileNameWithoutExtension(path), File = Path.GetFullPath(path), Kind = "media", Duration = duration });
-    return d;
+   string name=string.IsNullOrEmpty(path)?"(未指定文件)":Path.GetFileName(path);
+   if(string.IsNullOrEmpty(path)||!File.Exists(path))throw new Exception("找不到要导入的文件："+name+"。");
+   string text,errText;
+   using(var p=Media.Start("ffprobe","-v error -show_entries stream=codec_type,width,height,avg_frame_rate,r_frame_rate,duration,nb_frames:format=duration -of json "+Media.Q(path),true)) {
+    var err=p.StandardError.ReadToEndAsync();text=p.StandardOutput.ReadToEnd();p.WaitForExit();errText=err.Result??"";
+    if(p.ExitCode!=0)throw new Exception("无法读取 "+name+"：ffprobe 识别失败（"+FirstLine(errText)+"）。文件可能损坏或格式不受支持。");
    }
+   Dictionary<string,object> json;
+   try{json=EditDocument.Serializer().Deserialize<Dictionary<string,object>>(text);}catch{throw new Exception("无法读取 "+name+"：媒体信息解析失败，文件可能损坏。");}
+   if(json==null)throw new Exception("无法读取 "+name+"：媒体信息为空，文件可能损坏。");
+   object streamsObj;var streams=new List<Dictionary<string,object>>();
+   if(json.TryGetValue("streams",out streamsObj)&&streamsObj is System.Collections.ArrayList){
+    foreach(var item in (System.Collections.ArrayList)streamsObj){var s=item as Dictionary<string,object>;if(s!=null)streams.Add(s);}
+   }
+   if(streams.Count==0)throw new Exception("无法导入 "+name+"：文件中没有可识别的音视频轨道。");
+   Dictionary<string,object> video=null,audio=null;
+   foreach(var s in streams){string t;if(!TryStr(s,"codec_type",out t))continue;if(t=="video"&&video==null)video=s;else if(t=="audio"&&audio==null)audio=s;}
+   if(video==null){
+    if(audio!=null)throw new Exception("无法导入 "+name+"：这是纯音频文件，没有视频轨道。CatCut 暂不支持只导入音频，请先把它和画面合成视频再导入。");
+    throw new Exception("无法导入 "+name+"：文件中没有视频轨道。");
+   }
+   int width,height;
+   if(!TryInt(video,"width",out width)||width<2||!TryInt(video,"height",out height)||height<2)
+    throw new Exception("无法导入 "+name+"：读不到有效的画面尺寸（宽/高缺失或异常）。");
+   // 时长：容器 duration → 视频流 duration → 帧数/帧率 → 0 + 时长未知标记。
+   double duration=0;bool durationUnknown=false;
+   object formatObj;Dictionary<string,object> format=null;
+   if(json.TryGetValue("format",out formatObj))format=formatObj as Dictionary<string,object>;
+   if(format!=null)duration=ParseDouble(format,"duration");
+   if(!(duration>0))duration=ParseDouble(video,"duration");
+   double fps=ParseRate(video,"avg_frame_rate");
+   if(!(fps>0))fps=ParseRate(video,"r_frame_rate");
+   if(!(duration>0)){
+    double frames=ParseDouble(video,"nb_frames");
+    if(frames>0&&fps>0)duration=frames/fps;
+   }
+   if(!(duration>0)){duration=0;durationUnknown=true;}
+   if(!(fps>0)||fps>240)fps=30;
+   var d=new EditDocument {Source=Path.GetFullPath(path),Name=Path.GetFileNameWithoutExtension(path),Width=width,Height=height,Duration=duration,Audio=audio!=null,FrameRate=fps,DurationUnknown=durationUnknown};
+   d.Cuts.Add(new Cut {Start=0,End=duration});
+   // W8：素材库主项就是源文件本身；子片段挂在这个主项下（只存引用）。
+   d.MediaLibrary.Add(new MediaLibraryItem { Id = "m1", Name = Path.GetFileNameWithoutExtension(path), File = Path.GetFullPath(path), Kind = "media", Duration = duration });
+   return d;
   }
+  static string FirstLine(string s){if(string.IsNullOrEmpty(s))return "无详细原因";foreach(var line in s.Split(new[]{'\r','\n'},StringSplitOptions.RemoveEmptyEntries)){var t=line.Trim();if(t.Length>0)return t.Length>160?t.Substring(0,160)+"…":t;}return "无详细原因";}
+  static bool TryStr(Dictionary<string,object> s,string key,out string v){v=null;object o;if(s==null||!s.TryGetValue(key,out o)||o==null)return false;v=o.ToString();return true;}
+  static bool TryInt(Dictionary<string,object> s,string key,out int v){v=0;object o;if(s==null||!s.TryGetValue(key,out o)||o==null)return false;try{v=Convert.ToInt32(o);return true;}catch{return false;}}
+  static double ParseDouble(Dictionary<string,object> s,string key){object o;double v;if(s==null||!s.TryGetValue(key,out o)||o==null)return 0;if(double.TryParse(o.ToString(),NumberStyles.Float,CultureInfo.InvariantCulture,out v)&&EditDocument.Finite(v))return v;return 0;}
+  static double ParseRate(Dictionary<string,object> s,string key){object o;if(s==null||!s.TryGetValue(key,out o)||o==null)return 0;var parts=o.ToString().Split('/');double n,dn;if(parts.Length==2&&double.TryParse(parts[0],NumberStyles.Float,CultureInfo.InvariantCulture,out n)&&double.TryParse(parts[1],NumberStyles.Float,CultureInfo.InvariantCulture,out dn)&&dn>0&&n>0)return n/dn;double v;if(double.TryParse(o.ToString(),NumberStyles.Float,CultureInfo.InvariantCulture,out v)&&v>0)return v;return 0;}
   public static void Run(string args,CancellationToken token) {
    using(var p=Media.Start("ffmpeg",args,false))using(token.Register(()=>{try{p.Kill();}catch{}})) {var errors=p.StandardError.ReadToEndAsync();p.StandardInput.Close();p.WaitForExit();token.ThrowIfCancellationRequested();if(p.ExitCode!=0)throw new Exception(errors.Result);}
   }
