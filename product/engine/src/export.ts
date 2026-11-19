@@ -217,7 +217,7 @@ export {
   validateTransitions,
 } from './transitions.js';
 export type { TransitionLibraryEntry, TransitionSpec } from './transitions.js';
-export { resolveTransitionDurations } from './project.js';
+export { resolveTransitionDurations, resolveTransitions } from './project.js';
 export {
   defaultPortraitModelPath,
   defaultPortraitScriptPath,
