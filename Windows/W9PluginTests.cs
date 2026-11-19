@@ -83,12 +83,24 @@ namespace DogSC.Replica {
     string emptyOfx = Path.Combine(ofxRoot, "Empty.ofx.bundle");
     Directory.CreateDirectory(Path.Combine(emptyOfx, "Contents"));
     Mark("STEP 2 fixtures built");
+    // 2b. 直接解析（不走文件系统）：解析与扫描分开验，坏了能定位到哪一层。
+    var direct = new PluginInfo();
+    PluginScanner.ParseModuleInfo(GvstModuleInfo, direct);
+    Require(direct.Classes.Count == 2 && direct.ModuleName == "GVst" && direct.SdkVersion == "VST 3.7.5", "direct ParseModuleInfo yields 2 classes, module GVst, SDK VST 3.7.5");
+    Require(direct.Classes[0].SubCategories.Count == 1 && direct.Classes[0].SubCategories[0] == "Fx", "direct parse keeps Sub Categories [Fx]");
+    bool threwParse = false;
+    try { PluginScanner.ParseModuleInfo("{not json", new PluginInfo()); } catch { threwParse = true; }
+    Require(threwParse, "direct parse of malformed JSON throws");
+    bool threwEmpty = false;
+    try { PluginScanner.ParseModuleInfo("{\"Name\": \"X\"}", new PluginInfo()); } catch { threwEmpty = true; }
+    Require(threwEmpty, "direct parse without Classes throws");
+    Mark("STEP 2b direct parse OK");
     // 3. 扫描：GVst / Legacy / NoMeta / Broken / Deep 找到，TooDeep 不找（两层上限）。
     var found = PluginScanner.ScanRoots(new[] { vst3Root }, new[] { ofxRoot });
     Require(found.Count == 7, "scan finds 7 bundles (got " + found.Count + ": " + string.Join(",", found.Select(p => p.BundleName()).ToArray()) + ")");
     var g = Find(found, "GVst");
     Require(g != null && g.Format == PluginFormat.Vst3, "GVst found as VST3");
-    Require(g.HasMetadata && g.Classes.Count == 2, "GVst has 2 classes from moduleinfo.json");
+    Require(g.HasMetadata && g.Classes.Count == 2, "GVst has 2 classes from moduleinfo.json (hasMeta=" + g.HasMetadata + ", classes=" + g.Classes.Count + ", metaErr=" + g.MetadataError + ")");
     Require(g.EffectCount == 1 && g.Name == "GVst", "GVst exposes 1 effect class, controller is not an effect (name " + g.Name + ")");
     Require(g.Classes[0].Category == "Audio Module Class" && g.Classes[0].SubCategories.Count == 1 && g.Classes[0].SubCategories[0] == "Fx", "GVst effect is Fx");
     Require(g.SdkVersion == "VST 3.7.5" && g.Version == "1.0.0.1", "GVst version 1.0.0.1 / SDK VST 3.7.5");
