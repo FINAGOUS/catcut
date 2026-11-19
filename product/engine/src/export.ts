@@ -120,6 +120,17 @@ export { generateAutoZoom, generateAutoZoomWithSilences, detectSilences, zoomSca
 export type { AutoZoomOptions, SilenceInterval } from './autozoom.js';
 export { renderMaskPng, renderFrameMaskPng, maskPixelSize, maskOverlayPos, maskSegments, maskAlpha, prepareClipMaskFiles, validateMask } from './mask.js';
 export type { MaskSegment } from './mask.js';
+export {
+  DEFAULT_POSITION_INTERPOLATION,
+  POSITION_MAX,
+  POSITION_MIN,
+  positionAt,
+  positionExpr,
+  positionNeedsStage,
+  positionOverlayExprs,
+  validatePositionKeyframes,
+} from './keyframes.js';
+export type { PositionInterpolation, PositionKeyframe } from './project.js';
 export type { MaskShape, MaskKeyframe, ClipMask } from './project.js';
 export { toSRT, parseSRT, subtitlesToASS, subtitlesToTextOverlays, countBoundaryErrors, validateWordTimes, formatSrtTime } from './subtitles.js';
 export type { SubtitleItem, SubtitleWord } from './subtitles.js';
