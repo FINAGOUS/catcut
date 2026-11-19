@@ -25,6 +25,7 @@ import type { DualSubtitles, HdrMode, QueueItem, SubtitleSidecarFormat } from '.
 import type { BeautyOptions } from './beauty.js';
 import type { BeatFlashOptions, BeatSpeedOptions } from './beat.js';
 import type { TimelineMarker, AdjustmentLayer, AlternateClip } from './timeline.js';
+import type { ClipAudition } from './auditions.js';
 import type { SilenceCutOptions } from './silencecut.js';
 import type { TextCutOptions } from './textcut.js';
 import type { RemixOptions } from './remix.js';
@@ -80,6 +81,7 @@ export type { SurroundLayout } from './surround.js';
 export type { MediaItem, MediaMetadata, MediaFilterRule } from './medialib.js';
 
 export type { TimelineMarker, AdjustmentLayer, AlternateClip } from './timeline.js';
+export type { ClipAudition, ClipAuditionOverride } from './auditions.js';
 export type { SilenceCutOptions } from './silencecut.js';
 export type { TextCutOptions } from './textcut.js';
 export type { RemixOptions } from './remix.js';
@@ -526,6 +528,18 @@ export interface Clip {
    * rebuilding the edit; the current source is parked in its slot.
    */
   alternates?: AlternateClip[];
+  /**
+   * Per-clip audition versions (W10, M4 §8.2 — extends `alternates`):
+   * named备选 versions of this clip (different source and/or edit:
+   * in/out, speed, effects — any Clip field except id and the
+   * audition bookkeeping itself). `activeAuditionId` selects the
+   * version the export renders; unset = the clip itself ("原片").
+   * Old projects carry neither field and open unchanged — the clip
+   * is its own single audition. See src/auditions.ts.
+   */
+  auditions?: ClipAudition[];
+  /** Id of the live audition in `auditions` (unset = the base clip). */
+  activeAuditionId?: string;
   /**
    * Audio-only clip (P3, M4 §8.2): the video was removed with linked
    * selection off (deleteClip, timeline.ts) — the audio keeps its
