@@ -1,11 +1,17 @@
 // Project model for the Windows screen-recording editor.
-// A project is a list of clips on one video track (v0.1). Each clip references
-// a source file and a time range inside it; speed, text and zoom are per-clip.
+// A project is a list of clips on one video track (v0.1, legacy) OR,
+// since the multitrack rewrite, a set of video + audio tracks
+// (Project.tracks). Each clip references a source file and a time
+// range inside it; speed, text and zoom are per-clip.
 // The model mirrors DogSC's concepts (clip in/out, speed, zoom keyframes,
 // text overlays, transitions) in a Windows/FFmpeg-native form.
 // P0 (M4): transitions extended, generic keyframes (opacity/rotation),
 // speed curves, text styles, audio fades/denoise/loudnorm, colour adjust.
 // P0b: reverse + freeze frame, subtitles (clip- and project-level).
+// Multitrack: Project.tracks (video/audio tracks, see below). A legacy
+// project (no tracks) is exactly one video track + linked audio:
+// normalizeToTracks (multitrack.ts) converts it, and the legacy render
+// path is untouched, so legacy exports are unchanged.
 
 import type { SubtitleItem } from './subtitles.js';
 import type { TextStylePreset } from './presets.js';
@@ -631,6 +637,121 @@ export type TransitionType =
   | 'fadeblack'
   | 'fadewhite';
 
+// ---------------------------------------------------------------------------
+// Multitrack model (true multi-track rewrite).
+//
+// A video track is a lane of clips placed at explicit track times
+// (`start`, seconds from the track head). Same-track clips may
+// overlap (the later-starting clip is on top within the track);
+// gaps render as black (video) / silence (audio). Tracks
+// stack bottom-to-top in array order: video track 0 is the bottom
+// layer, the last video track is on top. A clip on a video track
+// contributes its video AND its linked audio; a clip on an audio
+// track contributes audio only (its video is ignored) — that is
+// where music / narration / SFX live. A video track's `visible=false`
+// hides its video only; its linked audio still plays.
+// Track opacity is a static 0..1 multiplier on the whole track
+// (applied to alpha, so lower tracks show through); `blend` is an
+// FFmpeg blend mode applied to the track's full-canvas picture
+// (opaque sources; alpha is ignored on the blend path — see
+// multitrack.ts). `x`/`y` are pixel offsets of the track picture on
+// the canvas; `w`/`h` are fractions of the canvas (default 1) so a
+// track can be a PiP. `locked` is a UI hint only and never affects
+// the render. Audio tracks carry their own gain/pan/mute/solo; when
+// any audio track has solo, every non-solo audio track is muted.
+// Clip.opacity keyframes in multitrack mode fade toward TRANSPARENT
+// (lower tracks show through); in legacy single-track mode they
+// still fade toward black (there is nothing underneath).
+// ---------------------------------------------------------------------------
+
+/** Blend mode of a whole video track (FFmpeg blend all_mode names). */
+export type TrackBlendMode =
+  | 'normal'
+  | 'multiply'
+  | 'screen'
+  | 'overlay'
+  | 'darken'
+  | 'lighten'
+  | 'add';
+
+/**
+ * Cross-track transition: how a video-track clip arrives.
+ * Two cases, decided by whether the clip overlaps the previous
+ * clip ON THE SAME TRACK:
+ * - Overlap (the normalized-legacy case): the clip crossfades with
+ *   the previous same-track clip via xfade — all 9 transition types
+ *   are supported and the duration is the overlap (or less).
+ * - No overlap: the clip arrives over the composite of the LOWER
+ *   tracks — only fade/dissolve (alpha ramp 0 -> 1) and
+ *   fadeblack/fadewhite (picture fades in from solid black/white)
+ *   are supported; wipe/slide/circle need a spatial wipe between
+ *   two full composites and are rejected there. transitionIn is
+ *   video-only; the clip's audio starts at the clip start.
+ */
+export interface CrossTrackTransition {
+  type: TransitionType;
+  /** Transition length in seconds, > 0 and <= the clip's duration
+   *  (and <= the same-track overlap when the clip overlaps). */
+  duration: number;
+}
+
+/** One clip placed on a video track. `start` is track time in seconds. */
+export interface VideoTrackClip extends Clip {
+  /** Track-local start time in seconds (>= 0). */
+  start: number;
+  /** How this clip arrives over the composite underneath it. */
+  transitionIn?: CrossTrackTransition;
+}
+
+export interface VideoTrack {
+  /** Track id, non-empty and unique within the project. */
+  id: string;
+  name?: string;
+  clips: VideoTrackClip[];
+  /** Static track opacity, 0..1 (default 1). */
+  opacity?: number;
+  /** Blend mode against the composite below (default 'normal'). */
+  blend?: TrackBlendMode;
+  /** Pixel offset of the track picture on the canvas (default 0). */
+  x?: number;
+  /** Pixel offset of the track picture on the canvas (default 0). */
+  y?: number;
+  /** Track width as a fraction of the canvas width (default 1). */
+  w?: number;
+  /** Track height as a fraction of the canvas height (default 1). */
+  h?: number;
+  /** Hidden tracks render nothing (video only; linked audio plays). */
+  visible?: boolean;
+  /** UI lock hint only; never affects the render. */
+  locked?: boolean;
+}
+
+/** One clip placed on an audio track. `start` is track time in seconds. */
+export interface AudioTrackClip extends Clip {
+  /** Track-local start time in seconds (>= 0). */
+  start: number;
+}
+
+export interface AudioTrack {
+  /** Track id, non-empty and unique within the project. */
+  id: string;
+  name?: string;
+  clips: AudioTrackClip[];
+  /** Static track gain in dB, -60..+12 (default 0). */
+  gainDb?: number;
+  /** Stereo balance, -1 (full left) .. +1 (full right). Default 0. */
+  pan?: number;
+  /** Mute this track in the mix. */
+  mute?: boolean;
+  /** Solo this track: every audio track WITHOUT solo is muted. */
+  solo?: boolean;
+}
+
+export interface ProjectTracks {
+  video?: VideoTrack[];
+  audio?: AudioTrack[];
+}
+
 export interface Project {
   version: 1;
   width: number;
@@ -641,6 +762,15 @@ export interface Project {
   transitions: TransitionType[];
   /** Transition duration in seconds (used by every non-'cut' transition). */
   transitionDuration: number;
+  /**
+   * Multitrack timeline. When present and non-empty it IS the
+   * timeline: the legacy `clips`/`transitions` list is then ignored
+   * by the render (kept only so old readers still see the clips).
+   * When absent the project is legacy single-track and renders
+   * exactly as before (see normalizeToTracks in multitrack.ts for
+   * the equivalent track form).
+   */
+  tracks?: ProjectTracks;
   /**
    * Project-level subtitles, PROJECT time, burned with the ASS filter
    * (karaoke word highlight) after the timeline is assembled.
@@ -863,8 +993,40 @@ export function clipBaseDuration(clip: Clip): number {
   );
 }
 
-/** Total timeline duration, accounting for transition overlaps. */
+/** True when the project carries a multitrack timeline. */
+export function hasTracks(project: Project): boolean {
+  return (
+    (project.tracks?.video?.length ?? 0) > 0 ||
+    (project.tracks?.audio?.length ?? 0) > 0
+  );
+}
+
+/** End time of the latest clip on a video track (0 when empty). */
+export function videoTrackDuration(track: VideoTrack): number {
+  let end = 0;
+  for (const c of track.clips ?? []) end = Math.max(end, c.start + clipDuration(c));
+  return end;
+}
+
+/** End time of the latest clip on an audio track (0 when empty). */
+export function audioTrackDuration(track: AudioTrack): number {
+  let end = 0;
+  for (const c of track.clips ?? []) end = Math.max(end, c.start + clipDuration(c));
+  return end;
+}
+
+/** Total timeline duration, accounting for transition overlaps.
+ *  Multitrack: the longest video track (audio tracks only when no
+ *  video track has any content). Legacy: the sequential clip list
+ *  minus the non-'cut' transition overlaps — unchanged. */
 export function projectDuration(project: Project): number {
+  if (hasTracks(project)) {
+    const vEnds = (project.tracks?.video ?? []).map(videoTrackDuration);
+    const vMax = vEnds.length > 0 ? Math.max(...vEnds) : 0;
+    if (vMax > 0) return vMax;
+    const aEnds = (project.tracks?.audio ?? []).map(audioTrackDuration);
+    return aEnds.length > 0 ? Math.max(...aEnds) : 0;
+  }
   let total = project.clips.reduce((sum, c) => sum + clipDuration(c), 0);
   // Every non-'cut' transition is an xfade that overlaps transitionDuration.
   const overlaps = project.transitions.filter((t) => t !== 'cut').length;
