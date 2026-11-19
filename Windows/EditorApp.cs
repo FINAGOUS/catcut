@@ -229,7 +229,7 @@ namespace DogSC.Replica {
     else{Note(Doc.Pointer.Count==0?"当前素材没有鼠标轨迹，可添加手动缩放，并调整焦点。":"点击时间线上的缩放片段，可以修改范围、倍率和过渡时长。");inspector.Children.Add(UI.Button("＋ 添加手动缩放",AddZoom));}
     BuildFlashSection();BuildMorphSection();BuildStabilizeSection();BuildSceneCutSection();
    }else if(tab=="开场"){Section("开场动效");Buttons(new[]{"无","轻柔进入"},a.Opening>0?"轻柔进入":"无",v=>{Checkpoint();a.Opening=v=="无"?0:.8;Changed();BuildInspector();});if(a.Opening>0)Slider("动效时长",.2,2,a.Opening," 秒",v=>a.Opening=v);Note("淡入与轻微缩放会同时用于播放预览和导出。");}
-   else if(tab=="声音"){Section("素材音轨");if(Doc.Audio){Slider("音量",0,1,a.Volume,"",v=>{a.Volume=v;audio.Volume=v;});Note("音轨随片段裁剪、重排和变速同步导出。");}else Note("当前素材没有音轨。新录制时可从录制条选择麦克风。");BuildAudioTypeSection();BuildSilenceCutSection();BuildRepairSection();BuildEqSection();BuildCompressorSection();BuildVoiceChangeSection();BuildVocalSepSection();BuildTtsSection();BuildSurroundSection();BuildTextCutSection();BuildRemixSection();}
+   else if(tab=="声音"){Section("素材音轨");if(Doc.Audio){Slider("音量",0,1,a.Volume,"",v=>{a.Volume=v;audio.Volume=v;});Note("音轨随片段裁剪、重排和变速同步导出。");}else Note("当前素材没有音轨。新录制时可从录制条选择麦克风。");BuildAudioTypeSection();BuildSilenceCutSection();BuildRepairSection();BuildEqSection();BuildCompressorSection();BuildVoiceChangeSection();BuildVocalSepSection();BuildTtsSection();BuildSurroundSection();BuildTextCutSection();BuildRemixSection();BuildPluginSection();}
   }
   void Ratios(){if(Doc==null)return;Menu(Find<Button>("Ratio"),new[]{"适应","16:9","4:3","1:1","9:16"},i=>{Checkpoint();Doc.Style.Ratio=new[]{"适应","16:9","4:3","1:1","9:16"}[i];Changed();});}
   void Presets(){PresetGallery();}
