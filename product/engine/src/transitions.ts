@@ -26,12 +26,13 @@ import {
   clipDuration,
   hasTracks,
   resolveTransitionDurations,
+  resolveTransitions,
   type Project,
   type TransitionType,
 } from './project.js';
 
 /** Re-exported for graph builders that only import this module. */
-export { resolveTransitionDurations } from './project.js';
+export { resolveTransitionDurations, resolveTransitions } from './project.js';
 
 /** Per-junction transition duration bounds, seconds (same range the
  *  template validator already used: templates.ts checkNumber 0.1..5). */
@@ -128,22 +129,27 @@ export function libraryEntry(id: TransitionType): TransitionLibraryEntry | undef
 
 /**
  * Zip a project into per-junction specs (type + resolved duration).
- * Length = transitions.length. A 'cut' spec keeps its listed duration
+ * Length = clips-1 (missing junctions resolve to 'cut', see
+ * resolveTransitions). A 'cut' spec keeps its listed duration
  * for display, but the render ignores it (a cut never overlaps).
  */
 export function transitionSpecs(project: Project): TransitionSpec[] {
+  const types = resolveTransitions(project);
   const durs = resolveTransitionDurations(project);
-  return project.transitions.map((type, k) => ({ type, duration: durs[k] }));
+  return types.map((type, k) => ({ type, duration: durs[k] }));
 }
 
 /**
  * Validate a legacy project's transitions. Multitrack projects are
  * skipped: their legacy transitions are validateMultitrackProject's
- * business (it rejects any non-'cut' entry). Throws on the first
- * problem:
- * - transitions.length !== clips.length - 1
- * - transitionDurations present with the wrong length, or a
- *   non-finite entry
+ * business (it rejects any non-'cut' entry). Length rule follows the
+ * engine's established convention: a SHORT transitions array means
+ * "the rest are cuts" (verify-p1c exports 16 clips with
+ * transitions: []), so only a LONGER array is rejected. Throws on
+ * the first problem:
+ * - transitions.length > clips-1, or transitionDurations present
+ *   with more entries than there are junctions
+ * - a non-finite transitionDurations entry
  * - unknown transition type
  * - a non-'cut' junction whose duration is outside 0.1..5 s, or
  *   longer than the shorter of its two adjacent clips (xfade would
@@ -158,15 +164,15 @@ export function validateTransitions(project: Project): void {
   if (hasTracks(project)) return;
   const n = project.clips.length;
   const want = Math.max(0, n - 1);
-  if (project.transitions.length !== want) {
+  if (project.transitions.length > want) {
     throw new Error(
-      `project has ${n} clips but ${project.transitions.length} transitions (want ${want})`,
+      `project has ${n} clips but ${project.transitions.length} transitions (want at most ${want})`,
     );
   }
   if (project.transitionDurations !== undefined) {
-    if (project.transitionDurations.length !== project.transitions.length) {
+    if (project.transitionDurations.length > want) {
       throw new Error(
-        `project has ${project.transitions.length} transitions but ` +
+        `project has ${want} junctions but ` +
           `${project.transitionDurations.length} transitionDurations`,
       );
     }
@@ -177,9 +183,10 @@ export function validateTransitions(project: Project): void {
       }
     }
   }
+  const types = resolveTransitions(project);
   const durs = resolveTransitionDurations(project);
   const known = new Set<string>(TRANSITION_TYPES);
-  project.transitions.forEach((type, k) => {
+  types.forEach((type, k) => {
     if (!known.has(type)) {
       throw new Error(`transition ${k}: unknown transition type ${JSON.stringify(type)}`);
     }
