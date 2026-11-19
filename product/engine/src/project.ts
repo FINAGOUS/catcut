@@ -763,6 +763,24 @@ export interface Project {
   /** Transition duration in seconds (used by every non-'cut' transition). */
   transitionDuration: number;
   /**
+   * Per-junction transition durations (W10, legacy path only):
+   * transitionDurations[i] is the duration of the transition between
+   * clips[i] and clips[i+1], overriding transitionDuration for that
+   * junction only. Length must equal transitions.length when present;
+   * absent = every junction uses transitionDuration (the legacy form,
+   * still fully supported). A 'cut' junction ignores its duration (a
+   * cut never overlaps). Multitrack projects do not use this field:
+   * their arrivals are per-clip `transitionIn` (already per-clip);
+   * normalizeToTracks converts this field into transitionIn, so the
+   * durations survive the legacy -> track conversion. Validated by
+   * validateTransitions() (transitions.ts): 0.1..5 s and at most the
+   * shorter of the two adjacent clip durations — a longer duration
+   * silently corrupts the xfade offset math (measured 2026-11-19:
+   * 2.5 s transition on 2 s clips exports with a 0.50 s duration
+   * error and no failure), so it is rejected, not clamped.
+   */
+  transitionDurations?: number[];
+  /**
    * Multitrack timeline. When present and non-empty it IS the
    * timeline: the legacy `clips`/`transitions` list is then ignored
    * by the render (kept only so old readers still see the clips).
@@ -1015,6 +1033,21 @@ export function audioTrackDuration(track: AudioTrack): number {
   return end;
 }
 
+/**
+ * Per-junction transition durations (W10): transitionDurations[i] when
+ * present, else the legacy global transitionDuration for every junction.
+ * Always returns a fresh array of length transitions.length. Does not
+ * validate — use validateTransitions() (transitions.ts) for that.
+ * Multitrack projects: their transitions are neutralised to all 'cut'
+ * by normalizeToTracks, so this just returns the global duration.
+ */
+export function resolveTransitionDurations(project: Project): number[] {
+  if (project.transitionDurations !== undefined) {
+    return project.transitionDurations.slice();
+  }
+  return project.transitions.map(() => project.transitionDuration);
+}
+
 /** Total timeline duration, accounting for transition overlaps.
  *  Multitrack: the longest video track (audio tracks only when no
  *  video track has any content). Legacy: the sequential clip list
@@ -1027,8 +1060,14 @@ export function projectDuration(project: Project): number {
     const aEnds = (project.tracks?.audio ?? []).map(audioTrackDuration);
     return aEnds.length > 0 ? Math.max(...aEnds) : 0;
   }
-  let total = project.clips.reduce((sum, c) => sum + clipDuration(c), 0);
-  // Every non-'cut' transition is an xfade that overlaps transitionDuration.
-  const overlaps = project.transitions.filter((t) => t !== 'cut').length;
-  return total - overlaps * project.transitionDuration;
+  const total = project.clips.reduce((sum, c) => sum + clipDuration(c), 0);
+  // Every non-'cut' transition is an xfade that overlaps its OWN
+  // per-junction duration (W10); a 'cut' junction overlaps nothing
+  // even when a per-junction duration is listed for it.
+  const durs = resolveTransitionDurations(project);
+  const overlaps = project.transitions.reduce(
+    (sum, t, k) => sum + (t !== 'cut' ? durs[k] : 0),
+    0,
+  );
+  return total - overlaps;
 }
