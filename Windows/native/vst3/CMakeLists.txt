@@ -38,7 +38,26 @@ set(VST3_SDK_LIBS
   ${VST3_SDK_LIB_base}
   ${VST3_SDK_LIB_pluginterfaces})
 
-set(BRIDGE_SOURCES vst3bridge.cpp wavfile.cpp)
+# 注意：sdk_hosting.lib 里没有 PlugProvider 和 Module::create——
+# 3.8.0 的 smtg_create_public_sdk_hosting_target 只编了 connectionproxy /
+# eventlist / hostclasses / module / parameterchanges / pluginterfacesupport /
+# processdata / stringconvert / vstinitiids；PlugProvider 在 plugprovider.cpp，
+# Module::create 在平台文件 module_win32.cpp（Windows）里。SDK 自己的 audiohost
+# 和 editorhost 也是把这两个文件直接编进可执行文件，照抄这个做法。
+set(SDK_HOSTING_EXTRA_SOURCES
+  ${VST3_SDK_ROOT}/public.sdk/source/vst/hosting/plugprovider.cpp)
+if(WIN32)
+  list(APPEND SDK_HOSTING_EXTRA_SOURCES
+    ${VST3_SDK_ROOT}/public.sdk/source/vst/hosting/module_win32.cpp)
+elseif(APPLE)
+  list(APPEND SDK_HOSTING_EXTRA_SOURCES
+    ${VST3_SDK_ROOT}/public.sdk/source/vst/hosting/module_mac.mm)
+else()
+  list(APPEND SDK_HOSTING_EXTRA_SOURCES
+    ${VST3_SDK_ROOT}/public.sdk/source/vst/hosting/module_linux.cpp)
+endif()
+
+set(BRIDGE_SOURCES vst3bridge.cpp wavfile.cpp ${SDK_HOSTING_EXTRA_SOURCES})
 
 # 静态形态：给宿主 exe 链接（不依赖 DLL 搜索路径）。
 add_library(vst3bridge_static STATIC ${BRIDGE_SOURCES})
