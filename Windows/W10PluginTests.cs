@@ -206,20 +206,24 @@ namespace DogSC.Replica {
     bool threw = false;
     try { PluginHost.ProcessStem(Path.Combine(Folder, "NoSuch.vst3"), inWav, Path.Combine(Folder, "x.wav"), 48000, null); } catch { threw = true; }
     Require(threw, "不存在的插件路径抛错");
+    Mark("STEP 6a missing plugin throws OK");
     string monoWav = Path.Combine(Folder, "sine-mono.wav");
     WriteMonoWav(monoWav, 48000, 2, t => 0.5 * Math.Sin(2 * Math.PI * 440 * t));
     threw = false; string monoErr = "";
     try { PluginHost.ProcessStem(again, monoWav, Path.Combine(Folder, "y.wav"), 48000, null); } catch (Exception ex) { threw = true; monoErr = ex.Message; }
     Require(threw && monoErr.Contains("立体声"), "单声道 wav 被拒且理由提立体声（got: " + monoErr.Substring(0, Math.Min(80, monoErr.Length)) + ")");
+    Mark("STEP 6b mono rejected as non-stereo OK");
     string fake = Path.Combine(Folder, "Fake.vst3");
     Directory.CreateDirectory(Path.Combine(Path.Combine(fake, "Contents"), "x86_64-win"));
     File.WriteAllText(Path.Combine(Path.Combine(Path.Combine(fake, "Contents"), "x86_64-win"), "Fake.vst3"), "not a real plugin binary");
     threw = false;
     try { PluginHost.ProcessStem(fake, inWav, Path.Combine(Folder, "z.wav"), 48000, null); } catch { threw = true; }
     Require(threw, "文本假插件加载抛错（且主测试进程还活着——子进程隔离）");
+    Mark("STEP 6c fake text plugin throws OK");
     threw = false;
     try { PluginHost.RunHostExe(Path.Combine(Folder, "NoSuchHost.exe"), "version", 5000); } catch (Exception ex) { threw = true; Require(ex.Message.Contains("桥子进程缺失"), "缺桥子进程的报错要指名（got: " + ex.Message.Substring(0, Math.Min(60, ex.Message.Length)) + ")"); }
     Require(threw, "缺桥子进程抛错");
+    Mark("STEP 6d missing host exe throws OK");
     Mark("STEP 6 honest errors OK (missing plugin / mono rejected as non-stereo / fake text plugin / missing host exe)");
     // 7. 进程内宿主仍未建：接缝继续诚实拒绝，别让人误以为两条路都通了。
     bool seamThrew = false;
