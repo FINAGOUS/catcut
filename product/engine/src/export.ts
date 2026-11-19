@@ -207,6 +207,18 @@ export {
 } from './templates.js';
 export type { ApplyTemplateOptions, Template } from './templates.js';
 export {
+  libraryEntry,
+  TRANSITION_DURATION_MAX,
+  TRANSITION_DURATION_MIN,
+  TRANSITION_LIBRARY,
+  TRANSITION_LIBRARY_IDS,
+  TRANSITION_TYPES,
+  transitionSpecs,
+  validateTransitions,
+} from './transitions.js';
+export type { TransitionLibraryEntry, TransitionSpec } from './transitions.js';
+export { resolveTransitionDurations, resolveTransitions } from './project.js';
+export {
   defaultPortraitModelPath,
   defaultPortraitScriptPath,
   PORTRAIT_SETUP,

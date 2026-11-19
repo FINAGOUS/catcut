@@ -763,6 +763,26 @@ export interface Project {
   /** Transition duration in seconds (used by every non-'cut' transition). */
   transitionDuration: number;
   /**
+   * Per-junction transition durations (W10, legacy path only):
+   * transitionDurations[i] is the duration of the transition between
+   * clips[i] and clips[i+1], overriding transitionDuration for that
+   * junction only. Aligned with the resolved junctions (see
+   * resolveTransitionDurations): entries past the last junction are
+   * ignored, missing entries fall back to transitionDuration.
+   * Absent = every junction uses transitionDuration (the legacy form,
+   * still fully supported). A 'cut' junction ignores its duration (a
+   * cut never overlaps). Multitrack projects do not use this field:
+   * their arrivals are per-clip `transitionIn` (already per-clip);
+   * normalizeToTracks converts this field into transitionIn, so the
+   * durations survive the legacy -> track conversion. Validated by
+   * validateTransitions() (transitions.ts): 0.1..5 s and at most the
+   * shorter of the two adjacent clip durations — a longer duration
+   * silently corrupts the xfade offset math (measured 2026-11-19:
+   * 2.5 s transition on 2 s clips exports with a 0.50 s duration
+   * error and no failure), so it is rejected, not clamped.
+   */
+  transitionDurations?: number[];
+  /**
    * Multitrack timeline. When present and non-empty it IS the
    * timeline: the legacy `clips`/`transitions` list is then ignored
    * by the render (kept only so old readers still see the clips).
@@ -1015,6 +1035,38 @@ export function audioTrackDuration(track: AudioTrack): number {
   return end;
 }
 
+/**
+ * Per-junction transition types (W10): project.transitions padded
+ * with 'cut' to length clips-1. The engine's established convention
+ * is that a short transitions array means "the rest are cuts"
+ * (verify-p1c exports 16 clips with transitions: []); only a
+ * LONGER array is malformed (rejected by validateTransitions).
+ * Always returns a fresh array.
+ */
+export function resolveTransitions(project: Project): TransitionType[] {
+  const want = Math.max(0, project.clips.length - 1);
+  const out = project.transitions.slice(0, want);
+  while (out.length < want) out.push('cut');
+  return out;
+}
+
+/**
+ * Per-junction transition durations (W10): transitionDurations[i] when
+ * present, else the legacy global transitionDuration for every junction.
+ * Aligned with resolveTransitions: missing entries fall back to the
+ * global duration, entries past the last junction are ignored.
+ * Always returns a fresh array of length clips-1. Does not validate —
+ * use validateTransitions() (transitions.ts) for that.
+ */
+export function resolveTransitionDurations(project: Project): number[] {
+  const want = Math.max(0, project.clips.length - 1);
+  const out: number[] = [];
+  for (let k = 0; k < want; k++) {
+    out.push(project.transitionDurations?.[k] ?? project.transitionDuration);
+  }
+  return out;
+}
+
 /** Total timeline duration, accounting for transition overlaps.
  *  Multitrack: the longest video track (audio tracks only when no
  *  video track has any content). Legacy: the sequential clip list
@@ -1027,8 +1079,16 @@ export function projectDuration(project: Project): number {
     const aEnds = (project.tracks?.audio ?? []).map(audioTrackDuration);
     return aEnds.length > 0 ? Math.max(...aEnds) : 0;
   }
-  let total = project.clips.reduce((sum, c) => sum + clipDuration(c), 0);
-  // Every non-'cut' transition is an xfade that overlaps transitionDuration.
-  const overlaps = project.transitions.filter((t) => t !== 'cut').length;
-  return total - overlaps * project.transitionDuration;
+  const total = project.clips.reduce((sum, c) => sum + clipDuration(c), 0);
+  // Every non-'cut' transition is an xfade that overlaps its OWN
+  // per-junction duration (W10); a 'cut' junction overlaps nothing
+  // even when a per-junction duration is listed for it. Missing
+  // junctions resolve to 'cut' (see resolveTransitions).
+  const types = resolveTransitions(project);
+  const durs = resolveTransitionDurations(project);
+  const overlaps = types.reduce(
+    (sum, t, k) => sum + (t !== 'cut' ? durs[k] : 0),
+    0,
+  );
+  return total - overlaps;
 }
