@@ -114,9 +114,10 @@ std::string jsonStr (const std::string& s)
     return "\"" + jsonEscape (s) + "\"";
 }
 
-// 最小 IComponentHandler：离线宿主不需要 UI 编辑回调，
-// 但 AGain 的 setActive 会发文本消息，组件要一个非空 handler 才走得通。
-// 全部返回 kResultOk，不做任何事；插件从 UI 发起的 performEdit 在离线模式下不会发生。
+// 最小 IComponentHandler：只给控制器用（IEditController::setComponentHandler）。
+// 离线宿主不需要 UI 编辑回调，全部返回 kResultOk；插件从 UI 发起的 performEdit
+// 在离线模式下不会发生。组件侧没有 setComponentHandler，AGain 的 sendTextMessage
+// 走 ConnectionProxy 到控制器，不经过 handler。
 class BridgeComponentHandler : public U::Implements<U::Directly<IComponentHandler>>
 {
 public:
@@ -334,7 +335,7 @@ VST3BRIDGE_API int32_t vst3_load (const char* utf8Path, int64_t* outHandle, char
         auto module = VST3::Hosting::Module::create (utf8Path, error);
         if (!module)
         {
-            setErr (errBuf, errBufSize, "加载 VST3 模块失败：" + utf8Path + "。" + error);
+            setErr (errBuf, errBufSize, std::string ("加载 VST3 模块失败：") + utf8Path + "。" + error);
             return kErrLoad;
         }
         auto factory = module->getFactory ();
@@ -374,7 +375,9 @@ VST3BRIDGE_API int32_t vst3_load (const char* utf8Path, int64_t* outHandle, char
             return kErrLoad;
         }
         bridge->handler = owned (new BridgeComponentHandler ());
-        bridge->component->setComponentHandler (bridge->handler);
+        // 注意：setComponentHandler 只在 IEditController 接口上有，IComponent 没有。
+        // 组件侧发消息（AGain::setActive 的 sendTextMessage）走 PlugProvider 已接好的
+        // ConnectionProxy 到控制器，不需要 handler；handler 只给控制器。
         if (bridge->controller)
             bridge->controller->setComponentHandler (bridge->handler);
         bridge->processor = U::cast<IAudioProcessor> (bridge->component);
@@ -545,9 +548,19 @@ VST3BRIDGE_API int32_t vst3_set_param (int64_t handle, int32_t paramId, double n
     try
     {
         // 同步控制器状态（以后做状态保存/恢复靠它），同时记下来每块排队。
-        b->controller->beginEditFromHost (paramId);
-        b->controller->setParamNormalized (paramId, normalized);
-        b->controller->endEditFromHost (paramId);
+        // begin/endEditFromHost 在 IEditControllerHostEditing 可选接口上，不在
+        // IEditController 上；插件没实现它时只调 setParamNormalized。
+        FUnknownPtr<IEditControllerHostEditing> hostEditing (b->controller);
+        if (hostEditing.getInterface () != nullptr)
+        {
+            hostEditing->beginEditFromHost (paramId);
+            b->controller->setParamNormalized (paramId, normalized);
+            hostEditing->endEditFromHost (paramId);
+        }
+        else
+        {
+            b->controller->setParamNormalized (paramId, normalized);
+        }
         b->params[paramId] = normalized;
         return kOk;
     }
