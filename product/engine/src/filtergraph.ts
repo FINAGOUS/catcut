@@ -32,6 +32,11 @@ import {
   type FlatClip,
 } from './multitrack.js';
 import { subtitlesToTextOverlays } from './subtitles.js';
+import {
+  positionNeedsStage,
+  positionOverlayExprs,
+  validatePositionKeyframes,
+} from './keyframes.js';
 import { hdrVideoFilter, type HdrMode } from './deliver.js';
 import { TEXT_PRESETS } from './presets.js';
 import { maskOverlayPos, maskSegments } from './mask.js';
@@ -697,7 +702,8 @@ function drawtextFilter(
  * Order: segment trim/speed (+reverse) -> freeze stage -> smart reframe
  * (crop on the SOURCE stream, before scale/pad) -> scale/pad/fps ->
  * zoom -> rotation -> colour -> LUT -> opacity (split + black branch +
- * blend) -> text (+ clip subtitles).
+ * blend) -> text (+ clip subtitles) -> position (overlay onto a
+ * canvas; the whole finished clip picture moves as one placed layer).
  * freezeAt is clip-local OUTPUT time (after speed, after reverse).
  * The reframe crop sits BEFORE scale/pad on purpose: scale/pad
  * letterboxes a landscape source into a vertical project, so a crop
@@ -1068,6 +1074,17 @@ function clipVideoChains(
   const picChain =
     tailFilters.length > 0 ? `${parts[0]}${tailFilters.join(',')}` : `${parts[0]}null`;
 
+  // Position keyframes (W10): validated here, fail fast like
+  // beatFlash (a key past the clip duration or off the [-1, 2]
+  // centre range throws instead of rendering a wrong move). When no
+  // stage is needed the output label below stays exactly [v<idx>],
+  // so a clip without position keys builds a byte-identical graph.
+  const posKeys = clip.position ?? [];
+  const posMode = clip.positionInterpolation ?? 'linear';
+  validatePositionKeyframes(posKeys, clip.id, clipDuration(clip));
+  const posActive = positionNeedsStage(posKeys);
+  const prePos = posActive ? `[vpp${idx}]` : `[v${idx}]`;
+
   // Beat-flash (P3): white the frame for `frames` frames at each
   // output-time beat (drawbox with enable=between — probe 2026-11-18:
   // fade=t=in whites everything BEFORE the beat, drawbox does not).
@@ -1142,9 +1159,35 @@ function clipVideoChains(
     cur = applyOutlineStage(chains, cur, clip, idx, project, maskCtx);
   }
   if (textFilters.length > 0 || flashFilters.length > 0) {
-    chains.push(`${cur}${[...textFilters, ...flashFilters].join(',')}[v${idx}]`);
+    chains.push(`${cur}${[...textFilters, ...flashFilters].join(',')}${prePos}`);
   } else {
-    chains.push(`${cur}null[v${idx}]`);
+    chains.push(`${cur}null${prePos}`);
+  }
+  if (posActive) {
+    // Position stage: the finished clip picture overlaid onto a
+    // canvas of the project size, with the top-left corner driven by
+    // the animated centre (see positionOverlayExprs in keyframes.ts).
+    // overlay x/y are evaluated per frame (t = clip-local time; both
+    // inputs start at PTS 0). Legacy single track: the canvas is
+    // opaque black, so the uncovered area stays black. Multitrack
+    // (opacityToAlpha, i.e. isMt at the call site): the canvas is
+    // transparent (black@0 + yuva420p) and the picture is composited
+    // with its alpha kept, so the uncovered area lets the lower
+    // tracks show through — an opaque canvas here would paint black
+    // over them.
+    const [pxExpr, pyExpr] = positionOverlayExprs(posKeys, posMode, width, height);
+    if (opacityToAlpha) {
+      chains.push(
+        `color=c=black@0:s=${width}x${height}:r=${fps}:d=${clipDuration(clip)},format=yuva420p[vpb${idx}]`,
+      );
+      chains.push(`${prePos}format=yuva420p[vppf${idx}]`);
+      chains.push(`[vpb${idx}][vppf${idx}]overlay=x='${pxExpr}':y='${pyExpr}',format=yuva420p[v${idx}]`);
+    } else {
+      chains.push(
+        `color=c=black:s=${width}x${height}:r=${fps}:d=${clipDuration(clip)}[vpb${idx}]`,
+      );
+      chains.push(`[vpb${idx}]${prePos}overlay=x='${pxExpr}':y='${pyExpr}'[v${idx}]`);
+    }
   }
   return chains;
 }

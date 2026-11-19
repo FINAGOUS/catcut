@@ -159,6 +159,31 @@ export interface ZoomKeyframe {
   scale: number;
 }
 
+/**
+ * Position keyframe (W10): where the clip's whole picture sits on
+ * the canvas at clip-local OUTPUT time `t` (same clock as zoom /
+ * opacity / rotation keys: 0 at the clip start, after speed).
+ * `x`/`y` are the picture CENTRE as fractions of frame width/height
+ * (0.5, 0.5 = dead centre, the no-op position). Values outside
+ * [0, 1] (down to -1, up to 2) slide the picture partly off-frame;
+ * the uncovered area renders black on the legacy single track and
+ * transparent on multitrack (lower tracks show through).
+ * See src/keyframes.ts.
+ */
+export interface PositionKeyframe {
+  /** Clip-local time in seconds. */
+  t: number;
+  /** Picture centre x as a fraction of frame width. */
+  x: number;
+  /** Picture centre y as a fraction of frame height. */
+  y: number;
+}
+
+/** How position keyframes interpolate between keys. 'linear' =
+ *  straight line; 'hold' = step (previous value holds until the next
+ *  key); 'smooth' = smoothstep easing inside each segment. */
+export type PositionInterpolation = 'linear' | 'hold' | 'smooth';
+
 /** Generic keyframe: value at clip-local output time t, linear between keys. */
 export interface Keyframe<T> {
   /** Clip-local time in seconds (output timeline). */
@@ -361,6 +386,18 @@ export interface Clip {
   opacity?: Keyframe<number>[];
   /** Rotation keyframes in degrees, ±15° intended range. */
   rotation?: Keyframe<number>[];
+  /**
+   * Position keyframes (W10): the whole clip picture moves across
+   * the canvas over clip-local output time (see PositionKeyframe).
+   * 0 or 1 key(s) at dead centre (0.5, 0.5) = no movement, no extra
+   * filter in the graph. A single off-centre key is a static offset.
+   * Rendered in filtergraph.ts (overlay onto a canvas, after
+   * zoom/rotation/colour/opacity/text, so the whole finished clip
+   * picture — text included — moves as one placed layer).
+   */
+  position?: PositionKeyframe[];
+  /** Interpolation between position keys (default 'linear'). */
+  positionInterpolation?: PositionInterpolation;
   /** Audio fade-in duration in seconds (output timeline). */
   audioFadeIn?: number;
   /** Audio fade-out duration in seconds (output timeline). */
