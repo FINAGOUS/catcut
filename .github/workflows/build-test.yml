@@ -38,25 +38,50 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $ProgressPreference = 'SilentlyContinue'
-          git clone --depth 1 --branch v3.8.0_build_66 https://github.com/steinbergmedia/vst3sdk.git vst3sdk
-          if (-not $?) { throw 'VST3 SDK clone failed.' }
-          git -C vst3sdk submodule update --init base cmake pluginterfaces public.sdk vstgui4
-          if (-not $?) { throw 'VST3 SDK submodule checkout failed.' }
-          cmake -S vst3sdk -B vst3sdk-build -DSMTG_ENABLE_VST3_PLUGIN_EXAMPLES=ON -DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=OFF -DSMTG_ENABLE_VSTGUI_SUPPORT=ON
-          if (-not $?) { throw 'VST3 SDK configure failed.' }
-          cmake --build vst3sdk-build --config Release --target again sdk_hosting --parallel 4
-          if (-not $?) { throw 'AGain / sdk_hosting build failed.' }
-          cmake -S Windows/native/vst3 -B vst3bridge-build -DVST3_SDK_ROOT="$PWD/vst3sdk" -DVST3_SDK_BUILD_DIR="$PWD/vst3sdk-build"
-          if (-not $?) { throw 'Bridge configure failed.' }
-          cmake --build vst3bridge-build --config Release --parallel 4
-          if (-not $?) { throw 'Bridge build failed.' }
-          Copy-Item vst3bridge-build/bin/Release/Vst3BridgeHost.exe Windows/bin/
-          Copy-Item vst3bridge-build/bin/Release/CatCut.Vst3Bridge.dll Windows/bin/
-          $again = Get-ChildItem -Path vst3sdk-build -Recurse -Filter 'again.vst3' -Directory | Select-Object -First 1
-          if (-not $again) { throw 'again.vst3 bundle not found in SDK build output.' }
-          if (-not (Test-Path (Join-Path $again.FullName 'Contents/Resources/moduleinfo.json'))) { throw 'again.vst3 has no moduleinfo.json (moduleinfotool step missing).' }
-          New-Item -ItemType Directory -Force 'Windows/bin/Plugins' | Out-Null
-          Copy-Item -Recurse $again.FullName 'Windows/bin/Plugins/AGain.vst3'
+          $log = Join-Path $PWD 'native-build.log'
+          Start-Transcript -Path $log | Out-Null
+          try {
+            Write-Output 'NATIVE-STEP: versions'
+            cmake --version
+            git --version
+            Write-Output 'NATIVE-STEP: clone SDK'
+            git clone --depth 1 --branch v3.8.0_build_66 https://github.com/steinbergmedia/vst3sdk.git vst3sdk
+            if (-not $?) { throw 'VST3 SDK clone failed.' }
+            Write-Output 'NATIVE-STEP: submodules'
+            git -C vst3sdk submodule update --init base cmake pluginterfaces public.sdk vstgui4
+            if (-not $?) { throw 'VST3 SDK submodule checkout failed.' }
+            Write-Output 'NATIVE-STEP: configure SDK'
+            cmake -S vst3sdk -B vst3sdk-build -DSMTG_ENABLE_VST3_PLUGIN_EXAMPLES=ON -DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=OFF -DSMTG_ENABLE_VSTGUI_SUPPORT=ON
+            if (-not $?) { throw 'VST3 SDK configure failed.' }
+            Write-Output 'NATIVE-STEP: build again + sdk_hosting'
+            cmake --build vst3sdk-build --config Release --target again sdk_hosting --parallel 4
+            if (-not $?) { throw 'AGain / sdk_hosting build failed.' }
+            Write-Output 'NATIVE-STEP: configure bridge'
+            cmake -S Windows/native/vst3 -B vst3bridge-build -DVST3_SDK_ROOT="$PWD/vst3sdk" -DVST3_SDK_BUILD_DIR="$PWD/vst3sdk-build"
+            if (-not $?) { throw 'Bridge configure failed.' }
+            Write-Output 'NATIVE-STEP: build bridge'
+            cmake --build vst3bridge-build --config Release --parallel 4
+            if (-not $?) { throw 'Bridge build failed.' }
+            Write-Output 'NATIVE-STEP: copy outputs'
+            Copy-Item vst3bridge-build/bin/Release/Vst3BridgeHost.exe Windows/bin/
+            Copy-Item vst3bridge-build/bin/Release/CatCut.Vst3Bridge.dll Windows/bin/
+            $again = Get-ChildItem -Path vst3sdk-build -Recurse -Filter 'again.vst3' -Directory | Select-Object -First 1
+            if (-not $again) { throw 'again.vst3 bundle not found in SDK build output.' }
+            if (-not (Test-Path (Join-Path $again.FullName 'Contents/Resources/moduleinfo.json'))) { throw 'again.vst3 has no moduleinfo.json (moduleinfotool step missing).' }
+            New-Item -ItemType Directory -Force 'Windows/bin/Plugins' | Out-Null
+            Copy-Item -Recurse $again.FullName 'Windows/bin/Plugins/AGain.vst3'
+            Write-Output 'NATIVE-STEP: done'
+          } finally {
+            Stop-Transcript | Out-Null
+          }
+
+      - name: Upload native build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w10native-log
+          path: native-build.log
+          if-no-files-found: warn
 
       - name: Build
         run: |
