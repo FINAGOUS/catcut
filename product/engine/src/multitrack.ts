@@ -28,6 +28,7 @@ import {
   clipDuration,
   hasTracks,
   projectDuration,
+  resolveTransitionDurations,
   videoTrackDuration,
   type AudioTrack,
   type AudioTrackClip,
@@ -181,7 +182,7 @@ export function rebuildTracksFromFlat(project: Project, flatList: Clip[]): Proje
  * Convert a legacy single-track project to its equivalent track
  * form: one video track, clips placed sequentially with the
  * transition overlaps applied (a clip after a non-'cut' transition
- * starts `transitionDuration` before the previous clip ends), and
+ * starts its junction's duration before the previous clip ends), and
  * that transition carried as the clip's `transitionIn`. The legacy
  * `clips` field is kept verbatim on the returned project so old
  * readers still see them; `transitions` is neutralised to all
@@ -191,20 +192,24 @@ export function rebuildTracksFromFlat(project: Project, flatList: Clip[]): Proje
 export function normalizeToTracks(project: Project): Project {
   if (hasTracks(project)) return project;
   const clips: VideoTrackClip[] = [];
+  // W10: per-junction durations — each transitionIn carries its own
+  // junction's duration (not the global one), so the conversion
+  // preserves the total duration exactly under mixed durations.
+  const durs = resolveTransitionDurations(project);
   let t = 0;
   project.clips.forEach((clip, i) => {
     const tc: VideoTrackClip = { ...clip, start: t };
     if (i > 0 && project.transitions[i - 1] !== 'cut') {
       // Any non-'cut' legacy transition becomes the clip's
       // transitionIn; the overlap is already in `start` (the clip
-      // starts transitionDuration before the previous clip ends),
+      // starts durs[i-1] before the previous clip ends),
       // so the track assembly reproduces the legacy xfade exactly.
-      tc.transitionIn = { type: project.transitions[i - 1], duration: project.transitionDuration };
+      tc.transitionIn = { type: project.transitions[i - 1], duration: durs[i - 1] };
     }
     clips.push(tc);
     t += clipDuration(clip);
     if (i < project.transitions.length && project.transitions[i] !== 'cut') {
-      t -= project.transitionDuration;
+      t -= durs[i];
     }
   });
   return {
