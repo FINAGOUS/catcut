@@ -766,8 +766,10 @@ export interface Project {
    * Per-junction transition durations (W10, legacy path only):
    * transitionDurations[i] is the duration of the transition between
    * clips[i] and clips[i+1], overriding transitionDuration for that
-   * junction only. Length must equal transitions.length when present;
-   * absent = every junction uses transitionDuration (the legacy form,
+   * junction only. Aligned with the resolved junctions (see
+   * resolveTransitionDurations): entries past the last junction are
+   * ignored, missing entries fall back to transitionDuration.
+   * Absent = every junction uses transitionDuration (the legacy form,
    * still fully supported). A 'cut' junction ignores its duration (a
    * cut never overlaps). Multitrack projects do not use this field:
    * their arrivals are per-clip `transitionIn` (already per-clip);
@@ -1034,18 +1036,35 @@ export function audioTrackDuration(track: AudioTrack): number {
 }
 
 /**
+ * Per-junction transition types (W10): project.transitions padded
+ * with 'cut' to length clips-1. The engine's established convention
+ * is that a short transitions array means "the rest are cuts"
+ * (verify-p1c exports 16 clips with transitions: []); only a
+ * LONGER array is malformed (rejected by validateTransitions).
+ * Always returns a fresh array.
+ */
+export function resolveTransitions(project: Project): TransitionType[] {
+  const want = Math.max(0, project.clips.length - 1);
+  const out = project.transitions.slice(0, want);
+  while (out.length < want) out.push('cut');
+  return out;
+}
+
+/**
  * Per-junction transition durations (W10): transitionDurations[i] when
  * present, else the legacy global transitionDuration for every junction.
- * Always returns a fresh array of length transitions.length. Does not
- * validate — use validateTransitions() (transitions.ts) for that.
- * Multitrack projects: their transitions are neutralised to all 'cut'
- * by normalizeToTracks, so this just returns the global duration.
+ * Aligned with resolveTransitions: missing entries fall back to the
+ * global duration, entries past the last junction are ignored.
+ * Always returns a fresh array of length clips-1. Does not validate —
+ * use validateTransitions() (transitions.ts) for that.
  */
 export function resolveTransitionDurations(project: Project): number[] {
-  if (project.transitionDurations !== undefined) {
-    return project.transitionDurations.slice();
+  const want = Math.max(0, project.clips.length - 1);
+  const out: number[] = [];
+  for (let k = 0; k < want; k++) {
+    out.push(project.transitionDurations?.[k] ?? project.transitionDuration);
   }
-  return project.transitions.map(() => project.transitionDuration);
+  return out;
 }
 
 /** Total timeline duration, accounting for transition overlaps.
@@ -1063,9 +1082,11 @@ export function projectDuration(project: Project): number {
   const total = project.clips.reduce((sum, c) => sum + clipDuration(c), 0);
   // Every non-'cut' transition is an xfade that overlaps its OWN
   // per-junction duration (W10); a 'cut' junction overlaps nothing
-  // even when a per-junction duration is listed for it.
+  // even when a per-junction duration is listed for it. Missing
+  // junctions resolve to 'cut' (see resolveTransitions).
+  const types = resolveTransitions(project);
   const durs = resolveTransitionDurations(project);
-  const overlaps = project.transitions.reduce(
+  const overlaps = types.reduce(
     (sum, t, k) => sum + (t !== 'cut' ? durs[k] : 0),
     0,
   );
