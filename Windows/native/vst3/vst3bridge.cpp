@@ -18,7 +18,6 @@
 #include "pluginterfaces/base/funknownimpl.h"
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
 #include "pluginterfaces/vst/ivstcomponent.h"
-#include "pluginterfaces/vst/ivstcomponenthandler.h"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
 #include "pluginterfaces/vst/ivsthostapplication.h"
 #include "pluginterfaces/vst/vstspeaker.h"
