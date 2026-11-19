@@ -16,6 +16,7 @@ import {
   clipDuration,
   hasTracks,
   projectDuration,
+  resolveTransitions,
   speedCurveSegments,
   type Clip,
   type Keyframe,
@@ -1946,8 +1947,11 @@ export function buildFilterGraph(
   const durations = flat.map((f) => clipDuration(f.clip));
   // W10: per-junction durations for the legacy video xfade chain, the
   // audio acrossfade chain and the role stems below (all share this
-  // array; the multitrack branch never reads it).
+  // array; the multitrack branch never reads it). `transitions` is
+  // the padded type array (missing junctions are 'cut' — the
+  // engine's established convention, see resolveTransitions).
   const durs = resolveTransitionDurations(project);
+  const transitions = resolveTransitions(project);
   if (isMt) {
     // Multitrack assembly: video tracks composited bottom-to-top
     // onto a black canvas (gaps stay black), audio tracks mixed
@@ -1967,7 +1971,7 @@ export function buildFilterGraph(
   // (Multitrack projects never reach this branch; their arrivals are
   // validated by validateMultitrackProject above.)
   validateTransitions(project);
-  const hasXfade = project.transitions.some((t) => t !== 'cut');
+  const hasXfade = transitions.some((t) => t !== 'cut');
   // Mix inputs: role-processed audio when roles are in use — [arm<i>]
   // (the asplit mix branch) with stems, [ar<i>] without — else the
   // plain clip audio [a<i>] (unchanged from before Roles).
@@ -1986,7 +1990,7 @@ export function buildFilterGraph(
   let vPrev = '[v0]';
   let acc = clipDuration(project.clips[0]);
   project.clips.slice(1).forEach((_, k) => {
-    const type = project.transitions[k];
+    const type = transitions[k];
     const vNext = `[v${k + 1}]`;
     if (type !== 'cut') {
       const d = durs[k];
@@ -2027,7 +2031,7 @@ export function buildFilterGraph(
   }
   // Audio assembly (mix): same per-junction offsets as the video xfade chain.
   chains.push(
-    ...audioAssemblyChains(mixInputs, project.transitions, durations, durs, '[aout]', 'a'),
+    ...audioAssemblyChains(mixInputs, transitions, durations, durs, '[aout]', 'a'),
   );
   }
 
@@ -2073,7 +2077,7 @@ export function buildFilterGraph(
       });
       chains.push(
         ...audioAssemblyChains(
-          inputs, project.transitions, durations, durs, stemLabel, `s${j}`,
+          inputs, transitions, durations, durs, stemLabel, `s${j}`,
         ),
       );
     });
