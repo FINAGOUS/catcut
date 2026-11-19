@@ -226,6 +226,38 @@ jobs:
           path: Windows/bin/w9mt-results.txt
           if-no-files-found: warn
 
+      - name: W10 transitions checks
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:Path = (Join-Path $PWD 'Windows/tools') + ';' + $env:Path
+          # Live engine is product/engine, but in the repo it is only
+          # compilable as the merged tree (its ./subtitles, ./presets,
+          # ./templates, ... imports live in root engine/src): fill in
+          # the missing modules from root engine/src (never overwrite
+          # a product file), plus package/tsconfig, for this build only.
+          Get-ChildItem engine/src/*.ts | Where-Object { -not (Test-Path (Join-Path 'product/engine/src' $_.Name)) } | ForEach-Object { Copy-Item $_.FullName 'product/engine/src' }
+          if (-not (Test-Path 'product/engine/package.json')) { Copy-Item engine/package.json 'product/engine/package.json' }
+          if (-not (Test-Path 'product/engine/tsconfig.json')) { Copy-Item engine/tsconfig.json 'product/engine/tsconfig.json' }
+          Push-Location product/engine
+          npm install --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'Engine deps install failed.' }
+          npx tsc -p tsconfig.json
+          if ($LASTEXITCODE -ne 0) { throw 'Engine tsc build failed.' }
+          Pop-Location
+          $env:W10_RESULTS_FILE = Join-Path $PWD 'Windows/bin/w10transitions-results.txt'
+          node product/engine/test/verify-transitions.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'W10 transitions checks failed.' }
+          Get-Content 'Windows/bin/w10transitions-results.txt' -Raw
+          if (-not ((Get-Content 'Windows/bin/w10transitions-results.txt' -Raw).StartsWith('PASS:'))) { throw 'W10 transitions checks failed.' }
+
+      - name: Upload W10 transitions results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w10transitions-results
+          path: Windows/bin/w10transitions-results.txt
+          if-no-files-found: warn
+
       - name: Package portable ZIP
         run: |
           $ErrorActionPreference = 'Stop'
