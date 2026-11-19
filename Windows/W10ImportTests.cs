@@ -52,7 +52,7 @@ namespace DogSC.Replica {
   static async Task VideoCase(string name, string file, double expectDuration, bool expectAudio) {
    try {
     var doc = StudioMedia.Import(file);
-    if (Math.Abs(doc.Duration - expectDuration) > 1.0 && !doc.DurationUnknown) throw new Exception("时长 " + doc.FrameRate + " 帧率下为 " + doc.Duration.ToString("0.00") + "s，期望约 " + expectDuration + "s");
+    if (Math.Abs(doc.Duration - expectDuration) > 1.0 && !doc.DurationUnknown) throw new Exception("时长 " + doc.Duration.ToString("0.00") + "s（帧率 " + doc.FrameRate.ToString("0.##") + "fps），期望约 " + expectDuration + "s");
     if (doc.Audio != expectAudio) throw new Exception("Audio=" + doc.Audio + "，期望 " + expectAudio);
     if (doc.Width < 2 || doc.Height < 2) throw new Exception("尺寸异常：" + doc.Width + "x" + doc.Height);
     if (!(doc.FrameRate > 0) || doc.FrameRate > 240) throw new Exception("帧率异常：" + doc.FrameRate);
@@ -104,7 +104,7 @@ namespace DogSC.Replica {
     string mp4 = Gen(Path.Combine(Folder, "s15-h264.mp4"), VideoSrc("1280x720", "30") + " -t 15 -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -shortest");
     string mkv = Gen(Path.Combine(Folder, "s15-h264.mkv"), VideoSrc("1280x720", "30") + " -t 15 -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -shortest");
     string noaudio = Gen(Path.Combine(Folder, "s15-noaudio.mp4"), "-f lavfi -i testsrc2=size=1280x720:rate=30 -t 15 -c:v libx264 -preset ultrafast -pix_fmt yuv420p -an");
-    string vfr = Gen(Path.Combine(Folder, "s15-vfr.mp4"), "-f lavfi -i testsrc2=size=640x360:rate=60 -t 15 -vf \"setpts='if(eq(mod(N,30),0),PTS+0.033,PTS)'\" -vsync vfr -c:v libx264 -preset ultrafast -pix_fmt yuv420p -an");
+    string vfr = Gen(Path.Combine(Folder, "s15-vfr.mp4"), "-f lavfi -i testsrc2=size=640x360:rate=60 -t 15 -vf \"setpts='if(eq(mod(N,30),0),PTS+0.033,PTS)'\" -fps_mode vfr -c:v libx264 -preset ultrafast -pix_fmt yuv420p -an");
     string portrait = Gen(Path.Combine(Folder, "s15-portrait.mp4"), VideoSrc("720x1280", "30") + " -t 15 -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -shortest -metadata:s:v rotate=90");
     string uhd = Gen(Path.Combine(Folder, "s5-4k.mp4"), VideoSrc("3840x2160", "30") + " -t 5 -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -shortest");
     string raw = Gen(Path.Combine(Folder, "s5-raw.h264"), "-f lavfi -i testsrc2=size=640x360:rate=30 -t 5 -c:v libx264 -preset ultrafast -pix_fmt yuv420p -an -f h264");
