@@ -1038,10 +1038,12 @@ namespace DogSC.Replica {
    ChromaKeyOps.Validate(doc.Chroma);
    if (!string.IsNullOrEmpty(doc.CompareMode) && doc.CompareMode != "split" && doc.CompareMode != "wipe") throw new Exception("对比模式无效：" + doc.CompareMode + "。");
    if (!EditDocument.Finite(doc.CompareWipe) || doc.CompareWipe <= 0 || doc.CompareWipe >= 1) throw new Exception("对比擦除位置超出 (0, 1)。");
-   // 美颜遮罩路径只走线性调色（W5Media.MaskedFilterComplex 里拼的是
-   // GradeChain）：与 W8 高级调色同开时导出直接报错，不静默丢调色。
-   if (doc.BeautyEnabled && (NodeGraphActive(doc) || MatchActive(doc) || TrackedWindowActive(doc) || ChromaActive(doc) || ColourMgmtActive(doc) || LutApplied(doc)))
-    throw new Exception("美颜与高级调色（节点图/镜头匹配/跟踪窗口/色度键/色彩管理/LUT 库）不能同时开：美颜遮罩路径只走线性调色。请先关美颜，或关高级调色。");
+   // W9：美颜与 W8 高级调色不再互斥——两者合成导出（顺序：美颜只修人像 →
+   // 全局调色链 → 蒙版节点/跟踪窗口分段 → 色度键，见 EditorCore.Export
+   // 与 W8ColourExport.DecoderArgsWithBeauty）。人像抠像背景与美颜仍互斥
+   // （共用同一张人像遮罩管线，见 EditDocument.Validate），节点图与线性
+   // 调色仍互斥（上头的规则）。校验本身不丢任何一边：两边的 Validate
+   // 都跑，缺遮罩/坏 LUT 仍是硬错。
   }
  }
 
@@ -1111,19 +1113,51 @@ namespace DogSC.Replica {
    if (chain.Length > 0) sb.Append(",").Append(chain);
    if (eff.Length > 0) sb.Append(eff);
    sb.Append(",format=yuv420p[b0];");
-   int inputIdx = 1;
+   AppendStages(sb, doc, prep, dw, dh, fps, "b0", 1);
+   return sb.ToString();
+  }
+  // W9：美颜 + complex 高级调色的合成图。输入：0 主源、1 美颜遮罩、2 起
+  // 是 Prepare 登记的 W8 额外输入（节点蒙版 PNG/跟踪遮罩视频/色度键背景）。
+  // 顺序：[0:v] 先走 videoFilters（fps/scale/降噪/调整层）→ 美颜分支
+  // （split → hqdn3d+提亮+unsharp → alphamerge 人像遮罩 → overlay 回原
+  // 图）→ 全局调色链（ChainForGraph：输入转换/镜头匹配/节点或线性调色/
+  // LUT 库/输出转换，色度键除外）→ 蒙版节点/跟踪窗口分段 → 色度键。
+  // grade 为空时 [b0] 就是美颜合成帧，不多贴一层。
+  public static string BuildBeautyGraph(EditDocument doc, StagePrep prep, int dw, int dh, double fps, string videoFilters, double beautyStrength, double feather) {
+   var sb = new StringBuilder();
+   sb.Append("[0:v]").Append(videoFilters).Append("[v];");
+   sb.Append(BeautyFilter.MaskChain(fps, dw.ToString(CultureInfo.InvariantCulture), dh.ToString(CultureInfo.InvariantCulture), feather));
+   sb.Append("[v]split[v1][v2];");
+   sb.Append("[v2]").Append(BeautyFilter.Chain(beautyStrength)).Append("[vb];");
+   sb.Append("[vb]format=yuva420p[vbf];");
+   sb.Append("[vbf][m]alphamerge[bm];");
+   string chain = W8ColourFilters.ChainForGraph(doc);
+   if (string.IsNullOrEmpty(chain)) {
+    sb.Append("[v1][bm]overlay=0:0,format=yuv420p[b0];");
+   } else {
+    sb.Append("[v1][bm]overlay=0:0,format=yuv420p[vb2];");
+    sb.Append("[vb2]").Append(chain).Append(",format=yuv420p[b0];");
+   }
+   AppendStages(sb, doc, prep, dw, dh, fps, "b0", 2);
+   return sb.ToString();
+  }
+  // 蒙版节点/跟踪窗口/色度键分段：从 startLabel（已调色好的底图）开始，
+  // 额外输入从 firstInput 起编号；收尾定义 [out]。BuildGraph 与
+  // BuildBeautyGraph 共用，改一处两边都生效。
+  static void AppendStages(StringBuilder sb, EditDocument doc, StagePrep prep, int dw, int dh, double fps, string startLabel, int firstInput) {
+   int inputIdx = firstInput;
    int stageNo = 0;
    foreach (var stage in prep.MaskedStages) {
     sb.Append("[").Append(inputIdx).Append(":v]fps=fps=").Append(Media.N(fps)).Append(",scale=").Append(dw).Append(":").Append(dh).Append(",format=gray[").Append(stage.MaskLabel).Append("];");
     inputIdx++;
-    string cur = "b" + stageNo, next = "b" + (stageNo + 1);
+    string cur = stageNo == 0 ? startLabel : "b" + stageNo, next = "b" + (stageNo + 1);
     sb.Append("[").Append(cur).Append("]split[bs").Append(stageNo).Append("][bg").Append(stageNo).Append("];");
     sb.Append("[bg").Append(stageNo).Append("]format=rgb24,").Append(ColorLut.Lut3dFilter(stage.LutPath)).Append(",format=yuva420p[bc").Append(stageNo).Append("];");
     sb.Append("[bc").Append(stageNo).Append("][").Append(stage.MaskLabel).Append("]alphamerge[bm").Append(stageNo).Append("];");
     sb.Append("[bs").Append(stageNo).Append("][bm").Append(stageNo).Append("]overlay=0:0,format=yuv420p[").Append(next).Append("];");
     stageNo++;
    }
-   string curLabel = "b" + stageNo;
+   string curLabel = stageNo == 0 ? startLabel : "b" + stageNo;
    if (prep.TrackedLutPath != null) {
     sb.Append("[").Append(inputIdx).Append(":v]fps=fps=").Append(Media.N(fps)).Append(",scale=").Append(dw).Append(":").Append(dh).Append(",format=gray,gblur=sigma=1.5[").Append(prep.TrackedMaskLabel).Append("];");
     inputIdx++;
@@ -1151,7 +1185,6 @@ namespace DogSC.Replica {
    } else {
     sb.Append("[").Append(curLabel).Append("]format=yuv420p[out];");
    }
-   return sb.ToString();
   }
   // 导出解码器的完整 ffmpeg 参数（-map [out]，bgra 原始帧进 GDI+ 渲染）。
   // frames>0 时只解 N 帧（测试用）。
@@ -1159,6 +1192,18 @@ namespace DogSC.Replica {
    prep.Graph = BuildGraph(doc, prep, dw, dh, fps, basePrefix, effectVf);
    var sb = new StringBuilder();
    sb.Append("-v error ").Append(selection).Append("-i ").Append(Media.Q(media)).Append(" ");
+   foreach (var extra in prep.ExtraInputs) sb.Append(extra).Append(" ");
+   sb.Append("-filter_complex ").Append(Media.Q(prep.Graph)).Append(" -map [out] -an ");
+   if (frames > 0) sb.Append("-frames:v ").Append(frames).Append(" ");
+   sb.Append("-pix_fmt bgra -f rawvideo pipe:1");
+   return sb.ToString();
+  }
+  // W9：美颜 + complex 高级调色的解码器参数。输入顺序：0 主源、1 美颜遮罩
+  // （与主源同裁，selection 两路都带）、2 起是 Prepare 的 W8 额外输入。
+  public static string DecoderArgsWithBeauty(EditDocument doc, StagePrep prep, string media, string selection, int dw, int dh, double fps, string videoFilters, string beautyMask, double beautyStrength, double feather, int frames = 0) {
+   prep.Graph = BuildBeautyGraph(doc, prep, dw, dh, fps, videoFilters, beautyStrength, feather);
+   var sb = new StringBuilder();
+   sb.Append("-v error ").Append(selection).Append("-i ").Append(Media.Q(media)).Append(" ").Append(selection).Append("-i ").Append(Media.Q(beautyMask)).Append(" ");
    foreach (var extra in prep.ExtraInputs) sb.Append(extra).Append(" ");
    sb.Append("-filter_complex ").Append(Media.Q(prep.Graph)).Append(" -map [out] -an ");
    if (frames > 0) sb.Append("-frames:v ").Append(frames).Append(" ");
