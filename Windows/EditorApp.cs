@@ -78,7 +78,7 @@ namespace DogSC.Replica {
   readonly List<BitmapSource> thumbs=new List<BitmapSource>(); readonly MediaPlayer audio=new MediaPlayer(); readonly MediaPlayer musicPlayer=new MediaPlayer();
   double position;int selectedCut=-1,selectedZoom=-1;string tab="画面",frameTab="布局";bool dirty,dark,playing,snap=true,ripple=true,closing;
   CancellationTokenSource playback;RecorderWindow recorder;MotionEvaluator motion;
-  readonly DispatcherTimer autosaveTimer=new DispatcherTimer();bool recoveryChecked;
+  readonly DispatcherTimer autosaveTimer=new DispatcherTimer();readonly DispatcherTimer watchFolderTimer=new DispatcherTimer();bool recoveryChecked;
   int renderVersion;bool rendering;byte[] cachedFrame;double cachedTime=-100;string cachedSource="";internal int playbackTestDelay;
   public Studio() {
    string interfaceFile=Path.GetFullPath(Path.Combine(Media.Root,"Editor.xaml"));using(var source=File.OpenRead(interfaceFile))Window=(Window)XamlReader.Load(source,new ParserContext {BaseUri=new Uri(interfaceFile)});
@@ -104,7 +104,7 @@ namespace DogSC.Replica {
     if((Keyboard.Modifiers&ModifierKeys.Control)!=0){if(e.Key==Key.O)Open();else if(e.Key==Key.S)Save();else if(e.Key==Key.Z)History(false);else if(e.Key==Key.Y)History(true);else if(e.Key==Key.B)Split();else return;e.Handled=true;}
     else if(e.Key==Key.Space){if(playing)Pause();else Play();e.Handled=true;}else if(e.Key==Key.Delete){Delete();e.Handled=true;}else if(e.Key==Key.Left){Seek(position-1.0/30);e.Handled=true;}else if(e.Key==Key.Right){Seek(position+1.0/30);e.Handled=true;}
    };
-   Window.Closing+=(s,e)=>{if(closing)return;if(recorder!=null&&recorder.IsRecording){e.Cancel=true;AppDialogs.Notice(Window,"正在录制","请先停止录制，素材保存完成后再关闭。 ");return;}if(!MayDiscard()){e.Cancel=true;return;}Pause();audio.Close();if(previewSurface!=null)previewSurface.Dispose();if(recorder!=null)recorder.Close();AutoSave.ClearUnclean();closing=true;};
+   Window.Closing+=(s,e)=>{if(closing)return;if(recorder!=null&&recorder.IsRecording){e.Cancel=true;AppDialogs.Notice(Window,"正在录制","请先停止录制，素材保存完成后再关闭。 ");return;}if(!MayDiscard()){e.Cancel=true;return;}Pause();audio.Close();W9WatchFolder.Stop();if(previewSurface!=null)previewSurface.Dispose();if(recorder!=null)recorder.Close();AutoSave.ClearUnclean();closing=true;};
    foreach(string name in new[]{"ProjectMenu","Ratio","Presets"})UI.MenuKeyboardEntry(Find<Button>(name));
    Find<Button>("ProjectMenu").Content=UI.IconLabel("folder");Find<Button>("Undo").Content=UI.IconLabel("undo");Find<Button>("Redo").Content=UI.IconLabel("redo");Find<Button>("Export").Content=UI.IconLabel("export","导出");Find<Button>("Split").Content=UI.IconLabel("cut");Find<Button>("Delete").Content=UI.IconLabel("trash");Find<Button>("Theme").Content=UI.IconLabel("sun");
    timeline.MouseMove+=(s,e)=>{if(Doc!=null&&e.LeftButton==MouseButtonState.Pressed&&Mouse.Captured==null){Pause();position=EditDocument.Clamp(e.GetPosition(timeline).X/TimelineWidth*Doc.Length,0,Math.Max(0,Doc.Length-.001));Update();DrawPlayhead();RefreshPreview();}};
@@ -115,6 +115,16 @@ namespace DogSC.Replica {
    autosaveTimer.Tick+=(s,e)=>AutoSaveTick();
    autosaveTimer.Start();
    AutoSave.MarkUnclean();
+   // W9：启动时清理 7 天前的旧调色 LUT 临时文件（调色拖动每换一个值就烤一个
+   // 新文件，从不删除；W3 已知限制）。只删旧文件，不碰本次启动后新烤的，
+   // 导出进行中的 LUT 不受影响；失败不拦启动。
+   try{W9LutCleanup.CleanupDefault();}catch{}
+   // W9：观察文件夹后台自动监看（W8 只做了手动扫描）。每 15 秒看一眼
+   // Doc.WatchFolder 变了没有，变了就重启监看；新文件只列进观察文件夹区，
+   // 不自动导入（沿用 W8"不自动吞文件"策略）。
+   watchFolderTimer.Interval=TimeSpan.FromSeconds(15);
+   watchFolderTimer.Tick+=(s,e)=>WatchFolderTick();
+   watchFolderTimer.Start();
    Window.Loaded+=(s,e)=>CheckCrashRecovery();
   }
   public T Find<T>(string name) where T:class{return Window.FindName(name) as T;}
@@ -151,6 +161,26 @@ namespace DogSC.Replica {
     Status("已自动保存 · "+DateTime.Now.ToString("HH:mm:ss")+" · 备份在项目目录");
     if(tab=="备份")BuildInspector();
    }catch(Exception ex){Status("自动保存失败："+ex.Message);}
+  }
+  // W9：观察文件夹后台监看（W8 只做了手动扫描）。定时器每 15 秒调一次；
+  // 文件夹没变就不动，变了/清空了就重启或停止监看。新文件只列进观察文件夹
+  // 区（watchFound，复用 W8 的手动导入入口），不自动导入。
+  void WatchFolderTick(){
+   try{
+    if(Doc==null||string.IsNullOrEmpty(Doc.WatchFolder)){if(W9WatchFolder.Running)W9WatchFolder.Stop();return;}
+    if(!W9WatchFolder.Running||!string.Equals(W9WatchFolder.Folder,Doc.WatchFolder,StringComparison.OrdinalIgnoreCase)){
+     W9WatchFolder.Start(Doc.WatchFolder,files=>{try{Window.Dispatcher.BeginInvoke(new Action(()=>{try{WatchFolderFound(files);}catch{}}));}catch{}});
+    }
+   }catch{}
+  }
+  void WatchFolderFound(List<string> files){
+   if(Doc==null||files==null||files.Count==0)return;
+   if(watchFound==null)watchFound=new List<string>();
+   int n=0;
+   foreach(string f in files){if(!watchFound.Any(x=>string.Equals(x,f,StringComparison.OrdinalIgnoreCase))){watchFound.Add(f);n++;}}
+   if(n==0)return;
+   BuildInspector();
+   Status("观察文件夹新增 "+n+" 个素材，已列在观察文件夹区，点确认才导入。");
   }
   void CheckCrashRecovery(){
    if(recoveryChecked||HeadlessArgs())return;recoveryChecked=true;
@@ -296,7 +326,7 @@ namespace DogSC.Replica {
     // W3：音乐床（有可听音乐轨时）随播放启动，播完循环；文件缺失只报状态，不拦播放。
     // W6：只取 Role=="音乐" 的床——配音遍（旁白）不参与预览循环，免得播错轨。
     var bed=MixerAudio.MusicChannels(Doc).FirstOrDefault(c=>c.Role=="音乐"&&!string.IsNullOrEmpty(c.SourcePath));
-    if(bed!=null){try{musicPlayer.Open(new Uri(bed.SourcePath));ApplyMixerPreview();musicPlayer.Position=TimeSpan.Zero;musicPlayer.Play();}catch(Exception ex){Status("音乐床预览不可用："+ex.Message);}}
+    if(bed!=null){try{musicPlayer.Open(new Uri(bed.SourcePath));ApplyMixerPreview();double bedLen=0;try{bedLen=Media.Duration(bed.SourcePath);}catch{}musicPlayer.Position=TimeSpan.FromSeconds(W9MusicBed.StartOffsetSeconds(start,bedLen));musicPlayer.Play();}catch(Exception ex){Status("音乐床预览不可用："+ex.Message);}}
     // W1：预览面在 UI 线程建一次（D3D 建不起来就 WriteableBitmap），GPU 合成资格按文档定。
     var surface=EnsurePreviewSurface();bool gpuPath=surface.IsHardware&&IsGpuEligible(doc);
     try{if(doc.Camera!=null&&doc.Camera.Enabled&&File.Exists(doc.Camera.SourcePath))playCam=new CameraFrameStream(doc.Camera.SourcePath,playbackFps);}catch{}
