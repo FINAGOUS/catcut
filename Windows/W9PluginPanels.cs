@@ -269,7 +269,11 @@ namespace DogSC.Replica {
  // ---- 极小 JSON 解析器（只为读 moduleinfo.json；不依赖 JavaScriptSerializer
 // 对数组返回类型的版本差异——云端实测曾因此丢掉 Classes 数组。
 // 只认对象 / 数组 / 字符串 / 数字 / true / false / null；严格，
-// 畸形 JSON 直接抛错，调用方记成“解析失败”而不是静默吞掉。）
+// 畸形 JSON 直接抛错，调用方记成“解析失败”而不是静默吞掉。
+// 唯一放宽：容忍对象/数组末尾多一个逗号——moduleinfotool 写的 moduleinfo.json
+// 是 JSON5（JSON5Writer 每个键值和每个数组元素后都写逗号，包括最后一个），
+// 真插件文件全带尾逗号；不容忍它，扫描器读不了任何真插件，只能读手写夹具。
+// （W10 云端实测：AGain 真文件在位置 323 抛“期待 '"'”，根因就是这里。）
 static class MiniJson {
  public static object Parse(string json) {
   if (string.IsNullOrWhiteSpace(json)) throw new Exception("JSON 为空。");
@@ -305,7 +309,7 @@ static class MiniJson {
     Expect(':');
     d[key] = Value();
     char c = Peek();
-    if (c == ',') { Pos++; continue; }
+    if (c == ',') { Pos++; if (Peek() == '}') { Pos++; return d; } continue; }
     if (c == '}') { Pos++; return d; }
     throw new Exception("JSON 对象在位置 " + Pos + " 期待 ',' 或 '}'。");
    }
@@ -317,7 +321,7 @@ static class MiniJson {
    while (true) {
     list.Add(Value());
     char c = Peek();
-    if (c == ',') { Pos++; continue; }
+    if (c == ',') { Pos++; if (Peek() == ']') { Pos++; return list; } continue; }
     if (c == ']') { Pos++; return list; }
     throw new Exception("JSON 数组在位置 " + Pos + " 期待 ',' 或 ']'。");
    }

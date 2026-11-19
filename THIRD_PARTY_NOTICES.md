@@ -30,14 +30,21 @@ Windows 程序通过独立进程调用未修改的 `ffmpeg.exe` 和 `ffprobe.exe
 - 来源：[MediaPipe Selfie Segmentation](https://developers.google.com/mediapipe/solutions/vision/image_segmenter) / 模型卡片 [mediapipe](https://github.com/google-ai-edge/mediapipe)。
 - 本项目没有更改模型权重；模型只在用户本机运行推理，不上传任何画面。
 
-## 插件宿主（W9，B 级：只扫描，不加载）
+## 插件宿主（W9 B 级扫描 + W10 A 级原生桥）
 
-- VST3 / OFX 插件只做发现与元数据展示：VST3 读 bundle 里的 `moduleinfo.json`，
+- W9：VST3 / OFX 插件只做发现与元数据展示：VST3 读 bundle 里的 `moduleinfo.json`，
   OFX 只认 bundle 结构与 `Win64/*.ofx` 二进制在不在；不加载任何插件代码。
-  完整宿主（原生 C++ 桥 + AGain 实测）见 [插件评估与路线图](docs/windows/plugins.md)。
-- 许可：VST3 SDK 3.8.0 起是 MIT（不再需要签 Steinberg 许可协议）；
-  OFX API 与 Support 库是 BSD-3-Clause。本仓库没有引入两者的代码。
-  “VST” 是 Steinberg Media Technologies GmbH 的注册商标，仅作格式名称使用。
+- W10：原生 C++ 桥（`Windows/native/vst3/`，`CatCut.Vst3Bridge.dll` +
+  `Vst3BridgeHost.exe` 子进程）真实加载 VST3 模块并离线处理音频；
+  AGain 测试插件（SDK 自带示例）随包分发于 `Windows/bin/Plugins/AGain.vst3`。
+  完整说明见 [插件评估与路线图](docs/windows/plugins.md)。
+- 许可：VST3 SDK 3.8.0 起是 MIT（不再需要签 Steinberg 许可协议）。
+  SDK（含 AGain 示例与 VSTGUI）不在仓库里，CI 构建时现取现编
+  （`steinbergmedia/vst3sdk`，tag `v3.8.0_build_66`）。
+  MIT 原文：Copyright (c) 2025, Steinberg Media Technologies GmbH。
+  OFX API 与 Support 库是 BSD-3-Clause（本批没引入 OFX 代码）。
+  “VST” 是 Steinberg Media Technologies GmbH 的注册商标，仅作格式名称使用，
+  不声称 Steinberg 背书或关联。
 - VST2 已废弃、AAX / AU 是别家专用格式，一律不扫描、不加载。
 
 ## 字体
