@@ -6,7 +6,14 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { buildFilterGraph } from './filtergraph.js';
-import { clipDuration, projectDuration, type Clip, type Project } from './project.js';
+import { clipDuration, hasTracks, projectDuration, type Clip, type Project } from './project.js';
+import {
+  flatClips,
+  flattenProject,
+  mapTrackClips,
+  rebuildTracksFromFlat,
+  type FlatClip,
+} from './multitrack.js';
 import { prepareClipMaskFiles } from './mask.js';
 import {
   cleanupStabilization,
@@ -465,9 +472,22 @@ export {
   beatSpeedNodes,
   clipBaseDuration,
   clipDuration,
+  hasTracks,
   projectDuration,
   speedCurveSegments,
 } from './project.js';
+export type { AudioTrack, AudioTrackClip, CrossTrackTransition, ProjectTracks, TrackBlendMode, VideoTrack, VideoTrackClip } from './project.js';
+export {
+  flatClips,
+  flattenProject,
+  mapTrackClips,
+  multitrackDuration,
+  normalizeToTracks,
+  rebuildTracksFromFlat,
+  resolveAudioTrackMute,
+  validateMultitrackProject,
+} from './multitrack.js';
+export type { FlatClip } from './multitrack.js';
 export {
   beautyFilter,
   countComponents,
@@ -760,6 +780,45 @@ export async function resolveCompoundClips(
   ffmpeg: string,
   depth: number,
 ): Promise<Project> {
+  if (hasTracks(project)) {
+    if (!flatClips(project).some((c) => c.compound)) return project;
+    let slot = 0;
+    const resolveOne = async <T extends Clip>(clip: T): Promise<T> => {
+      if (!clip.compound) return clip;
+      const i = slot++;
+      const child = clip.compound.project;
+      const childDuration = compoundChildDuration(child);
+      validateCompoundClip(clip, child, childDuration, depth);
+      const childProject: Project = {
+        ...child,
+        width: project.width,
+        height: project.height,
+        fps: project.fps,
+      };
+      const renderDir = compoundRenderDir(dir, depth, i);
+      mkdirSync(renderDir, { recursive: true });
+      const intermediate = compoundIntermediatePath(dir, depth, i);
+      const childOpts: ExportOptions = {
+        ...opts,
+        preset: { ...opts.preset, fps: project.fps },
+      };
+      await renderProjectWithStab(childProject, intermediate, childOpts, ffmpeg, depth + 1);
+      return { ...clip, source: intermediate, compound: undefined };
+    };
+    const video = [];
+    for (const track of project.tracks?.video ?? []) {
+      const clips = [];
+      for (const c of track.clips) clips.push(await resolveOne(c));
+      video.push({ ...track, clips });
+    }
+    const audio = [];
+    for (const track of project.tracks?.audio ?? []) {
+      const clips = [];
+      for (const c of track.clips) clips.push(await resolveOne(c));
+      audio.push({ ...track, clips });
+    }
+    return { ...project, tracks: { video, audio } };
+  }
   if (!project.clips.some((c) => c.compound)) return project;
   const clips: Clip[] = [];
   for (let i = 0; i < project.clips.length; i++) {
@@ -822,6 +881,19 @@ async function applyTimelinePrep(
   opts: ExportOptions,
   ffmpeg: string,
 ): Promise<Project> {
+  // Multitrack prep limits (v1): silence cut, text cut, Remix and
+  // vocal separation rewrite the legacy sequential clip list; they
+  // have no track-aware equivalent yet, so a multitrack project
+  // carrying any of them is refused instead of silently rendering
+  // the un-cut / un-remixed timeline.
+  if (hasTracks(project)) {
+    if (project.silenceCut || project.textCut) {
+      throw new Error('silenceCut/textCut are not supported on multitrack projects yet');
+    }
+    if (flatClips(project).some((c) => c.remix || c.vocalSep)) {
+      throw new Error('remix/vocalSep are not supported on multitrack projects yet');
+    }
+  }
   let p: Project = project;
   if (p.silenceCut) {
     validateSilenceCut(p.silenceCut);
@@ -957,7 +1029,9 @@ async function renderProjectWithStab(
   // main export, writing one .trf per clip next to the output. The .trf
   // files are deleted after a successful export; on failure they are kept
   // and their paths logged, so the failed run can be debugged/re-run.
-  const stabTrf = await prepareStabilization(prepped, outDir, ffmpeg);
+  // The flat clip list is passed (index = global input index); for a
+  // legacy project it is the project's own clip list.
+  const stabTrf = await prepareStabilization({ ...prepped, clips: flatClips(prepped) }, outDir, ffmpeg);
   let ok = false;
   try {
     let report = await exportProjectInner(prepped, output, opts, ffmpeg, stabTrf);
@@ -1011,6 +1085,13 @@ async function exportProjectInner(
     throw new Error(`unknown exportOnly: ${String(exportOnly)}`);
   }
   const hdrMode: HdrMode = validateHdrMode(project.hdrMode);
+  // Flat view of the timeline for every prep pass that iterates
+  // clips by index (multicam/proxy/optimized/roles/masks/portrait/
+  // beauty/colour/smart-cut): legacy projects flatten to their own
+  // clip list, so this is a no-op for them; multitrack projects
+  // flatten to video-track clips then audio-track clips, in the
+  // same order buildFilterGraph uses for its ffmpeg input indexes.
+  const flatProj: Project = { ...project, clips: flatClips(project) };
 
   // Subtitle-only export: NO video is rendered and NO ffmpeg run
   // happens. The sidecar is written from the project subtitles (dual
@@ -1034,7 +1115,7 @@ async function exportProjectInner(
     } else {
       throw new Error('subtitle-only export requested but the project has no subtitles');
     }
-    const actual = await probe(project.clips[0].source, opts.ffprobe);
+    const actual = await probe(flatProj.clips[0].source, opts.ffprobe);
     return {
       output: sidecarPath,
       expectedDuration: projectDuration(project),
@@ -1049,28 +1130,41 @@ async function exportProjectInner(
   // ffprobe; a mismatched/short angle throws instead of truncating).
   // Compound clips are already resolved by renderProjectWithStab, so
   // every clip here has a real source file.
-  await prepareMulticam(project, opts.ffprobe);
+  await prepareMulticam(flatProj, opts.ffprobe);
   // Proxy editing: a declared proxy must exist and match its
   // declaration, or the export is refused — never silently render the
   // original in place of a lost proxy. The export itself always uses
   // clip.source (the relink); the proxy is only validated here.
-  await validateProxies(project, opts.ffprobe);
+  await validateProxies(flatProj, opts.ffprobe);
   // Optimized media (P3): a declared DNxHR file must exist and
   // match its declaration, or the export is refused — never silently
   // render the original in place of a lost intermediate. The export
   // itself always uses clip.source; the optimized file is only
   // validated here (same rule as proxies).
-  await validateOptimizedMedia(project, opts.ffprobe);
+  await validateOptimizedMedia(flatProj, opts.ffprobe);
   // Surround layout (P3): fail fast on a bad value, and probe the
   // mix-bus channel count — the upmix mapping depends on it (a mono
   // bus upmixed with the stereo mapping reads a non-existent c1 as
   // silence: FC -6 dB, BR silent — measured 2026-11-18). All clips
   // must agree (all mono or all stereo); a mixed timeline is
   // rejected instead of silently dropping one side.
+  // Roles / multitrack: probe every clip's audio channel count
+  // BEFORE the graph build (the pan variant depends on it — mono
+  // duplicates the single channel, stereo pans two; see roles.ts).
+  // Multitrack projects always probe: the amix normalisation needs
+  // the per-clip channel count even with no roles in use. Index =
+  // global input index (flat clip order).
+  const roleAudioChannels = (rolesInUse(project) || hasTracks(project))
+    ? await prepareRoleAudio(flatProj, opts.ffprobe)
+    : undefined;
   const surroundLayoutChecked = validateSurroundLayout(project.surroundLayout);
   let surroundInputChannels: number | undefined;
   if (surroundLayoutChecked && surroundLayoutChecked !== 'stereo') {
-    const channels = await prepareRoleAudio(project, opts.ffprobe);
+    // Channel counts are probed on the flat clip list (index =
+    // global input index). Multitrack projects always probe, even
+    // without roles — the multitrack amix normalisation needs the
+    // per-clip channel count (see buildFilterGraph).
+    const channels = roleAudioChannels ?? (await prepareRoleAudio(flatProj, opts.ffprobe));
     const uniq = [...new Set(channels.values())];
     if (uniq.length !== 1 || (uniq[0] !== 1 && uniq[0] !== 2)) {
       throw new Error(
@@ -1094,12 +1188,8 @@ async function exportProjectInner(
       modelDir: opts.ttsModelDir,
     });
   }
-  // Roles: probe every clip's audio channel count BEFORE the graph
-  // build (the pan variant depends on it — mono duplicates the single
-  // channel, stereo pans two; see roles.ts).
-  const roleAudioChannels = rolesInUse(project)
-    ? await prepareRoleAudio(project, opts.ffprobe)
-    : undefined;
+  // (roleAudioChannels was probed above, before the surround block,
+  // so the surround upmix and the graph build share one probe pass.)
   // Project-level subtitles: write the .ass karaoke file next to the output
   // and burn it with the ASS filter; clip-level subtitles are already in
   // the per-clip chains (drawtext). Keep the .ass file: it is the audit
@@ -1147,15 +1237,15 @@ async function exportProjectInner(
   }
   // Shape masks: bake one PNG per mask segment next to the output and pass
   // them as extra inputs (after the clip inputs, in segment order).
-  const maskFiles = project.clips.some((c) => c.mask)
-    ? prepareClipMaskFiles(project, dirname(output))
+  const maskFiles = flatProj.clips.some((c) => c.mask)
+    ? prepareClipMaskFiles(flatProj, dirname(output))
     : undefined;
   // Smart portrait cutout: run the ONNX helper for every portrait clip
   // BEFORE the main export; the mask videos go in as extra inputs. The
   // videos are kept next to the output as an audit trail (like the mask
   // PNGs and the .ass file).
-  const portraitMasks = project.clips.some((c) => c.portraitCutout)
-    ? await preparePortraitMasks(project, dirname(output), {
+  const portraitMasks = flatProj.clips.some((c) => c.portraitCutout)
+    ? await preparePortraitMasks(flatProj, dirname(output), {
         python: opts.python,
         script: opts.portraitScript,
         model: opts.portraitModel,
@@ -1168,8 +1258,8 @@ async function exportProjectInner(
   // Strength-0 clips are skipped inside prepareBeautyMasks. A clip
   // with no person at all throws there ("no face") instead of
   // exporting an unretouched clip as "beautified".
-  const beautyMasks = project.clips.some((c) => c.beauty && (c.beauty.strength ?? 50) > 0)
-    ? await prepareBeautyMasks(project, dirname(output), {
+  const beautyMasks = flatProj.clips.some((c) => c.beauty && (c.beauty.strength ?? 50) > 0)
+    ? await prepareBeautyMasks(flatProj, dirname(output), {
         python: opts.python,
         portraitScript: opts.portraitScript,
         model: opts.portraitModel,
@@ -1181,8 +1271,8 @@ async function exportProjectInner(
   // per clip BEFORE the main export; the .cube files are kept next to
   // the output as an audit trail (like the mask PNGs). Imported .cube
   // files are validated here too — a bad file throws at prep time.
-  const colorLuts = project.clips.some((c) => c.advancedColor)
-    ? prepareColorLuts(project, dirname(output))
+  const colorLuts = flatProj.clips.some((c) => c.advancedColor)
+    ? prepareColorLuts(flatProj, dirname(output))
     : undefined;
   // Smart cut (P3): subject tracks (reframe/followZoom) + follow-zoom
   // keyframe merge. Runs before the graph build; the tracking mask
@@ -1192,10 +1282,14 @@ async function exportProjectInner(
   // The graph below is built from smartProject (followZoom clips carry
   // their merged zoom keys); mask/portrait/colour preps above ran on
   // `resolved` and stay valid — smart prep only adds zoom keys.
+  // smartFlat is the flat view of smartProject: the P3g prep below
+  // iterates clips by flat index, while the graph build takes the
+  // tracks project. Legacy: smartFlat.clips === smartProject.clips.
   let smartcutTracks: Map<number, SubjectTrack> | undefined;
   let smartProject = project;
-  if (project.clips.some((c) => c.reframe || c.followZoom)) {
-    const prep = await prepareSmartCut(project, dirname(output), {
+  let smartFlat: Project = flatProj;
+  if (flatProj.clips.some((c) => c.reframe || c.followZoom)) {
+    const prep = await prepareSmartCut(flatProj, dirname(output), {
       python: opts.python,
       script: opts.portraitScript,
       model: opts.portraitModel,
@@ -1203,10 +1297,11 @@ async function exportProjectInner(
       ffprobe: opts.ffprobe,
     }, portraitMasks);
     smartcutTracks = prep.tracks;
-    smartProject = prep.project;
+    smartFlat = prep.project;
+    smartProject = rebuildTracksFromFlat(project, prep.project.clips);
   }
   // P3g prep (colour management / match / node graphs / tracked
-  // windows / object tracks / clone). All of it runs on smartProject
+  // windows / object tracks / clone). All of it runs on smartFlat
   // (followZoom keys merged) and is keyed by clip index, like the
   // colour/portrait/beauty preps above. A clip with both advancedColor
   // and gradeNodes throws here, before any ffmpeg work starts.
@@ -1217,8 +1312,8 @@ async function exportProjectInner(
   if (project.colorManagement?.outputSpace !== undefined && hdrMode !== 'off') {
     throw new Error('colorManagement.outputSpace cannot combine with hdrMode — pick one output transform');
   }
-  validateProjectColorManagement(smartProject.colorManagement);
-  for (const clip of smartProject.clips) {
+  validateProjectColorManagement(smartFlat.colorManagement);
+  for (const clip of smartFlat.clips) {
     if (clip.advancedColor && clip.gradeNodes) {
       throw new Error(
         `clip ${clip.id}: advancedColor and gradeNodes are mutually exclusive — use one grading model per clip`,
@@ -1226,24 +1321,24 @@ async function exportProjectInner(
     }
   }
   const p3gInputs: P3gGraphInputs = {};
-  p3gInputs.colorMgmtLuts = prepareColorManagementLuts(smartProject, dirname(output));
-  const outputLut = prepareOutputLut(smartProject, dirname(output));
+  p3gInputs.colorMgmtLuts = prepareColorManagementLuts(smartFlat, dirname(output));
+  const outputLut = prepareOutputLut(smartFlat, dirname(output));
   if (outputLut) {
     p3gInputs.outputLut = outputLut;
-    p3gInputs.outputSpace = smartProject.colorManagement?.outputSpace ?? smartProject.colorManagement?.workingSpace ?? 'rec709';
-  } else if (smartProject.colorManagement?.outputSpace !== undefined || smartProject.colorManagement?.workingSpace === 'srgb') {
+    p3gInputs.outputSpace = smartFlat.colorManagement?.outputSpace ?? smartFlat.colorManagement?.workingSpace ?? 'rec709';
+  } else if (smartFlat.colorManagement?.outputSpace !== undefined || smartFlat.colorManagement?.workingSpace === 'srgb') {
     // No LUT needed (output == working) but the file still gets tagged
     // with its space — ffprobe reads it back (probe-p3g).
-    p3gInputs.outputSpace = smartProject.colorManagement?.outputSpace ?? smartProject.colorManagement?.workingSpace ?? 'rec709';
+    p3gInputs.outputSpace = smartFlat.colorManagement?.outputSpace ?? smartFlat.colorManagement?.workingSpace ?? 'rec709';
   }
-  const colorMatchLuts = await prepareColorMatchLuts(smartProject, dirname(output), { ffmpeg });
+  const colorMatchLuts = await prepareColorMatchLuts(smartFlat, dirname(output), { ffmpeg });
   const extraLuts = new Map<number, string[]>();
   const gradeNodeStages = new Map<number, GradeNodeStage[]>();
-  for (let i = 0; i < smartProject.clips.length; i++) {
-    const clip = smartProject.clips[i];
+  for (let i = 0; i < smartFlat.clips.length; i++) {
+    const clip = smartFlat.clips[i];
     const merged: string[] = [...(colorMatchLuts.get(i) ?? [])];
     if (clip.gradeNodes) {
-      const staged = writeGradeNodeFiles(clip.gradeNodes, i, dirname(output), smartProject.width, smartProject.height);
+      const staged = writeGradeNodeFiles(clip.gradeNodes, i, dirname(output), smartFlat.width, smartFlat.height);
       merged.push(staged.finalLut);
       if (staged.masked.length > 0) gradeNodeStages.set(i, staged.masked);
     }
@@ -1251,17 +1346,17 @@ async function exportProjectInner(
   }
   if (extraLuts.size > 0) p3gInputs.extraLuts = extraLuts;
   if (gradeNodeStages.size > 0) p3gInputs.gradeNodeStages = gradeNodeStages;
-  if (smartProject.clips.some((c) => c.trackedWindow)) {
+  if (smartFlat.clips.some((c) => c.trackedWindow)) {
     const tw = new Map<number, { lut: string; mask: string }>();
-    for (let i = 0; i < smartProject.clips.length; i++) {
-      const clip = smartProject.clips[i];
+    for (let i = 0; i < smartFlat.clips.length; i++) {
+      const clip = smartFlat.clips[i];
       if (!clip.trackedWindow) continue;
-      tw.set(i, await prepareTrackedWindow(clip, i, smartProject, dirname(output), { ffmpeg }));
+      tw.set(i, await prepareTrackedWindow(clip, i, smartFlat, dirname(output), { ffmpeg }));
     }
     p3gInputs.trackedWindows = tw;
   }
-  if (smartProject.clips.some((c) => c.objectTrack)) {
-    const tracked = await prepareObjectTracks(smartProject, dirname(output), { ffmpeg, ffprobe: opts.ffprobe });
+  if (smartFlat.clips.some((c) => c.objectTrack)) {
+    const tracked = await prepareObjectTracks(smartFlat, dirname(output), { ffmpeg, ffprobe: opts.ffprobe });
     const tracks = new Map<number, import('./smartcut.js').SubjectTrack>();
     const masks = new Map<number, string>();
     for (const [i, prep] of tracked) {
@@ -1271,7 +1366,7 @@ async function exportProjectInner(
     p3gInputs.objectTracks = tracks;
     if (masks.size > 0) p3gInputs.objectTrackMasks = masks;
   }
-  await prepareClone(smartProject, { ffprobe: opts.ffprobe });
+  await prepareClone(smartFlat, { ffprobe: opts.ffprobe });
   const { filterComplex: graphComplex, videoOut, audioOut, extraInputs, audioStems } = buildFilterGraph(
     smartProject,
     opts.fontfile,
@@ -1305,7 +1400,9 @@ async function exportProjectInner(
     filterComplex += `;${videoOut}nullsink`;
   }
   const args: string[] = [];
-  project.clips.forEach((clip) => args.push('-i', clip.source));
+  // One -i per clip occurrence, in flat order (the same order
+  // buildFilterGraph used for its input indexes).
+  flatClips(smartProject).forEach((clip) => args.push('-i', clip.source));
   extraInputs.forEach((p) => args.push('-i', p));
   // Chapters (P3): chapter markers are written to an ffmetadata file
   // and muxed in as an extra input; -map_metadata copies the global
@@ -1317,7 +1414,7 @@ async function exportProjectInner(
     validateTimelineProject(project);
     const metaFile = `${output}.ffmeta`;
     writeFileSync(metaFile, markersToFfmetadata(project), 'utf8');
-    chapterInputIdx = project.clips.length + extraInputs.length;
+    chapterInputIdx = flatClips(smartProject).length + extraInputs.length;
     args.push('-i', metaFile);
   }
   args.push('-filter_complex', filterComplex);
