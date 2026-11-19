@@ -29,6 +29,7 @@ import {
   hasTracks,
   projectDuration,
   resolveTransitionDurations,
+  resolveTransitions,
   videoTrackDuration,
   type AudioTrack,
   type AudioTrackClip,
@@ -195,20 +196,24 @@ export function normalizeToTracks(project: Project): Project {
   // W10: per-junction durations — each transitionIn carries its own
   // junction's duration (not the global one), so the conversion
   // preserves the total duration exactly under mixed durations.
+  // `trs` is the padded type array (missing junctions are 'cut',
+  // see resolveTransitions — the old code read project.transitions
+  // directly and built a transitionIn with type undefined for them).
   const durs = resolveTransitionDurations(project);
+  const trs = resolveTransitions(project);
   let t = 0;
   project.clips.forEach((clip, i) => {
     const tc: VideoTrackClip = { ...clip, start: t };
-    if (i > 0 && project.transitions[i - 1] !== 'cut') {
+    if (i > 0 && trs[i - 1] !== 'cut') {
       // Any non-'cut' legacy transition becomes the clip's
       // transitionIn; the overlap is already in `start` (the clip
       // starts durs[i-1] before the previous clip ends),
       // so the track assembly reproduces the legacy xfade exactly.
-      tc.transitionIn = { type: project.transitions[i - 1], duration: durs[i - 1] };
+      tc.transitionIn = { type: trs[i - 1], duration: durs[i - 1] };
     }
     clips.push(tc);
     t += clipDuration(clip);
-    if (i < project.transitions.length && project.transitions[i] !== 'cut') {
+    if (i < trs.length && trs[i] !== 'cut') {
       t -= durs[i];
     }
   });
