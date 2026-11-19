@@ -207,7 +207,9 @@ namespace DogSC.Replica {
     join = "[v0][v1]xfade=transition=" + TransitionPlan.XfadeNames[spec.Type] + ":duration=" + Media.N(d) + ":offset=" + Media.N(offset) + "[vout];"
      + (spec.AudioCrossfade
       ? "[a0][a1]acrossfade=d=" + Media.N(d) + "[aout]"
-      : "[a0][a1]concat=n=2:v=0:a=1[aout]");
+      // 音频硬切时两段音频直接拼接是 lenA+lenB，比视频长了 d，必须截到
+      // 视频时长（lenA+lenB-d），否则预览片会被音频拖长、与画面对不上。
+      : "[a0][a1]concat=n=2:v=0:a=1,atrim=duration=" + Media.N(lenA + lenB - d) + "[aout]");
    }
    string fc = vA + ";" + vB + ";" + aA + ";" + aB + ";" + join;
    StudioMedia.Run("-v error -y -i " + Media.Q(pathA) + " -i " + Media.Q(pathB) + " -filter_complex " + Media.Q(fc) + " -map [vout] -map [aout] -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -movflags +faststart " + Media.Q(outPath), token);
