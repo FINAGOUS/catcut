@@ -19,7 +19,10 @@ if(NOT DEFINED VST3_SDK_ROOT OR NOT DEFINED VST3_SDK_BUILD_DIR)
   message(FATAL_ERROR "需要 -DVST3_SDK_ROOT=<vst3sdk 根目录> -DVST3_SDK_BUILD_DIR=<SDK 构建目录>。")
 endif()
 
-foreach(lib sdk_hosting sdk sdk_common base)
+# pluginterfaces 也是静态库（funknown.cpp / coreiids.cpp / ustring.cpp 有编译出的符号，
+# 桥的 queryInterface / IID / UString 全靠它——漏了会在链接时报 LNK2001/LNK2019。
+# 链接顺序按依赖排：被依赖的在后（MSVC 单遍扫描，顺序错了也解不出符号）。
+foreach(lib sdk_hosting sdk sdk_common base pluginterfaces)
   file(GLOB_RECURSE _found "${VST3_SDK_BUILD_DIR}/${lib}.lib")
   if(NOT _found)
     message(FATAL_ERROR "在 ${VST3_SDK_BUILD_DIR} 下找不到已编好的 ${lib}.lib（先编 SDK：cmake --build <sdk-build> --config Release --target again sdk_hosting）。")
@@ -32,7 +35,8 @@ set(VST3_SDK_LIBS
   ${VST3_SDK_LIB_sdk_hosting}
   ${VST3_SDK_LIB_sdk}
   ${VST3_SDK_LIB_sdk_common}
-  ${VST3_SDK_LIB_base})
+  ${VST3_SDK_LIB_base}
+  ${VST3_SDK_LIB_pluginterfaces})
 
 set(BRIDGE_SOURCES vst3bridge.cpp wavfile.cpp)
 
