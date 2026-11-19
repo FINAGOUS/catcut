@@ -112,6 +112,7 @@ import {
 } from './p3g.js';
 import { renameSync } from 'node:fs';
 import { basename } from 'node:path';
+import { resolveExportFrameInterp, type FrameInterpOptions } from './frameinterp.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -326,6 +327,7 @@ export {
 export type { RemixOptions, RemixPlan, RemixSegment } from './remix.js';
 export {
   minterpolateFilter,
+  resolveExportFrameInterp,
   validateFrameInterp,
 } from './frameinterp.js';
 export type { FrameInterpOptions } from './frameinterp.js';
@@ -741,6 +743,19 @@ export interface ExportOptions {
    */
   exportOnly?: ExportOnlyMode;
   /**
+   * Whole-film frame-interp switch (W10, see frameinterp.ts): the
+   * export-level on/off for smart frame interpolation
+   * (minterpolate). `undefined` (default) = follow the project's
+   * own `frameInterp`; `null` = force OFF even when the project
+   * sets it; `{ targetFps }` = force ON at that target, overriding
+   * the project. The switch is orthogonal to export presets: it
+   * never changes a preset, and a preset never turns it on — the
+   * encoder's -r follows the resolved target, not the preset fps,
+   * so a 30 fps preset cannot silently drop 24->60 interpolated
+   * frames. Audio-only exports suppress it (no video is rendered).
+   */
+  frameInterp?: FrameInterpOptions | null;
+  /**
    * Subtitle sidecar format for opts.srtPath (P3): 'srt' (default),
    * 'vtt', or 'ass'. Falls back to Project.subtitleSidecar when unset.
    */
@@ -769,6 +784,8 @@ export interface ExportReport {
   audioStems?: string[];
   /** Export-only mode that was applied (omitted for a normal export). */
   exportOnly?: ExportOnlyMode;
+  /** Frame interpolation that was actually applied (omitted when off). */
+  frameInterp?: FrameInterpOptions;
   /** Sidecar files written (subtitle-only export, or opts.srtPath). */
   sidecarFiles?: string[];
 }
@@ -1416,8 +1433,19 @@ async function exportProjectInner(
     if (masks.size > 0) p3gInputs.objectTrackMasks = masks;
   }
   await prepareClone(smartFlat, { ffprobe: opts.ffprobe });
+  // Whole-film frame-interp switch (W10): resolved here, after every
+  // prep pass (so a bad target still fails before any ffmpeg work)
+  // and applied by overriding the project's own frameInterp on the
+  // project handed to the graph build — the graph itself is
+  // untouched. Audio-only exports suppress it: the video chain is
+  // sunk to nullsink there, so minterpolate would burn its 3-5x
+  // cost on frames nobody sees. Compound children inherit the
+  // switch through resolveCompoundClips (childOpts spreads opts).
+  const frameInterp = exportOnly === 'audio'
+    ? undefined
+    : resolveExportFrameInterp(project.frameInterp, opts.frameInterp, project.fps);
   const { filterComplex: graphComplex, videoOut, audioOut, extraInputs, audioStems } = buildFilterGraph(
-    smartProject,
+    { ...smartProject, frameInterp },
     opts.fontfile,
     opts.preset.lut,
     assFile,
@@ -1489,9 +1517,13 @@ async function exportProjectInner(
   // otherwise the preset codec (default libx264).
   const enc = resolveEncoderArgs(opts.preset, hdrMode);
   if (exportOnly !== 'audio') {
+    // -r follows the resolved interpolation target, NOT the preset
+    // fps: minterpolate emits targetFps frames, and a stale preset
+    // -r would drop them again at encode time (pre-W10, a 30 fps
+    // preset silently ate a 24->60 interpolation).
     args.push(
       '-c:v', enc.codec, '-preset', opts.preset.preset, '-crf', String(opts.preset.crf),
-      '-pix_fmt', enc.pixFmt, '-r', String(opts.preset.fps),
+      '-pix_fmt', enc.pixFmt, '-r', String(frameInterp?.targetFps ?? opts.preset.fps),
     );
   }
   if (exportOnly !== 'video') {
@@ -1522,6 +1554,7 @@ async function exportProjectInner(
     durationError: Math.abs(actual.duration - expectedDuration),
     ...(stemRoles.length > 0 ? { audioStems: stemRoles } : {}),
     ...(exportOnly !== 'none' ? { exportOnly } : {}),
+    ...(frameInterp ? { frameInterp } : {}),
     ...(sidecarFiles.length > 0 ? { sidecarFiles } : {}),
   };
 }
