@@ -82,7 +82,7 @@ namespace DogSC.Replica {
 
  // ---- 扫描器：只读文件与 JSON，绝不加载任何插件二进制 ----
  static class PluginScanner {
-  public const string HostStatus = "插件宿主开发中：本版只扫描、列元数据，不加载插件、不处理音频/画面。";
+  public const string HostStatus = "插件宿主加载开发中：本版只扫描、列元数据，不加载插件、不处理音频/画面。";
   public static readonly string[] Vst3ArchDirs = new[] { "x86_64-win", "x86-win", "arm64-win" };
 
   static string Env(string name) { try { return Environment.GetEnvironmentVariable(name); } catch { return null; } }
