@@ -151,6 +151,21 @@ jobs:
           path: Windows/bin/w8colour-results.txt
           if-no-files-found: warn
 
+      - name: W9 sweep checks
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $test = Start-Process -FilePath (Join-Path $PWD 'Windows/bin/CatCut.exe') -ArgumentList '--w9sweep-test' -WindowStyle Hidden -PassThru -Wait
+          Get-Content 'Windows/bin/w9sweep-results.txt' -Raw
+          if ($test.ExitCode -ne 0 -or -not ((Get-Content 'Windows/bin/w9sweep-results.txt' -Raw).StartsWith('PASS:'))) { throw 'W9 sweep checks failed.' }
+
+      - name: Upload W9 sweep results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w9sweep-results
+          path: Windows/bin/w9sweep-results.txt
+          if-no-files-found: warn
+
       - name: Package portable ZIP
         run: |
           $ErrorActionPreference = 'Stop'
