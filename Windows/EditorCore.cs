@@ -68,6 +68,10 @@ namespace DogSC.Replica {
   public bool PortraitEnabled; public string PortraitBgMode="original"; public string PortraitBgColor="#FF0000"; public string PortraitBgImage=""; public double PortraitBgBlur=6; public double PortraitEdgeFeather=1;
   // 模板商店（templates.ts）：当前套用的内置模板 id（空 = 没套）。
   public string TemplateId=""; public string Transition="cut"; public double TransitionDuration; public double AudioFadeIn; public double AudioFadeOut;
+  // W10：接点转场方案（模型见 Windows/W10TransitionsPanels.cs；老工程
+  // 反序列化为 null，Validate() 里补空列表；条数由 TransitionPlan.Ensure
+  // 在使用前对齐，Validate 只验已有条目，不验条数）。
+  public List<TransitionSpec> JunctionTransitions;
   // 对象跟踪（p3g.ts）：方法 color/template；颜色 #rrggbb；框选框（画面比例）。
   public bool ObjectTrackEnabled; public string ObjectTrackMethod="color"; public string ObjectTrackColor="#FFFFFF"; public double ObjectTrackTolerance=60; public string ObjectTrackSticker=""; public double ObjectTrackMosaic; public double TrackBoxX=.4; public double TrackBoxY=.4; public double TrackBoxW=.2; public double TrackBoxH=.2;
   // 克隆（p3g.ts）：路数 2/4，偏移逗号分隔，布局 horizontal/grid。
@@ -202,6 +206,9 @@ namespace DogSC.Replica {
    if(!string.IsNullOrEmpty(TemplateId)&&TemplateStore.Find(TemplateId)==null)throw new Exception("模板无效：" + TemplateId + "。");
    if(!string.IsNullOrEmpty(Transition)&&!new[]{"cut","fade","dissolve","wipeleft","wiperight","slideleft","circleopen","fadeblack","fadewhite"}.Contains(Transition))throw new Exception("转场无效：" + Transition + "。");
    if(!Finite(TransitionDuration)||TransitionDuration<0||TransitionDuration>5)throw new Exception("转场时长超出范围（0–5 秒）。");
+   // W10：老项目缺接点方案时补空列表；已有条目逐项校验（类型/时长/两侧片段长度）。
+   if(JunctionTransitions==null)JunctionTransitions=new List<TransitionSpec>();
+   TransitionPlan.ValidateSpecs(this);
    if(!Finite(AudioFadeIn)||AudioFadeIn<0||AudioFadeIn>10||!Finite(AudioFadeOut)||AudioFadeOut<0||AudioFadeOut>10)throw new Exception("音频淡入淡出超出范围（0–10 秒）。");
    ObjectTracker.Validate(this);
    CloneEffect.Validate(this);
