@@ -42,6 +42,30 @@ foreach ($entry in $files.GetEnumerator()) {
     New-Item -ItemType Directory -Force -Path (Split-Path $destination) | Out-Null
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $entry.Key) -Destination $destination
 }
+# W10：VST3 桥 + AGain 测试插件（CI 的 native 步产出；本地只编 C# 时没有，警告不断包——
+# 云端构建的 W10 自测会在缺桥时直接 FAIL，所以云端包不可能悄悄缺桥）。
+$bridgeFiles = @{
+    'bin/Vst3BridgeHost.exe' = 'Windows/bin/Vst3BridgeHost.exe'
+    'bin/CatCut.Vst3Bridge.dll' = 'Windows/bin/CatCut.Vst3Bridge.dll'
+}
+foreach ($entry in $bridgeFiles.GetEnumerator()) {
+    $source = Join-Path $PSScriptRoot $entry.Key
+    if (Test-Path -LiteralPath $source -PathType Leaf) {
+        $destination = Join-Path $packageRoot $entry.Value
+        New-Item -ItemType Directory -Force -Path (Split-Path $destination) | Out-Null
+        Copy-Item -LiteralPath $source -Destination $destination
+    } else {
+        Write-Warning "VST3 桥文件缺失，未随包分发：$source（本地构建需先编 native 桥；云端构建缺它会直接 FAIL）"
+    }
+}
+$againBundle = Join-Path $PSScriptRoot 'bin/Plugins/AGain.vst3'
+if (Test-Path -LiteralPath $againBundle -PathType Container) {
+    $destination = Join-Path $packageRoot 'Windows/bin/Plugins/AGain.vst3'
+    New-Item -ItemType Directory -Force -Path (Split-Path $destination) | Out-Null
+    Copy-Item -LiteralPath $againBundle -Destination $destination -Recurse
+} else {
+    Write-Warning "AGain 测试插件缺失，未随包分发：$againBundle"
+}
 $fontDestination = Join-Path $packageRoot 'Resources/Fonts'
 New-Item -ItemType Directory -Force -Path $fontDestination | Out-Null
 Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot '../Resources/Fonts') -File | ForEach-Object {
