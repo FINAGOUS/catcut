@@ -386,7 +386,12 @@ VST3BRIDGE_API int32_t vst3_load (const char* utf8Path, int64_t* outHandle, char
         // ConnectionProxy 到控制器，不需要 handler；handler 只给控制器。
         if (bridge->controller)
             bridge->controller->setComponentHandler (bridge->handler);
+        // 注意：U::cast（queryInterface）会 addRef 一次；processor 按设计是不持有
+        // 引用的借用指针（随 component 走），所以立刻 release 掉这一次，还回借用状态。
+        // 不还的话 component 引用计数永远多 1，对象析构不了（泄漏，第 9 跑排查时发现）。
         bridge->processor = U::cast<IAudioProcessor> (bridge->component);
+        if (bridge->processor)
+            bridge->processor->release ();
         if (!bridge->processor)
         {
             setErr (errBuf, errBufSize, "插件组件不是 IAudioProcessor：" + std::string (utf8Path));
