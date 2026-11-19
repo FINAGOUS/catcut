@@ -98,7 +98,8 @@ namespace DogSC.Replica {
   public static void SyncLegacyCuts(EditDocument doc) {
    if (!HasTracks(doc) || doc.VideoTracks == null || doc.VideoTracks.Count == 0) return;
    var track = doc.VideoTracks[0];
-   var sorted = track.Clips.OrderBy(c => c.Start).ToList();
+   if (track == null || track.Clips == null) return;
+   var sorted = track.Clips.Where(c => c != null).OrderBy(c => c.Start).ToList();
    var cuts = new List<Cut>(); double t = 0;
    foreach (var mc in sorted) {
     if (mc.Start > t + 0.001) cuts.Add(new Cut { Gap = true, GapDuration = mc.Start - t, Start = mc.In, End = mc.In, Speed = 1 });
@@ -110,25 +111,27 @@ namespace DogSC.Replica {
 
   public static double Duration(EditDocument doc) {
    double d = 0;
-   if (doc.VideoTracks != null) foreach (var tr in doc.VideoTracks) foreach (var c in tr.Clips) d = Math.Max(d, c.End);
-   if (d <= 0 && doc.AudioTracks != null) foreach (var tr in doc.AudioTracks) foreach (var c in tr.Clips) d = Math.Max(d, c.End);
+   if (doc.VideoTracks != null) foreach (var tr in doc.VideoTracks) { if (tr == null || tr.Clips == null) continue; foreach (var c in tr.Clips) { if (c == null) continue; d = Math.Max(d, c.End); } }
+   if (d <= 0 && doc.AudioTracks != null) foreach (var tr in doc.AudioTracks) { if (tr == null || tr.Clips == null) continue; foreach (var c in tr.Clips) { if (c == null) continue; d = Math.Max(d, c.End); } }
    if (d <= 0 && doc.Cuts != null) { double s = 0; foreach (var c in doc.Cuts) s += c.Length; d = s; }
    return d;
   }
   public static int TotalClips(EditDocument doc) {
    int n = 0;
-   if (doc.VideoTracks != null) foreach (var tr in doc.VideoTracks) n += tr.Clips.Count;
-   if (doc.AudioTracks != null) foreach (var tr in doc.AudioTracks) n += tr.Clips.Count;
+   if (doc.VideoTracks != null) foreach (var tr in doc.VideoTracks) if (tr != null && tr.Clips != null) n += tr.Clips.Count;
+   if (doc.AudioTracks != null) foreach (var tr in doc.AudioTracks) if (tr != null && tr.Clips != null) n += tr.Clips.Count;
    return n;
   }
   public static List<MtFlat> Flatten(EditDocument doc) {
    var flat = new List<MtFlat>(); int g = 0;
    if (doc.VideoTracks != null) for (int ti = 0; ti < doc.VideoTracks.Count; ti++) {
-    var sorted = doc.VideoTracks[ti].Clips.Select((c, i) => new { Clip = c, Index = i }).OrderBy(x => x.Clip.Start).ThenBy(x => x.Index).ToList();
+    var vtr = doc.VideoTracks[ti]; if (vtr == null || vtr.Clips == null) continue;
+    var sorted = vtr.Clips.Select((c, i) => new { Clip = c, Index = i }).Where(x => x.Clip != null).OrderBy(x => x.Clip.Start).ThenBy(x => x.Index).ToList();
     foreach (var x in sorted) flat.Add(new MtFlat { Clip = x.Clip, Kind = "video", TrackIndex = ti, TrackId = doc.VideoTracks[ti].Id, ClipIndex = x.Index, Global = g++ });
    }
    if (doc.AudioTracks != null) for (int ti = 0; ti < doc.AudioTracks.Count; ti++) {
-    var sorted = doc.AudioTracks[ti].Clips.Select((c, i) => new { Clip = c, Index = i }).OrderBy(x => x.Clip.Start).ThenBy(x => x.Index).ToList();
+    var atr = doc.AudioTracks[ti]; if (atr == null || atr.Clips == null) continue;
+    var sorted = atr.Clips.Select((c, i) => new { Clip = c, Index = i }).Where(x => x.Clip != null).OrderBy(x => x.Clip.Start).ThenBy(x => x.Index).ToList();
     foreach (var x in sorted) flat.Add(new MtFlat { Clip = x.Clip, Kind = "audio", TrackIndex = ti, TrackId = doc.AudioTracks[ti].Id, ClipIndex = x.Index, Global = g++ });
    }
    return flat;
@@ -167,6 +170,7 @@ namespace DogSC.Replica {
    var ids = new HashSet<string>();
    string[] blends = { "normal", "multiply", "screen", "overlay", "darken", "lighten", "add" };
    if (doc.VideoTracks != null) foreach (var tr in doc.VideoTracks) {
+    if (tr == null) throw new Exception("多轨项目里有一条空视频轨（null），项目文件可能损坏。");
     CheckId(tr.Id, ids, "视频轨");
     if (!Finite(tr.Opacity) || tr.Opacity < 0 || tr.Opacity > 1) throw new Exception("视频轨 \"" + tr.Id + "\"：不透明度 " + N(tr.Opacity) + " 超出 [0, 1]。");
     if (string.IsNullOrEmpty(tr.Blend)) tr.Blend = "normal";
@@ -179,6 +183,7 @@ namespace DogSC.Replica {
     CheckClips(tr.Id, tr.Clips);
    }
    if (doc.AudioTracks != null) foreach (var tr in doc.AudioTracks) {
+    if (tr == null) throw new Exception("多轨项目里有一条空音频轨（null），项目文件可能损坏。");
     CheckId(tr.Id, ids, "音频轨");
     if (!Finite(tr.GainDb) || tr.GainDb < -60 || tr.GainDb > 12) throw new Exception("音频轨 \"" + tr.Id + "\"：增益 " + N(tr.GainDb) + " dB 超出 [-60, 12]。");
     if (!Finite(tr.Pan) || tr.Pan < -1 || tr.Pan > 1) throw new Exception("音频轨 \"" + tr.Id + "\"：声像 " + N(tr.Pan) + " 超出 [-1, 1]。");
@@ -192,7 +197,8 @@ namespace DogSC.Replica {
    ids.Add(id);
   }
   static void CheckClips(string trackId, List<MtClip> clips) {
-   var sorted = clips.OrderBy(c => c.Start).ToList();
+   if (clips == null) return;
+   var sorted = clips.Where(c => c != null).OrderBy(c => c.Start).ToList();
    double prevEnd = double.NegativeInfinity;
    string[] crossfade = { "fade", "dissolve", "fadeblack", "fadewhite" };
    string[] all = { "cut", "fade", "dissolve", "wipeleft", "wiperight", "slideleft", "circleopen", "fadeblack", "fadewhite" };
@@ -279,8 +285,8 @@ namespace DogSC.Replica {
     }
    } catch {
     // 目标无效时把片段放回原轨，不丢片段。
-    if (fromKind == "video") FindVideo(doc, fromTrackId).Clips.Insert(Math.Min(clipIndex, FindVideo(doc, fromTrackId).Clips.Count), clip);
-    else FindAudio(doc, fromTrackId).Clips.Insert(Math.Min(clipIndex, FindAudio(doc, fromTrackId).Clips.Count), clip);
+    if (fromKind == "video") { var back = FindVideo(doc, fromTrackId); if (back != null && back.Clips != null) back.Clips.Insert(Math.Min(clipIndex, back.Clips.Count), clip); }
+    else { var back = FindAudio(doc, fromTrackId); if (back != null && back.Clips != null) back.Clips.Insert(Math.Min(clipIndex, back.Clips.Count), clip); }
     throw;
    }
    SyncLegacyCuts(doc);
@@ -409,8 +415,9 @@ namespace DogSC.Replica {
    var visibleVideo = new List<int>();
    if (doc.VideoTracks != null) for (int ti = 0; ti < doc.VideoTracks.Count; ti++) {
     var tr = doc.VideoTracks[ti];
+    if (tr == null) throw new Exception("多轨项目里有一条空视频轨（null），项目文件可能损坏。");
     if (tr.Visible == false) {
-     foreach (var c in tr.Clips) { MtFlat f; if (byKey.TryGetValue("video:" + ti + ":" + tr.Clips.IndexOf(c), out f)) chains.Add("[v" + f.Global + "]nullsink"); }
+     if (tr.Clips != null) foreach (var c in tr.Clips) { MtFlat f; if (c != null && byKey.TryGetValue("video:" + ti + ":" + tr.Clips.IndexOf(c), out f)) chains.Add("[v" + f.Global + "]nullsink"); }
     } else visibleVideo.Add(ti);
    }
    if (visibleVideo.Count == 0) {
@@ -450,6 +457,7 @@ namespace DogSC.Replica {
     trackAudio.Add(AssembleTrackAudio(chains, doc.VideoTracks[ti].Clips, "video", ti, byKey, projDur, null));
    if (doc.AudioTracks != null) for (int ti = 0; ti < doc.AudioTracks.Count; ti++) {
     var tr = doc.AudioTracks[ti];
+    if (tr == null) throw new Exception("多轨项目里有一条空音频轨（null），项目文件可能损坏。");
     bool muted; if (!muteMap.TryGetValue(tr.Id, out muted)) muted = false;
     trackAudio.Add(AssembleTrackAudio(chains, tr.Clips, "audio", ti, byKey, projDur, new TrackOpts { GainDb = tr.GainDb, Pan = tr.Pan, Muted = muted }));
    }
@@ -465,7 +473,8 @@ namespace DogSC.Replica {
   // 单条视频轨的时间线（引擎 assembleVideoTrackTimeline 同款：concat/xfade/硬切 trim，
   // 空隙透明黑；不重叠的 transitionIn 在片段链上先淡入）。
   static string AssembleVideoTrack(List<string> chains, EditDocument doc, MtVideoTrack track, int ti, Dictionary<string, MtFlat> byKey, double projDur, int width, int height, int fps) {
-   var sorted = track.Clips.Select((c, i) => new { Clip = c, Index = i }).OrderBy(x => x.Clip.Start).ThenBy(x => x.Index).ToList();
+   if (track == null || track.Clips == null) throw new Exception("多轨视频轨为空或没有片段列表。");
+   var sorted = track.Clips.Select((c, i) => new { Clip = c, Index = i }).Where(x => x.Clip != null).OrderBy(x => x.Clip.Start).ThenBy(x => x.Index).ToList();
    Func<double, string, string> gap = (dur, tag) => {
     chains.Add("color=c=black@0:s=" + width + "x" + height + ":r=" + fps + ":d=" + N(dur) + ",format=yuva420p[" + tag + "]");
     return "[" + tag + "]";
@@ -518,7 +527,8 @@ namespace DogSC.Replica {
   // 单条轨的音频（引擎 assembleTrackAudio 同款：静音空隙、concat、重叠 acrossfade/硬切，
   // 尾部 apad 到片长；音频轨再叠加整轨 gain/pan/mute）。
   static string AssembleTrackAudio(List<string> chains, List<MtClip> clips, string kind, int ti, Dictionary<string, MtFlat> byKey, double projDur, TrackOpts opts) {
-   var sorted = clips.Select((c, i) => new { Clip = c, Index = i }).OrderBy(x => x.Clip.Start).ThenBy(x => x.Index).ToList();
+   if (clips == null) return null;
+   var sorted = clips.Select((c, i) => new { Clip = c, Index = i }).Where(x => x.Clip != null).OrderBy(x => x.Clip.Start).ThenBy(x => x.Index).ToList();
    if (sorted.Count == 0) return null;
    Func<double, string, string> gap = (dur, tag) => {
     chains.Add("anullsrc=r=48000:cl=stereo:d=" + N(dur) + "[" + tag + "]");
@@ -593,6 +603,8 @@ namespace DogSC.Replica {
    }
   }
   public static Bitmap Frame(EditDocument doc, double time, CancellationToken token, string colorVf) {
+   // W10 hotfix：宽/高异常（0 或损坏的项目）不许除零——返回 2×2 黑帧，调用方照常显示。
+   if (doc.Width < 2 || doc.Height < 2) return new Bitmap(2, 2, PixelFormat.Format32bppArgb);
    int w = Math.Min(doc.Width, 1280); w -= w % 2;
    int h = Math.Max(2, (int)Math.Round((double)w * doc.Height / doc.Width / 2) * 2);
    var canvas = new Bitmap(w, h, PixelFormat.Format32bppArgb);
@@ -600,6 +612,7 @@ namespace DogSC.Replica {
     g.Clear(Color.Black);
     if (doc.VideoTracks == null) return canvas;
     foreach (var tr in doc.VideoTracks) {
+     if (tr == null || tr.Clips == null) continue;
      if (tr.Visible == false) continue;
      var clip = MultitrackDoc.ClipAt(tr.Clips, time);
      if (clip == null) continue;
