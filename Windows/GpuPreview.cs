@@ -18,6 +18,7 @@
 //   另：RenderTargetBitmap 抓不到 D3DImage 的内容，所以 --snapshot 产出的 editor-preview.png 里预览区
 //   在走硬件路径时可能是空白——文件照常产出、启动检查只认文件存在；真实窗口里的预览是正常的。
 using System;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -136,14 +137,20 @@ namespace DogSC.Replica {
   delegate int DrawPrimitiveUpDelegate(IntPtr self, uint primitiveType, uint primitiveCount, IntPtr vertexData, uint vertexStride);
 
   public static T Fn<T>(IntPtr obj, int index) {
+   // W10 hotfix：空 COM 指针直接读虚表就是原生 AV（损坏状态异常，catch 接不住、
+   // 进程当场死且不留 last-error.txt）。先判空，转成托管异常走 Fail() 回退。
+   if (obj == IntPtr.Zero) throw new InvalidOperationException("Direct3D 对象为空。");
    IntPtr vt = Marshal.ReadIntPtr(obj);
    IntPtr fp = Marshal.ReadIntPtr(vt, index * IntPtr.Size);
    return (T)(object)Marshal.GetDelegateForFunctionPointer(fp, typeof(T));
   }
+  // W10 hotfix：Release 也可能撞上已释放的 COM 对象而原生 AV。先把指针清零再调
+  // （调失败也不留悬空指针二次释放），AV 由本方法的 CSE 处理接住后静默回退。
+  [HandleProcessCorruptedStateExceptions]
   public static void Release(ref IntPtr obj) {
    if (obj == IntPtr.Zero) return;
-   try { Fn<ReleaseDelegate>(obj, 2)(obj); } catch { }
-   obj = IntPtr.Zero;
+   IntPtr tmp = obj; obj = IntPtr.Zero;
+   try { Fn<ReleaseDelegate>(tmp, 2)(tmp); } catch { }
   }
   public static int CreateDeviceEx(IntPtr d3d, uint adapter, int deviceType, IntPtr focusWindow, uint behaviorFlags, ref PresentParameters pp, out IntPtr device) {
    return Fn<CreateDeviceExDelegate>(d3d, 14)(d3d, adapter, deviceType, focusWindow, behaviorFlags, ref pp, IntPtr.Zero, out device);
@@ -189,6 +196,13 @@ namespace DogSC.Replica {
   public D3DImage Image { get { return image; } }
   public bool Available { get { return !failed && device != IntPtr.Zero; } }
 
+  // W10 hotfix：下面四个入口都可能进原生 D3D9/D3DImage。没有这个 attribute 时，
+  // 原生访问违规是损坏状态异常（CSE），.NET Framework 里 catch{} 接不住，进程直接
+  // 死、Dispatcher/AppDomain handler 全绕过、last-error.txt 一片空白——这正是真机
+  // “导入就闪退、无 last-error.txt”最可能的形态。有了它，AV 变成可捕获异常，
+  // catch 里置 failed、调用方当场切 WriteableBitmap 软件路径，绝不杀进程。
+  // 只敢这么接的原因：这几个方法只碰 D3D、失败后整台渲染器即刻废弃、不再碰任何原生句柄。
+  [HandleProcessCorruptedStateExceptions]
   public bool TryInitialize(IntPtr focusWindow) {
    try {
     int hr = D3D9.Direct3DCreate9Ex(D3D9.SDK_VERSION, out d3d);
@@ -214,6 +228,7 @@ namespace DogSC.Replica {
   }
   bool Fail() { failed = true; return false; }
   bool EnsureRenderTarget(int w, int h) {
+   if (w <= 0 || h <= 0) return false;
    if (rtTexture != IntPtr.Zero && rtW == w && rtH == h) return true;
    IntPtr newTex, newSurf;
    if (D3D9.CreateTexture(device, (uint)w, (uint)h, 1, D3D9.USAGE_RENDERTARGET, D3D9.FMT_A8R8G8B8, D3D9.POOL_DEFAULT, out newTex) < 0) return false;
@@ -226,12 +241,16 @@ namespace DogSC.Replica {
    return true;
   }
   bool EnsureTexture(ref IntPtr tex, ref int tw, ref int th, int w, int h) {
+   if (w <= 0 || h <= 0) return false;
    if (tex != IntPtr.Zero && tw == w && th == h) return true;
    IntPtr nt;
    if (D3D9.CreateTexture(device, (uint)w, (uint)h, 1, D3D9.USAGE_DYNAMIC, D3D9.FMT_A8R8G8B8, D3D9.POOL_DEFAULT, out nt) < 0) return false;
    D3D9.Release(ref tex); tex = nt; tw = w; th = h; return true;
   }
   bool Upload(IntPtr texture, byte[] bgra, int w, int h) {
+   // W10 hotfix：字节数与纹理尺寸对不上就拒绝上传——旧版直接 Marshal.Copy 会把堆写穿，
+   // 堆损坏当场不死、随后在任意处原生崩溃，最难查。
+   if (texture == IntPtr.Zero || bgra == null || (long)bgra.Length != (long)w * 4 * h) return false;
    D3D9.LockedRect locked;
    if (D3D9.LockRect(texture, 0, out locked, D3D9.LOCK_DISCARD) < 0) return false;
    try {
@@ -249,7 +268,9 @@ namespace DogSC.Replica {
    verts[2] = new D3D9.Vertex { X = x0, Y = y1, Z = 0, Rhw = 1, Color = color, U = u0, V = v1 };
    verts[3] = new D3D9.Vertex { X = x1, Y = y1, Z = 0, Rhw = 1, Color = color, U = u1, V = v1 };
    GCHandle handle = GCHandle.Alloc(verts, GCHandleType.Pinned);
-   try { return D3D9.DrawPrimitiveUp(device, D3D9.PT_TRIANGLESTRIP, 2, handle.AddrOfPinnedObject(), 24) >= 0; }
+   // W10 hotfix：Vertex 是 4 float + uint + 2 float = 28 字节，旧版写死 stride 24，
+   // D3D 按 24 字节步长读顶点——几何错乱且读到数组尾部之外（原生越界读）。
+   try { return D3D9.DrawPrimitiveUp(device, D3D9.PT_TRIANGLESTRIP, 2, handle.AddrOfPinnedObject(), (uint)Marshal.SizeOf(typeof(D3D9.Vertex))) >= 0; }
    finally { handle.Free(); }
   }
   bool RenderScene(Func<bool> draw) {
@@ -282,6 +303,7 @@ namespace DogSC.Replica {
    try { image.AddDirtyRect(new Int32Rect(0, 0, rtW, rtH)); } finally { image.Unlock(); }
    return true;
   }
+  [HandleProcessCorruptedStateExceptions]
   public bool SetChrome(byte[] bgra, int w, int h) {
    if (failed || device == IntPtr.Zero) return false;
    try {
@@ -291,6 +313,7 @@ namespace DogSC.Replica {
    } catch { return Fail(); }
   }
   // 整张合成好的帧（暂停预览、或 GPU 合成不适用时 Play 的回退）直接全屏贴出来。
+  [HandleProcessCorruptedStateExceptions]
   public bool PresentComposed(byte[] bgra, int w, int h) {
    if (failed || device == IntPtr.Zero) return false;
    try {
@@ -305,6 +328,7 @@ namespace DogSC.Replica {
    } catch { return Fail(); }
   }
   // 真 GPU 合成：解码帧按运镜裁剪贴在视频区，铬层盖在上面（视频区透明，圆角处框面盖住视频方角）。
+  [HandleProcessCorruptedStateExceptions]
   public bool PresentVideo(byte[] bgra, int vw, int vh, float dx, float dy, float dw, float dh, float u0, float v0, float u1, float v1, float opacity) {
    if (failed || device == IntPtr.Zero || !chromeReady) return false;
    try {
@@ -325,6 +349,10 @@ namespace DogSC.Replica {
    } catch { return Fail(); }
   }
   void Cleanup() {
+   // W10 hotfix：先把 D3DImage 的 back buffer 摘掉再释放 surface。旧版直接释放仍被
+   // D3DImage 挂着的 surface——WPF 渲染线程随后摸到已释放的 surface 就是原生 AV，
+   // FallbackToSoftware/关闭窗口时都走这里，是真机闪退的另一条原生路径。
+   try { image.Lock(); try { image.SetBackBuffer(D3DResourceType.IDirect3DSurface9, IntPtr.Zero); } finally { image.Unlock(); } } catch { }
    D3D9.Release(ref rtSurface); D3D9.Release(ref rtTexture);
    D3D9.Release(ref chromeTexture); D3D9.Release(ref videoTexture);
    D3D9.Release(ref device); D3D9.Release(ref d3d);
