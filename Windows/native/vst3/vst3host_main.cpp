@@ -17,6 +17,7 @@
 #include "pluginterfaces/base/fstrdefs.h" // wscast
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
