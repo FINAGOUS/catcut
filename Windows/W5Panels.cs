@@ -494,10 +494,16 @@ namespace DogSC.Replica {
   // videoFilters：[0:v] 之后、split 之前的链（如 scale=640:-2,hqdn3d=…）。
   // maskW/maskH：遮罩缩放目标（与视频帧同尺寸，alphamerge 要求同尺寸）。
   public static string MaskedFilterComplex(string videoFilters, double maskFps, string maskW, string maskH, EditDocument doc) {
+   return MaskedFilterComplex(videoFilters, maskFps, maskW, maskH, doc, W5Effects.GradeChain(doc.Grade));
+  }
+  // W9：gradeFilters 由调用方定——导出时传 W8ColourFilters.ChainForGraph
+  // （美颜 → 全局 W8 调色链，见 EditorCore.Export）；预览/单帧仍走老
+  // GradeChain，老行为不变。无高级调色时两者逐字一致。
+  public static string MaskedFilterComplex(string videoFilters, double maskFps, string maskW, string maskH, EditDocument doc, string gradeFilters) {
    var sb = new StringBuilder();
    sb.Append("[0:v]").Append(videoFilters).Append("[v];");
    sb.Append(BeautyFilter.MaskChain(maskFps, maskW, maskH, doc.BeautyEdgeFeather));
-   sb.Append(BeautyFilter.MaskedGraph(doc.BeautyStrength, doc.BeautyEdgeFeather, W5Effects.GradeChain(doc.Grade)));
+   sb.Append(BeautyFilter.MaskedGraph(doc.BeautyStrength, doc.BeautyEdgeFeather, gradeFilters));
    return sb.ToString();
   }
   public static byte[] FrameMasked(string path, double time, int width, CancellationToken token, string videoFilters, EditDocument doc) {
