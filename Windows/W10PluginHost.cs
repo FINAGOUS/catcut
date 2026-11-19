@@ -67,13 +67,22 @@ namespace DogSC.Replica {
    };
    using (var p = new Process { StartInfo = psi }) {
     try { p.Start(); } catch (Exception ex) { throw new Exception("启动 VST3 桥子进程失败：" + ex.Message + "。\n" + Setup); }
+    // 注意：WaitForExit(timeout) 必须在 ReadToEnd 之前。ReadToEnd 会一直堵到子进程
+    // 退出才返回，写在它后面超时永远等不到——第 9 跑就是这么把 job 拖到 20 分钟超时的。
+    var outTask = p.StandardOutput.ReadToEndAsync();
     var errTask = p.StandardError.ReadToEndAsync();
-    string stdout = p.StandardOutput.ReadToEnd();
     if (!p.WaitForExit(timeoutMs)) {
      try { p.Kill(); } catch { }
-     throw new Exception("VST3 桥子进程超时（" + timeoutMs + "ms，未退出，已杀掉）：" + args);
+     try { p.WaitForExit(5000); } catch { }
+     try { System.Threading.Tasks.Task.WaitAll(new[] { outTask, errTask }, 5000); } catch { }
+     string partialErr = "";
+     try { partialErr = errTask.IsCompleted ? errTask.Result : ""; } catch { }
+     throw new Exception("VST3 桥子进程超时（" + timeoutMs + "ms，未退出，已杀掉）：" + args + (string.IsNullOrEmpty(partialErr) ? "" : "\n子进程 stderr（超时前）：\n" + partialErr.Trim()));
     }
+    try { System.Threading.Tasks.Task.WaitAll(new[] { outTask, errTask }, 10000); } catch { }
+    string stdout = "";
     string stderr = "";
+    try { stdout = outTask.Result; } catch { }
     try { stderr = errTask.Result; } catch { }
     if (p.ExitCode != 0)
      throw new Exception("VST3 桥子进程失败（退出码 " + p.ExitCode + "）：" + (string.IsNullOrEmpty(stderr) ? "(无 stderr)" : stderr.Trim()) + "\n命令：" + args);
