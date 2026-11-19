@@ -14,6 +14,7 @@
 import {
   clipBaseDuration,
   clipDuration,
+  hasTracks,
   projectDuration,
   speedCurveSegments,
   type Clip,
@@ -22,6 +23,13 @@ import {
   type TransitionType,
   type ZoomKeyframe,
 } from './project.js';
+import {
+  TRACK_BLEND_MODES,
+  flattenProject,
+  resolveAudioTrackMute,
+  validateMultitrackProject,
+  type FlatClip,
+} from './multitrack.js';
 import { subtitlesToTextOverlays } from './subtitles.js';
 import { hdrVideoFilter, type HdrMode } from './deliver.js';
 import { TEXT_PRESETS } from './presets.js';
@@ -52,6 +60,7 @@ import {
 } from './multicam.js';
 import {
   effectiveMute,
+  panGains,
   resolveRoleConfigs,
   roleFilter,
   roleOfClip,
@@ -179,6 +188,381 @@ function audioAssemblyChains(
     }
   });
   return chains;
+}
+
+/**
+ * Multitrack assembly (video + audio). Video: each track's own
+ * timeline is assembled first (sequential walk with concat/xfade
+ * — the same walk as the legacy assembly — with transparent gaps),
+ * then the tracks are composited bottom-to-top onto a black canvas
+ * of the project duration, one overlay/blend per track (track
+ * opacity/geometry apply to the whole assembled track). The
+ * composite is normalised to yuv420p at [vout]: nothing downstream
+ * needs the alpha anymore.
+ * Audio: each track's clips are assembled the same way (silence
+ * gaps, acrossfade for overlapping clips with a transitionIn),
+ * audio tracks then get their gain/pan/mute/solo, and all track
+ * mixes are amixed together (normalize=0). A single track mix is
+ * passed through with anull; no audio at all yields an anullsrc
+ * of the project duration. Clip audio is normalised to 48 kHz
+ * stereo before assembly (mono duplicated at full level — the
+ * roles.ts measurement: aformat would cost 3 dB); role-processed
+ * audio is already stereo and skips that step. All filters used
+ * here (concat/xfade/acrossfade/geq/fade/overlay/blend/
+ * colorchannelmixer/apad/amix/pan/volume) are native libavfilter
+ * — only verified on the local GPL 8.1.2 build; re-check each on
+ * the BtbN LGPL 9.0 build at the M2 gate.
+ */
+function assembleMultitrack(
+  chains: string[],
+  project: Project,
+  flat: FlatClip[],
+  audioLabel: (g: number) => string,
+  roleAudioChannels: Map<number, number> | undefined,
+  audioNormalized: boolean,
+): { videoOut: string; audioOut: string } {
+  const { width, height, fps } = project;
+  const projDur = projectDuration(project);
+  const byKey = new Map<string, FlatClip>();
+  for (const f of flat) byKey.set(`${f.kind}:${f.trackIndex}:${f.clipIndex}`, f);
+
+  // ---- video ----
+  let videoOut = '[vout]';
+  // Invisible video tracks render nothing, but their per-clip video
+  // chains were still built — sink each [v<i>] or FFmpeg rejects
+  // the graph ("output unconnected"). Their linked audio still
+  // plays (audio assembly below includes every video track).
+  (project.tracks?.video ?? []).forEach((track, ti) => {
+    if (track.visible === false) {
+      track.clips.forEach((clip, clipIndex) => {
+        const f = byKey.get(`video:${ti}:${clipIndex}`);
+        if (f) chains.push(`[v${f.globalIndex}]nullsink`);
+      });
+    }
+  });
+  const videoTracks = (project.tracks?.video ?? []).filter((t) => t.visible !== false);
+  if (videoTracks.length === 0) {
+    chains.push(`color=c=black:s=${width}x${height}:r=${fps}:d=${projDur}[vout]`);
+  } else {
+    chains.push(`color=c=black:s=${width}x${height}:r=${fps}:d=${projDur}[mtbase]`);
+    let base = '[mtbase]';
+    videoTracks.forEach((track, ti) => {
+      base = compositeVideoTrack(chains, project, track, ti, byKey, base, projDur);
+    });
+    chains.push(`${base}format=yuv420p[vout]`);
+  }
+
+  // ---- audio ----
+  const trackAudioLabels: string[] = [];
+  (project.tracks?.video ?? []).forEach((track, ti) => {
+    const label = assembleTrackAudio(
+      chains, track.clips, 'video', ti, byKey, audioLabel,
+      roleAudioChannels, audioNormalized, projDur,
+    );
+    if (label) trackAudioLabels.push(label);
+  });
+  const muteMap = resolveAudioTrackMute(project);
+  (project.tracks?.audio ?? []).forEach((track, ti) => {
+    const label = assembleTrackAudio(
+      chains, track.clips, 'audio', ti, byKey, audioLabel,
+      roleAudioChannels, audioNormalized, projDur,
+      {
+        gainDb: track.gainDb ?? 0,
+        pan: track.pan ?? 0,
+        muted: muteMap.get(track.id) ?? false,
+      },
+    );
+    if (label) trackAudioLabels.push(label);
+  });
+  let audioOut = '[aout]';
+  if (trackAudioLabels.length === 0) {
+    chains.push(`anullsrc=r=48000:cl=stereo:d=${projDur}[aout]`);
+  } else if (trackAudioLabels.length === 1) {
+    chains.push(`${trackAudioLabels[0]}anull[aout]`);
+  } else {
+    chains.push(
+      `${trackAudioLabels.join('')}amix=inputs=${trackAudioLabels.length}:duration=first:normalize=0[aout]`,
+    );
+  }
+  return { videoOut, audioOut };
+}
+
+/** Composite one video track onto `base`; returns the new base label.
+ * The track's own timeline is assembled first (sequential walk with
+ * concat/xfade — see assembleVideoTrackTimeline), then the whole
+ * track is scaled/offset per its geometry and overlaid (normal) or
+ * blended (blend modes, full-canvas only) onto the composite. The
+ * assembled track is yuva420p with transparent gaps, so lower
+ * tracks show through where this track has nothing. */
+function compositeVideoTrack(
+  chains: string[],
+  project: Project,
+  track: import('./project.js').VideoTrack,
+  ti: number,
+  byKey: Map<string, FlatClip>,
+  base: string,
+  projDur: number,
+): string {
+  const { width, height } = project;
+  const opacity = track.opacity ?? 1;
+  const blend = track.blend ?? 'normal';
+  const x = track.x ?? 0;
+  const y = track.y ?? 0;
+  const wFrac = track.w ?? 1;
+  const hFrac = track.h ?? 1;
+  const trackLabel = assembleVideoTrackTimeline(chains, project, track, ti, byKey, projDur);
+  let label = trackLabel;
+  if (opacity < 1) {
+    chains.push(`${label}colorchannelmixer=aa=${opacity}[mto${ti}]`);
+    label = `[mto${ti}]`;
+  }
+  if (wFrac !== 1 || hFrac !== 1) {
+    const sw = Math.max(1, Math.round(width * wFrac));
+    const sh = Math.max(1, Math.round(height * hFrac));
+    chains.push(`${label}scale=${sw}:${sh}[mts${ti}]`);
+    label = `[mts${ti}]`;
+  }
+  if (blend === 'normal') {
+    // No format= option: overlay's `format` only takes family
+    // names (yuv420/yuv422/yuv444/rgb) — 'yuv420p' is rejected
+    // ("Undefined constant"). Format negotiation keeps yuva420p
+    // when the overlay input has alpha, which the chain needs.
+    chains.push(`${base}${label}overlay=x=${x}:y=${y}:eof_action=pass[mtv${ti}]`);
+    return `[mtv${ti}]`;
+  }
+  // Blend modes are RGB operations — blend runs on the pixel
+  // format's planes, so on yuv420p 'multiply' multiplies luma/
+  // chroma and red-over-green reads (0,89,0) instead of black
+  // (measured 2026-11-19). Convert both sides to gbrp, blend,
+  // convert back to yuva420p (opaque) for the next overlay.
+  // Alpha is ignored on the blend path (documented).
+  chains.push(`${base}format=gbrp[mtbg${ti}]`);
+  chains.push(`${label}format=gbrp[mtcg${ti}]`);
+  chains.push(`[mtbg${ti}][mtcg${ti}]blend=all_mode=${TRACK_BLEND_MODES[blend]}[mtbl${ti}]`);
+  chains.push(`[mtbl${ti}]format=yuva420p[mtv${ti}]`);
+  return `[mtv${ti}]`;
+}
+
+/**
+ * Assemble one video track's own timeline to a single yuva420p
+ * stream of the project duration. The walk mirrors the legacy
+ * sequential assembly (concat for gaps/adjacent clips, xfade for
+ * overlapping clips with a transitionIn, trim+concat hard cut for
+ * overlapping clips without one), so a normalized legacy project
+ * reproduces the legacy render exactly — including wipes and
+ * fadeblack, which an overlay-only assembly cannot express. Gaps
+ * are transparent black (alpha 0), so lower tracks show through.
+ * A clip with a transitionIn that does NOT overlap the previous
+ * same-track clip arrives over the LOWER tracks instead: its
+ * alpha (fade/dissolve) or picture (fadeblack/fadewhite) is faded
+ * in on clip-local time before assembly. Every clip stream is
+ * normalised to yuva420p first — concat/xfade need matching
+ * formats. `T` in the arrival geq is clip-local time (0 at the
+ * clip start); `p(X,Y)` reads the current plane's pixel (the
+ * input alpha in the alpha expression — geq has no `a(X,Y)`
+ * accessor, probe 2026-11-19).
+ */
+function assembleVideoTrackTimeline(
+  chains: string[],
+  project: Project,
+  track: import('./project.js').VideoTrack,
+  ti: number,
+  byKey: Map<string, FlatClip>,
+  projDur: number,
+): string {
+  const { width, height, fps } = project;
+  const clips = track.clips
+    .map((clip, clipIndex) => ({ clip, clipIndex }))
+    .sort((a, b) => a.clip.start - b.clip.start || a.clipIndex - b.clipIndex);
+  const gapLabel = (dur: number, tag: string): string => {
+    chains.push(`color=c=black@0:s=${width}x${height}:r=${fps}:d=${dur},format=yuva420p[${tag}]`);
+    return `[${tag}]`;
+  };
+  if (clips.length === 0) return gapLabel(projDur, `mttr${ti}`);
+  let acc = '';
+  let accEnd = -Infinity;
+  clips.forEach(({ clip, clipIndex }, k) => {
+    const f = byKey.get(`video:${ti}:${clipIndex}`);
+    if (!f) throw new Error(`video track "${track.id}": clip ${clip.id} not flattened`);
+    const g = f.globalIndex;
+    const dur = clipDuration(clip);
+    const start = clip.start;
+    chains.push(`[v${g}]format=yuva420p[mtn${g}]`);
+    let label = `[mtn${g}]`;
+    const overlaps = start < accEnd - 1e-9;
+    const tr = clip.transitionIn;
+    if (tr && !overlaps) {
+      // Arrival over the lower tracks (no same-track neighbour to
+      // crossfade with).
+      if (tr.type === 'fadeblack' || tr.type === 'fadewhite') {
+        const color = tr.type === 'fadeblack' ? 'black' : 'white';
+        chains.push(`${label}fade=t=in:st=0:d=${tr.duration}:color=${color}[mtf${g}]`);
+        label = `[mtf${g}]`;
+      } else {
+        chains.push(
+          `${label}geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='p(X,Y)*min(1,max(0,T/${tr.duration}))'[mtf${g}]`,
+        );
+        label = `[mtf${g}]`;
+      }
+    }
+    if (k === 0) {
+      if (start > 1e-9) {
+        const gap = gapLabel(start, `mtgap${g}`);
+        chains.push(`${gap}${label}concat=n=2:v=1:a=0[mtacc${ti}_${k}]`);
+        acc = `[mtacc${ti}_${k}]`;
+      } else {
+        acc = label;
+      }
+    } else if (!overlaps) {
+      const gap = start - accEnd;
+      if (gap > 1e-9) {
+        const gapL = gapLabel(gap, `mtgap${g}`);
+        chains.push(`${acc}${gapL}${label}concat=n=3:v=1:a=0[mtacc${ti}_${k}]`);
+      } else {
+        chains.push(`${acc}${label}concat=n=2:v=1:a=0[mtacc${ti}_${k}]`);
+      }
+      acc = `[mtacc${ti}_${k}]`;
+    } else {
+      const overlap = accEnd - start;
+      if (tr) {
+        // Same-track crossfade: xfade's offset is the clip's start
+        // in the accumulated stream's timeline; the transition runs
+        // [start, start+d]. The accumulated tail past start+d is
+        // discarded by xfade — it sits under the new clip anyway.
+        const d = Math.min(tr.duration, overlap);
+        chains.push(
+          `${acc}${label}xfade=transition=${XFADE_TRANSITIONS[tr.type]}:duration=${d}:offset=${start}[mtacc${ti}_${k}]`,
+        );
+      } else {
+        // Hard cut: drop the overlapped tail of the accumulated
+        // stream, then concat the new clip.
+        chains.push(`${acc}trim=start=0:end=${start},setpts=PTS-STARTPTS[mttr${ti}_${k}]`);
+        chains.push(`[mttr${ti}_${k}]${label}concat=n=2:v=1:a=0[mtacc${ti}_${k}]`);
+      }
+      acc = `[mtacc${ti}_${k}]`;
+    }
+    accEnd = start + dur;
+  });
+  if (projDur - accEnd > 1e-9) {
+    const tail = gapLabel(projDur - accEnd, `mttail${ti}`);
+    chains.push(`${acc}${tail}concat=n=2:v=1:a=0[mtt${ti}]`);
+    acc = `[mtt${ti}]`;
+  }
+  return acc;
+}
+
+/**
+ * Assemble one track's audio to a single label (project-duration
+ * long, 48 kHz stereo) or undefined when the track has no clips.
+ * The walk mirrors the video walk: silence gaps (anullsrc),
+ * concat for adjacent clips, acrossfade for overlapping clips
+ * with a transitionIn (video tracks only — the acrossfade takes
+ * the tail of the first input, so the accumulated stream is
+ * pre-trimmed to [0, start+d]), trim+concat hard cut for
+ * overlapping clips without one. Same-track audio overlaps
+ * hard-cut by design — to layer sounds, use separate tracks
+ * (they mix in the global amix). `trackOpts` (audio tracks only):
+ * gain/pan/mute — applied after the clips are mixed, so they act
+ * on the whole track. Clip audio is normalised to 48 kHz stereo
+ * before assembly (mono duplicated at full level — the roles.ts
+ * measurement: aformat would cost 3 dB); role-processed audio is
+ * already stereo and skips that step. Direct buildFilterGraph
+ * callers without a channel map get the stereo variant (same
+ * default as the role chain); export.ts always probes the map
+ * for multitrack projects.
+ */
+function assembleTrackAudio(
+  chains: string[],
+  clips: (import('./project.js').VideoTrackClip | import('./project.js').AudioTrackClip)[],
+  kind: 'video' | 'audio',
+  ti: number,
+  byKey: Map<string, FlatClip>,
+  audioLabel: (g: number) => string,
+  roleAudioChannels: Map<number, number> | undefined,
+  audioNormalized: boolean,
+  projDur: number,
+  trackOpts?: { gainDb: number; pan: number; muted: boolean },
+): string | undefined {
+  const sorted = clips
+    .map((clip, clipIndex) => ({ clip, clipIndex }))
+    .sort((a, b) => a.clip.start - b.clip.start || a.clipIndex - b.clipIndex);
+  if (sorted.length === 0) return undefined;
+  const gapLabel = (dur: number, tag: string): string => {
+    chains.push(`anullsrc=r=48000:cl=stereo:d=${dur}[${tag}]`);
+    return `[${tag}]`;
+  };
+  let acc = '';
+  let accEnd = -Infinity;
+  sorted.forEach(({ clip, clipIndex }, k) => {
+    const f = byKey.get(`${kind}:${ti}:${clipIndex}`);
+    if (!f) throw new Error(`${kind} track ${ti}: clip ${clip.id} not flattened`);
+    const g = f.globalIndex;
+    const dur = clipDuration(clip);
+    const start = clip.start;
+    let label = audioLabel(g);
+    if (!audioNormalized) {
+      const ch = roleAudioChannels?.get(g);
+      if (ch === 1) {
+        chains.push(`${label}aresample=48000,pan=stereo|c0=c0|c1=c0[mtn${g}]`);
+      } else {
+        chains.push(`${label}aresample=48000[mtn${g}]`);
+      }
+      label = `[mtn${g}]`;
+    }
+    const overlaps = start < accEnd - 1e-9;
+    const tr = (clip as import('./project.js').VideoTrackClip).transitionIn;
+    if (k === 0) {
+      if (start > 1e-9) {
+        const gapL = gapLabel(start, `mtagap${g}`);
+        chains.push(`${gapL}${label}concat=n=2:v=0:a=1[mtacc${kind}${ti}_${k}]`);
+        acc = `[mtacc${kind}${ti}_${k}]`;
+      } else {
+        acc = label;
+      }
+    } else if (!overlaps) {
+      const gap = start - accEnd;
+      if (gap > 1e-9) {
+        const gapL = gapLabel(gap, `mtagap${g}`);
+        chains.push(`${acc}${gapL}${label}concat=n=3:v=0:a=1[mtacc${kind}${ti}_${k}]`);
+      } else {
+        chains.push(`${acc}${label}concat=n=2:v=0:a=1[mtacc${kind}${ti}_${k}]`);
+      }
+      acc = `[mtacc${kind}${ti}_${k}]`;
+    } else {
+      const overlap = accEnd - start;
+      if (tr) {
+        const d = Math.min(tr.duration, overlap);
+        chains.push(`${acc}atrim=start=0:end=${start + d},asetpts=PTS-STARTPTS[mtatr${kind}${ti}_${k}]`);
+        chains.push(`[mtatr${kind}${ti}_${k}]${label}acrossfade=d=${d}[mtacc${kind}${ti}_${k}]`);
+      } else {
+        chains.push(`${acc}atrim=start=0:end=${start},asetpts=PTS-STARTPTS[mtatr${kind}${ti}_${k}]`);
+        chains.push(`[mtatr${kind}${ti}_${k}]${label}concat=n=2:v=0:a=1[mtacc${kind}${ti}_${k}]`);
+      }
+      acc = `[mtacc${kind}${ti}_${k}]`;
+    }
+    accEnd = start + dur;
+  });
+  // Pad the tail to the project duration (head gaps were concatted).
+  chains.push(`${acc}apad=whole_dur=${projDur}[mtatail${kind}${ti}]`);
+  let out = `[mtatail${kind}${ti}]`;
+  if (trackOpts) {
+    if (trackOpts.muted) {
+      chains.push(`${out}volume=0[mtt${kind}${ti}]`);
+      out = `[mtt${kind}${ti}]`;
+    } else {
+      const parts: string[] = [];
+      if (trackOpts.gainDb !== 0) parts.push(`volume=${trackOpts.gainDb}dB`);
+      if (trackOpts.pan !== 0) {
+        const { lg, rg } = panGains(trackOpts.pan);
+        parts.push(`pan=stereo|c0=${lg}*c0|c1=${rg}*c1`);
+      }
+      if (parts.length > 0) {
+        chains.push(`${out}${parts.join(',')}[mtt${kind}${ti}]`);
+        out = `[mtt${kind}${ti}]`;
+      }
+    }
+  }
+  return out;
 }
 
 /** Per-clip mask PNG files (segment order) + assigned input indexes. */
@@ -330,6 +714,16 @@ function clipVideoChains(
   /** P3g wiring bundle (colour management / node LUTs / tracked
    *  windows / object tracks / clone / outline). */
   p3g?: P3gGraphInputs,
+  /**
+   * Multitrack opacity: when true the clip's opacity keyframes fade
+   * toward TRANSPARENT (geq on the alpha plane, RGB untouched) so
+   * lower tracks show through; when false (legacy single track)
+   * they fade toward black, as before. Verified ffmpeg 8.1: geq
+   * re-evaluates `T` per frame and `p(X,Y)` reads the current
+   * plane's pixel (the input alpha in the alpha expression; 255
+   * after format=yuva420p on an opaque stream).
+   */
+  opacityToAlpha?: boolean,
 ): string[] {
   const { width, height, fps } = project;
   const chains: string[] = [];
@@ -686,7 +1080,20 @@ function clipVideoChains(
 
   const opacity = clip.opacity ?? [];
   let cur: string;
-  if (opacity.length >= 1) {
+  if (opacity.length >= 1 && opacityToAlpha) {
+    // Multitrack: opacity is an alpha ramp, not a fade to black.
+    // geq keeps RGB (lum/cb/cr read back) and scales only alpha by
+    // the keyframed value, so the composite underneath shows through
+    // where this clip is transparent. `T` is clip-local time here
+    // (the chain starts at PTS 0), matching the keyframe `t`.
+    chains.push(picChain + `[vo${idx}]`);
+    const oExpr = lerpExpr(opacity, (k: Keyframe<number>) => k.value, 'T');
+    chains.push(
+      `[vo${idx}]format=yuva420p,` +
+        `geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='p(X,Y)*(${oExpr})'[vop${idx}]`,
+    );
+    cur = `[vop${idx}]`;
+  } else if (opacity.length >= 1) {
     // Single video track: there is nothing underneath to reveal, so opacity
     // is a fade toward black. Implemented with split + black branch + blend:
     // out = A*o + B*(1-o). Verified ffmpeg 8.1 (YAVG 121.5 -> 47.3 at o=0.3,
@@ -1321,7 +1728,21 @@ export function buildFilterGraph(
    *  windows / object tracks / clone / outline). */
   p3g?: P3gGraphInputs,
 ): FilterGraph {
-  const n = project.clips.length;
+  // Multitrack projects (Project.tracks) render through the
+  // multitrack assembly below; legacy projects (no tracks) render
+  // through the original concat/xfade assembly, byte-identical to
+  // before. Both paths share the per-clip chains, the role block
+  // and the post-assembly tail (adjustment layers, frame interp,
+  // narration, master gain, surround, subtitles, HDR, output LUT).
+  // `flat` is the clip list in render order (legacy: project.clips
+  // in order; multitrack: video-track clips, then audio-track
+  // clips); `flatProject` is the project with that list as `clips`,
+  // so per-clip helpers that index project.clips[idx] (mask
+  // backgrounds, portrait stages) resolve against the global index.
+  if (hasTracks(project)) validateMultitrackProject(project);
+  const flat: FlatClip[] = flattenProject(project);
+  const flatProject: Project = { ...project, clips: flat.map((f) => f.clip) };
+  const n = flat.length;
   if (n === 0) throw new Error('project has no clips');
   // Project colour management: inputSpace belongs on clips, not the
   // project — fail here so a direct graph build (not just the export
@@ -1335,7 +1756,7 @@ export function buildFilterGraph(
   // export.ts resolves them (rendering the child first) before the graph
   // build. Fail here with a clear message instead of emitting a graph
   // that references an empty source path.
-  project.clips.forEach((clip) => {
+  flatProject.clips.forEach((clip) => {
     if (clip.compound) {
       throw new Error(
         `clip ${clip.id}: compound project not resolved; call resolveCompoundClips first`,
@@ -1358,7 +1779,7 @@ export function buildFilterGraph(
     gradeNodeMaskIndex: new Map(),
     objectTrackMaskIndex: new Map(),
   };
-  project.clips.forEach((clip, i) => {
+  flatProject.clips.forEach((clip, i) => {
     if (!clip.mask) return;
     const files = maskFiles?.get(i) ?? [];
     files.forEach((f, j) => {
@@ -1366,26 +1787,26 @@ export function buildFilterGraph(
       maskCtx.extraInputs.push(f);
     });
   });
-  project.clips.forEach((clip, i) => {
+  flatProject.clips.forEach((clip, i) => {
     const src = clip.chromaKey?.background?.source ?? clip.portraitCutout?.background?.source;
     if (!src) return;
     maskCtx.bgInputIndex.set(i, n + maskCtx.extraInputs.length);
     maskCtx.extraInputs.push(src);
   });
-  project.clips.forEach((clip, i) => {
+  flatProject.clips.forEach((clip, i) => {
     const src = clip.ducking?.source;
     if (!src) return;
     maskCtx.duckInputIndex.set(i, n + maskCtx.extraInputs.length);
     maskCtx.extraInputs.push(src);
   });
-  project.clips.forEach((clip, i) => {
+  flatProject.clips.forEach((clip, i) => {
     const file = portraitMasks?.get(i);
     if (!file) return;
     maskCtx.portraitInputIndex.set(i, n + maskCtx.extraInputs.length);
     maskCtx.extraInputs.push(file);
   });
   // Beauty masks (P3): same registration pattern as the portrait masks.
-  project.clips.forEach((clip, i) => {
+  flatProject.clips.forEach((clip, i) => {
     const file = beautyMasks?.get(i);
     if (!file) return;
     maskCtx.beautyInputIndex.set(i, n + maskCtx.extraInputs.length);
@@ -1393,20 +1814,20 @@ export function buildFilterGraph(
   });
   // P3g inputs: tracked-window mask videos, masked node-graph mask
   // PNGs, object-track mosaic mask videos — same registration pattern.
-  project.clips.forEach((clip, i) => {
+  flatProject.clips.forEach((clip, i) => {
     const f = p3g?.trackedWindows?.get(i);
     if (!f) return;
     maskCtx.trackedWindowInputIndex.set(i, n + maskCtx.extraInputs.length);
     maskCtx.extraInputs.push(f.mask);
   });
-  project.clips.forEach((clip, i) => {
+  flatProject.clips.forEach((clip, i) => {
     const stages = p3g?.gradeNodeStages?.get(i) ?? [];
     stages.forEach((st, k) => {
       maskCtx.gradeNodeMaskIndex.set(`${i}:${k}`, n + maskCtx.extraInputs.length);
       maskCtx.extraInputs.push(st.mask);
     });
   });
-  project.clips.forEach((clip, i) => {
+  flatProject.clips.forEach((clip, i) => {
     const m = p3g?.objectTrackMasks?.get(i);
     if (!m) return;
     maskCtx.objectTrackMaskIndex.set(i, n + maskCtx.extraInputs.length);
@@ -1415,7 +1836,7 @@ export function buildFilterGraph(
   // Multicam angles: angle 0 is the clip's own input (clip.source), so
   // only angles 1.. are registered here as extra inputs. Shape errors
   // fail fast here, before any chain is built.
-  project.clips.forEach((clip, i) => {
+  flatProject.clips.forEach((clip, i) => {
     const mc = clip.multicam;
     if (!mc) return;
     validateMulticam(clip);
@@ -1441,8 +1862,18 @@ export function buildFilterGraph(
     maskCtx.extraInputs.push(narrationFile);
   }
   const chains: string[] = [];
-  project.clips.forEach((clip, i) => {
-    chains.push(...clipVideoChains(clip, i, project, fontfile, lut, maskCtx, stabilizeTrf, colorLuts, smartcutTracks, p3g));
+  const isMt = hasTracks(project);
+  // Audio-track clips contribute audio only — building a video chain
+  // for one would leave an unconnected [v<i>] output and FFmpeg
+  // would reject the graph. Video-track clips build both chains
+  // (linked audio). Multitrack clip opacity fades to transparent
+  // (opacityToAlpha), so lower tracks show through.
+  flat.forEach((f) => {
+    const clip = f.clip;
+    const i = f.globalIndex;
+    if (f.kind === 'video') {
+      chains.push(...clipVideoChains(clip, i, flatProject, fontfile, lut, maskCtx, stabilizeTrf, colorLuts, smartcutTracks, p3g, isMt));
+    }
     chains.push(...clipAudioChains(clip, i, maskCtx));
   });
 
@@ -1456,7 +1887,9 @@ export function buildFilterGraph(
   if (useRoles) {
     validateRoles(project);
     roleConfigs = resolveRoleConfigs(project);
-    project.clips.forEach((clip, i) => {
+    flat.forEach((f) => {
+      const clip = f.clip;
+      const i = f.globalIndex;
       const name = roleOfClip(clip);
       const cfg = roleConfigs?.get(name);
       if (!cfg) {
@@ -1474,7 +1907,13 @@ export function buildFilterGraph(
   // roles.ts header). So each [ar<i>] is split once: [arm<i>] for the
   // mix + one [ars<i>_<j>] per stem. The stem order (first-appearance
   // role order) is computed here because the split count depends on it.
+  // Multitrack has no stem support yet: stems are assembled from the
+  // sequential legacy timeline, which a multitrack project does not
+  // have — request them on a legacy project instead.
   if (roleStems) {
+    if (isMt) {
+      throw new Error('roleStems is not supported on multitrack projects yet');
+    }
     if (!useRoles) {
       throw new Error('roleStems requested but the project uses no roles');
     }
@@ -1493,10 +1932,26 @@ export function buildFilterGraph(
     });
   }
 
-  const hasXfade = project.transitions.some((t) => t !== 'cut');
   let videoOut = '[vout]';
   let audioOut = '[aout]';
-  const durations = project.clips.map((c) => clipDuration(c));
+  // Per-clip durations in flat order (legacy: the clip list order).
+  // The role-stem tail below reads this; the multitrack branch does
+  // not use it (stems throw for multitrack projects).
+  const durations = flat.map((f) => clipDuration(f.clip));
+  if (isMt) {
+    // Multitrack assembly: video tracks composited bottom-to-top
+    // onto a black canvas (gaps stay black), audio tracks mixed
+    // with amix (normalize=0). The legacy transitions array is
+    // ignored here (validateMultitrackProject already rejected any
+    // non-'cut' entry); cross-track arrivals are per-clip
+    // transitionIn. Role-processed audio ([ar<i>]) feeds the mix
+    // when roles are in use, else the plain clip audio [a<i>].
+    const audioLabel = (g: number): string => (useRoles ? `[ar${g}]` : `[a${g}]`);
+    const assembled = assembleMultitrack(chains, project, flat, audioLabel, roleAudioChannels, useRoles);
+    videoOut = assembled.videoOut;
+    audioOut = assembled.audioOut;
+  } else {
+  const hasXfade = project.transitions.some((t) => t !== 'cut');
   // Mix inputs: role-processed audio when roles are in use — [arm<i>]
   // (the asplit mix branch) with stems, [ar<i>] without — else the
   // plain clip audio [a<i>] (unchanged from before Roles).
@@ -1557,6 +2012,7 @@ export function buildFilterGraph(
   chains.push(
     ...audioAssemblyChains(mixInputs, project.transitions, durations, project.transitionDuration, '[aout]', 'a'),
   );
+  }
 
   // TTS narration (P3): the synthesized voice is resampled to the
   // 48 kHz mix bus, duplicated to stereo, delayed to its project
@@ -1627,10 +2083,12 @@ export function buildFilterGraph(
   }
 
   // Project-level subtitles: karaoke word highlight via the ASS filter,
-  // applied once to the assembled timeline (project time).
+  // applied once to the assembled timeline (project time). Uses the
+  // current videoOut label (after adjustment layers / frame interp),
+  // not a hardcoded [vout].
   if (assFile) {
     const quoted = `'${assFile.replace(/\\/g, '\\\\').replace(/'/g, "'\\''")}'`;
-    chains.push(`[vout]ass=${quoted}[vsub]`);
+    chains.push(`${videoOut}ass=${quoted}[vsub]`);
     videoOut = '[vsub]';
   }
 
