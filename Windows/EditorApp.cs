@@ -425,9 +425,10 @@ namespace DogSC.Replica {
   }
   double TimelineWidth {get {return Math.Max(600,Find<ScrollViewer>("TimelineScroll").ActualWidth-8)*Find<Slider>("TimelineScale").Value;}}
   Line playhead;Ellipse head;
-  void DrawPlayhead(){if(playhead==null||Doc==null)return;double x=position/Doc.Length*TimelineWidth;playhead.X1=playhead.X2=x;Canvas.SetLeft(head,x-3);}
-  void DrawTimeline(){if(timeline==null)return;timeline.Children.Clear();double width=TimelineWidth;timeline.Width=width;if(Doc==null)return;double px=width/Math.Max(.001,Doc.Length);int steps=Math.Max(2,(int)(width/100));double step=Math.Max(.25,Math.Pow(10,Math.Floor(Math.Log10(Doc.Length/steps))));while(Doc.Length/step>steps*1.8)step*=2;
+  void DrawPlayhead(){if(playhead==null||Doc==null)return;double x=Doc.Length>0?position/Doc.Length*TimelineWidth:0;if(!double.IsFinite(x))x=0;x=Math.Max(0,Math.Min(TimelineWidth,x));playhead.X1=playhead.X2=x;Canvas.SetLeft(head,x-3);}
+  void DrawTimeline(){if(timeline==null)return;timeline.Children.Clear();double width=TimelineWidth;timeline.Width=width;if(Doc==null)return;double px=width/Math.Max(.001,Doc.Length);int steps=Math.Max(2,(int)(width/100));double step=Math.Max(.25,Math.Pow(10,Math.Floor(Math.Log10(Math.Max(.001,Doc.Length)/steps))));while(Doc.Length/step>steps*1.8)step*=2;
    for(double t=0;t<Doc.Length;t+=step){var text=UI.Text(UI.Time(t),10,"#8C9498");Canvas.SetLeft(text,t*px+3);Canvas.SetTop(text,5);timeline.Children.Add(text);timeline.Children.Add(new Line {X1=t*px,X2=t*px,Y1=24,Y2=170,Stroke=UI.Brush(dark?"#2D3135":"#F0F1F2"),StrokeThickness=1});}
+   if(Doc.Length<=0){var ph=UI.Text("时长未知 · 时间线暂不可用",10,"#8C9498");Canvas.SetLeft(ph,3);Canvas.SetTop(ph,5);timeline.Children.Add(ph);}
    // W9：多轨项目画多轨时间线（视频轨下往上叠、音频轨在下，见 W9MultitrackUI.cs）。
    if(MultitrackDoc.HasTracks(Doc)){DrawMultitrackTimeline(px,width,step);return;}
    double offset=0;for(int i=0;i<Doc.Cuts.Count;i++){int index=i;var cut=Doc.Cuts[i];double start=offset;var box=new Border {Width=Math.Max(4,cut.Length*px-3),Height=60,CornerRadius=new CornerRadius(9),BorderThickness=new Thickness(selectedCut==i?2:1),BorderBrush=UI.Brush(selectedCut==i?"#667870":"#D2D7D8"),Background=UI.Brush(cut.Gap?(dark?"#3A3E41":"#8B9093"):"#D8DEDB"),ClipToBounds=true};var film=new Canvas {ClipToBounds=true};box.Child=film;
