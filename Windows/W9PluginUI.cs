@@ -1,4 +1,4 @@
-// W9 插件面板 UI（2026-11-19）：只做扫描结果展示。面板第一行就写明
+﻿// W9 插件面板 UI（2026-11-19）：只做扫描结果展示。面板第一行就写明
 // “宿主加载开发中”，列表里每一项也带“未加载”状态，不提供任何“挂载/启用”
 // 按钮——没有加载能力，就不给用户一个点下去没反应的开关。
 // 扫描只在点按钮时跑一次，不在每次 BuildInspector 时自动扫（默认路径遍历
@@ -22,6 +22,7 @@ namespace DogSC.Replica {
     if (pluginScan.Count > 20) Note("……共 " + pluginScan.Count + " 个，只显示前 20 个。");
     if (pluginScan.Count == 0) Note("一个都没扫到：可能本机没装 VST3/OFX 插件，或装在了自定义目录（自定义目录扫描是下一步，见 docs/windows/plugins.md）。");
    }
+   BuildPluginBridgeSection();
    inspector.Children.Add(UI.Button("扫描已装插件", () => {
     try {
      pluginScan = PluginScanner.ScanDefault();
