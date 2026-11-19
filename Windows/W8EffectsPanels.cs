@@ -27,8 +27,11 @@
 //   慢（面板写明），模型许可发版前再核，模型缺失诚实报错，绝不用
 //   lanczos 冒充 AI 放大。
 // - 脚本转视频：p3g.ts——脚本/图片+文字自动组装成片（模板 P1d + TTS +
-//   自动卡点拼起来）；C# v1 不含云端生成画面，TTS 未接（P3f TTS 待接），
-//   按行时长拼片、文字烧录为字幕 + .srt 边车，音乐卡点不做（面板写明）。
+//   自动卡点拼起来）；C# v1 不含云端生成画面，按行时长拼片、文字烧录
+//   为字幕 + .srt 边车。W9 接了 TTS 配音（P3f 同款 Sherpa-ONNX 调用链，
+//   每段文案合成一段、按段对齐、不足 apad 垫满、超长 atrim 截断，模型
+//   缺失诚实报错不伪造静音）与音乐卡点（BeatDetector 检节拍网格，段
+//   边界向前贴 0.35 秒内的最近节拍点；无音乐/检不出节拍退化为等长分段）。
 // - 元数据/归档/重链接/观察文件夹/导入收录：medialib.ts——clip 元数据
 //   （场景/场次/关键词/备注）进 project.json，ALE 文本导出；归档打包 +
 //   素材丢失重链接（同名 + 时长 ±0.1 秒，歧义不猜）；监看文件夹按
@@ -724,7 +727,27 @@ namespace DogSC.Replica {
  }
 
  // ---- 9. 脚本转视频（p3g.ts）----
+ // W9（2026-11-19）：TTS 配音 + 节拍同步。段长规则照抄引擎
+ // buildAutoVideoProject（p3g.ts）：配音开时段长 = 该段 TTS 实测时长
+ // （不是行时长估），关时段长 = 行时长；节拍贴合只把段边界向前贴到
+ // 0.35 秒内的最近节拍点（延长上一段的静帧 hold，旁白本身绝不拉伸，
+ // 其长度永远装得进自己的段）；旁白按 apad=whole_dur 垫到段长，绝不
+ // 用 -shortest（P3g 探针教训：卡点延长段会被 -shortest 截断）。
  public class AutoVideoLine { public string Text = ""; public string Image = ""; public double Duration = 3; }
+ public class AutoVideoOptions {
+  public bool NarrationEnabled = true;
+  public string Voice = "aishell3 女声";
+  public double TtsSpeed = 1;
+  public bool BeatSyncEnabled = false;
+  public string MusicPath = "";
+  public double MusicVolume = 0.3;
+  public const double BeatSnapWindow = 0.35;
+ }
+ public class AutoVideoSegment {
+  public string Text = "";
+  public double Start; public double Duration; public double TtsDuration;
+  public bool Snapped; public double Beat; public bool HasNarration;
+ }
  static class AutoVideo {
   public static void Validate(List<AutoVideoLine> lines, string templateId) {
    if (lines == null || lines.Count == 0) throw new Exception("脚本为空：至少写一行。");
@@ -739,48 +762,156 @@ namespace DogSC.Replica {
    if (!string.IsNullOrEmpty(templateId) && TemplateStore.Find(templateId) == null)
     throw new Exception("未知的模板：" + templateId + "。");
   }
+  public static void ValidateOptions(AutoVideoOptions options) {
+   if (options == null) throw new Exception("脚本转视频缺少选项。");
+   if (!TtsSettings.Voices.Contains(options.Voice)) throw new Exception("TTS 音色无效：" + options.Voice + "（v1 只有一个开源音色 aishell3 女声）。");
+   if (!EditDocument.Finite(options.TtsSpeed) || options.TtsSpeed < 0.5 || options.TtsSpeed > 2)
+    throw new Exception("TTS 语速无效：" + options.TtsSpeed + "（0.5–2）。");
+   if (!EditDocument.Finite(options.MusicVolume) || options.MusicVolume < 0 || options.MusicVolume > 1)
+    throw new Exception("音乐床音量无效：" + options.MusicVolume + "（0–1）。");
+   // 选了音乐文件但文件不在了是配置错，诚实报错；没选音乐不报错，
+   // 组装时退化为等长分段（见 Assemble）。
+   if (options.BeatSyncEnabled && !string.IsNullOrEmpty(options.MusicPath) && !File.Exists(options.MusicPath))
+    throw new Exception("节拍同步的音乐文件缺失：" + options.MusicPath + "。");
+  }
+  // 纯逻辑（可单测，不碰 TTS/FFmpeg）：段长 + 节拍贴合。
+  // 配音开时 ttsDurations 必须与 lines 一一对应；grid 为 null
+  // 时不贴合（等长分段）。贴合只向前（engine p3g.ts 同款）：边界之
+  // 前的节拍不贴——往前挪会把旁白挤出段外；边界之后 0.35 秒内没有
+  // 节拍也不贴，不硬编节拍。
+  public static List<AutoVideoSegment> ComputeDurations(List<AutoVideoLine> lines, AutoVideoOptions options, List<double> ttsDurations, BeatGrid grid) {
+   if (lines == null || lines.Count == 0) throw new Exception("脚本为空：至少写一行。");
+   if (options == null) throw new Exception("脚本转视频缺少选项。");
+   if (options.NarrationEnabled && (ttsDurations == null || ttsDurations.Count != lines.Count))
+    throw new Exception("配音已开，但 TTS 时长没有与脚本行一一对应。");
+   var segments = new List<AutoVideoSegment>();
+   double t = 0;
+   for (int i = 0; i < lines.Count; i++) {
+    double dur = options.NarrationEnabled ? ttsDurations[i] : lines[i].Duration;
+    if (!EditDocument.Finite(dur) || dur <= 0) throw new Exception("脚本第 " + (i + 1) + " 行段长无效：" + dur + " 秒。");
+    var seg = new AutoVideoSegment { Text = lines[i].Text, Start = t, Duration = dur, TtsDuration = options.NarrationEnabled ? ttsDurations[i] : 0, HasNarration = options.NarrationEnabled };
+    if (grid != null && grid.Beats != null && i + 1 < lines.Count) {
+     double boundary = t + dur;
+     foreach (double b in grid.Beats) {
+      if (b > boundary + AutoVideoOptions.BeatSnapWindow) break;
+      if (b >= boundary - 1e-6 && b - boundary <= AutoVideoOptions.BeatSnapWindow) { seg.Duration += b - boundary; seg.Snapped = true; seg.Beat = b; break; }
+     }
+    }
+    segments.Add(seg);
+    t += seg.Duration;
+   }
+   return segments;
+  }
   static string EscapeDrawtextFile(string text) { return text.Replace("\r", " ").Replace("\n", " "); }
-  // 每行一段静帧（图片或纯色）+ 文字烧录 + 静音，concat 拼成片；
-  // 同步写 .srt 边车（每行一段）。TTS 未接（P3f TTS 待接）：旁白
-  // 现在是静音，行时长由用户定，不按 TTS 估；音乐卡点不做。
+  // 老入口（静音成片回归用）：配音关、节拍关，与 W8 行为一字不差。
   public static string Build(List<AutoVideoLine> lines, string templateId, string output, CancellationToken token) {
+   BuildDetailed(lines, templateId, output, new AutoVideoOptions { NarrationEnabled = false, BeatSyncEnabled = false }, token);
+   return output;
+  }
+  // 全量入口：先调 TTS 合成每段旁白（模型缺失时这里就抛错，发生在
+  // 任何一段渲染之前，所以缺模型时不出半成品、不出假配音），再组装。
+  public static List<AutoVideoSegment> BuildDetailed(List<AutoVideoLine> lines, string templateId, string output, AutoVideoOptions options, CancellationToken token) {
    Validate(lines, templateId);
+   if (options == null) options = new AutoVideoOptions { NarrationEnabled = false, BeatSyncEnabled = false };
+   ValidateOptions(options);
    string work = Path.Combine(Path.GetDirectoryName(output), ".dogsc-autovideo-" + Guid.NewGuid().ToString("N"));
    Directory.CreateDirectory(work);
    try {
-    var segs = new List<string>();
-    var srt = new StringBuilder();
-    double t = 0;
-    string font = ObjectTracker.FontFile();
-    for (int i = 0; i < lines.Count; i++) {
-     var line = lines[i];
-     string seg = Path.Combine(work, "seg" + i + ".mp4");
-     string draw = "";
-     if (font != null) {
-      string txtFile = Path.Combine(work, "line" + i + ".txt");
-      File.WriteAllText(txtFile, EscapeDrawtextFile(line.Text), new UTF8Encoding(false));
-      draw = ",drawtext=textfile=" + W8Paths.FilterPath(txtFile) + ":fontfile=" + W8Paths.FilterPath(font) + ":fontsize=48:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=h-120";
+    List<string> wavs = null;
+    if (options.NarrationEnabled) {
+     wavs = new List<string>();
+     for (int i = 0; i < lines.Count; i++) {
+      string wav = Path.Combine(work, "narr" + i + ".wav");
+      TtsSynth.Synthesize(lines[i].Text, options.TtsSpeed, wav);
+      wavs.Add(wav);
      }
-     string imgArgs;
-     if (!string.IsNullOrEmpty(line.Image))
-      imgArgs = "-loop 1 -t " + Media.N(line.Duration) + " -i " + Media.Q(line.Image);
-     else
-      imgArgs = "-f lavfi -t " + Media.N(line.Duration) + " -i color=c=0x1a1a1a:s=1280x720:r=30";
-     StudioMedia.Run("-v error -y " + imgArgs + " -f lavfi -i anullsrc=r=48000:cl=stereo -vf scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720" + draw + " -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -c:a aac -shortest " + Media.Q(seg), token);
-     segs.Add(seg);
-     srt.Append((i + 1) + "\n").Append(SrtTime(t)).Append(" --> ").Append(SrtTime(t + line.Duration)).Append("\n").Append(line.Text).Append("\n\n");
-     t += line.Duration;
     }
-    string list = Path.Combine(work, "list.txt");
-    File.WriteAllText(list, string.Join("\n", segs.Select(s => "file " + W8Paths.QuotedPath(s)).ToArray()), new UTF8Encoding(false));
-    StudioMedia.Run("-v error -y -f concat -safe 0 -i " + Media.Q(list) + " -c copy " + Media.Q(output), token);
-    File.WriteAllText(Path.ChangeExtension(output, ".srt"), srt.ToString(), new UTF8Encoding(false));
-    double d = Media.Duration(output);
-    if (Math.Abs(d - t) > .3) throw new Exception("脚本成片时长不符：输出 " + d.ToString("0.00") + "s，要 " + t.ToString("0.00") + "s。");
-    return output;
+    return Assemble(lines, templateId, output, options, wavs, work, token);
    } finally {
     try { if (Directory.Exists(work)) Directory.Delete(work, true); } catch { }
    }
+  }
+  // 组装（合成与组装的接缝，供自测用合成音调 wav 当旁白替身验证接线，
+  // 不冒充 TTS）：narrationWavs 与 lines 一一对应；null 表示不配音。
+  // 节拍网格只在选了音乐文件时检；检不出（空拍/静音/解码失败）退化
+  // 为等长分段，不报错、不硬编节拍。
+  public static List<AutoVideoSegment> Assemble(List<AutoVideoLine> lines, string templateId, string output, AutoVideoOptions options, List<string> narrationWavs, string work, CancellationToken token) {
+   Validate(lines, templateId);
+   if (options == null) options = new AutoVideoOptions { NarrationEnabled = false, BeatSyncEnabled = false };
+   ValidateOptions(options);
+   if (options.NarrationEnabled) {
+    if (narrationWavs == null || narrationWavs.Count != lines.Count)
+     throw new Exception("配音已开，但没有给每行配好旁白音频（先调 TTS 合成每段 wav 再组装）。");
+    foreach (string w in narrationWavs)
+     if (string.IsNullOrEmpty(w) || !File.Exists(w))
+      throw new Exception("配音文件缺失：" + (string.IsNullOrEmpty(w) ? "（未生成）" : w) + "。不伪造静音当配音。");
+   }
+   Directory.CreateDirectory(work);
+   bool musicOn = options.BeatSyncEnabled && !string.IsNullOrEmpty(options.MusicPath) && File.Exists(options.MusicPath);
+   BeatGrid grid = null;
+   if (musicOn) {
+    try {
+     double musicDur = Media.Duration(options.MusicPath);
+     var g = BeatDetector.Detect(options.MusicPath, 0, musicDur, token);
+     if (g != null && g.Beats != null && g.Beats.Count > 0 && g.Bpm > 0) grid = g;
+    } catch { grid = null; }
+   }
+   var ttsDurations = new List<double>();
+   if (options.NarrationEnabled) {
+    foreach (string w in narrationWavs) {
+     double d = Media.Duration(w);
+     if (d <= 0) throw new Exception("配音音频时长为 0：" + w + "。");
+     ttsDurations.Add(d);
+    }
+   }
+   var segments = ComputeDurations(lines, options, ttsDurations, grid);
+   var segs = new List<string>();
+   var srt = new StringBuilder();
+   string font = ObjectTracker.FontFile();
+   for (int i = 0; i < lines.Count; i++) {
+    var line = lines[i];
+    double dur = segments[i].Duration;
+    string seg = Path.Combine(work, "seg" + i + ".mp4");
+    string draw = "";
+    if (font != null) {
+     string txtFile = Path.Combine(work, "line" + i + ".txt");
+     File.WriteAllText(txtFile, EscapeDrawtextFile(line.Text), new UTF8Encoding(false));
+     draw = ",drawtext=textfile=" + W8Paths.FilterPath(txtFile) + ":fontfile=" + W8Paths.FilterPath(font) + ":fontsize=48:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=h-120";
+    }
+    string imgArgs;
+    if (!string.IsNullOrEmpty(line.Image))
+     imgArgs = "-loop 1 -t " + Media.N(dur) + " -i " + Media.Q(line.Image);
+    else
+     imgArgs = "-f lavfi -t " + Media.N(dur) + " -i color=c=0x1a1a1a:s=1280x720:r=30";
+    string videoChain = "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720" + draw;
+    if (!options.NarrationEnabled && !musicOn) {
+     // 老路：静音段（anullsrc + -shortest），与 W8 一字不差。
+     StudioMedia.Run("-v error -y " + imgArgs + " -f lavfi -i anullsrc=r=48000:cl=stereo -vf " + videoChain + " -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -c:a aac -shortest " + Media.Q(seg), token);
+    } else {
+     // 配音和/或音乐床：filter_complex 拼音频。-vf 与 -filter_complex
+     // 不能同用于一条流，所以视频链也进 filter_complex（[vout]）。
+     // 旁白先 atrim 截到段长、再 apad 垫满段长（P3g 教训：不用 -shortest）；
+     // 两路音频先统一成 48kHz 立体声再 amix（amix 要求同采样率/同声道布局）。
+     string inputs = "-v error -y " + imgArgs;
+     if (options.NarrationEnabled) inputs += " -i " + Media.Q(narrationWavs[i]);
+     else inputs += " -f lavfi -i anullsrc=r=48000:cl=stereo";
+     if (musicOn) inputs += " -stream_loop -1 -i " + Media.Q(options.MusicPath);
+     string graph = "[0:v]" + videoChain + "[vout];[1:a]atrim=0:" + Media.N(dur) + ",apad=whole_dur=" + Media.N(dur) + ",aresample=48000,aformat=channel_layouts=stereo[narr]";
+     if (musicOn) graph += ";[2:a]volume=" + Media.N(options.MusicVolume) + ",atrim=0:" + Media.N(dur) + ",aresample=48000,aformat=channel_layouts=stereo[mus];[narr][mus]amix=inputs=2:duration=first:normalize=0[aout]";
+     else graph += ";[narr]anull[aout]";
+     StudioMedia.Run(inputs + " -filter_complex " + Media.Q(graph) + " -map [vout] -map [aout] -t " + Media.N(dur) + " -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -c:a aac " + Media.Q(seg), token);
+    }
+    segs.Add(seg);
+    srt.Append((i + 1) + "\n").Append(SrtTime(segments[i].Start)).Append(" --> ").Append(SrtTime(segments[i].Start + segments[i].Duration)).Append("\n").Append(line.Text).Append("\n\n");
+   }
+   string list = Path.Combine(work, "list.txt");
+   File.WriteAllText(list, string.Join("\n", segs.Select(s => "file " + W8Paths.QuotedPath(s)).ToArray()), new UTF8Encoding(false));
+   StudioMedia.Run("-v error -y -f concat -safe 0 -i " + Media.Q(list) + " -c copy " + Media.Q(output), token);
+   File.WriteAllText(Path.ChangeExtension(output, ".srt"), srt.ToString(), new UTF8Encoding(false));
+   double total = segments.Count == 0 ? 0 : segments[segments.Count - 1].Start + segments[segments.Count - 1].Duration;
+   double outDur = Media.Duration(output);
+   if (Math.Abs(outDur - total) > .3) throw new Exception("脚本成片时长不符：输出 " + outDur.ToString("0.00") + "s，要 " + total.ToString("0.00") + "s。");
+   return segments;
   }
   static string SrtTime(double seconds) {
    int ms = (int)Math.Round(seconds * 1000);
