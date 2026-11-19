@@ -38,42 +38,42 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $ProgressPreference = 'SilentlyContinue'
+          # 注意：Start-Transcript 抓不到 native 命令（cmake/git/cl）的输出，
+          # 所以每条 native 命令都 *>> 重定向进 native-build.log；失败时把尾巴
+          # 打到步骤输出里，完整日志走 w10native-log artifact。
           $log = Join-Path $PWD 'native-build.log'
-          Start-Transcript -Path $log | Out-Null
-          try {
-            Write-Output 'NATIVE-STEP: versions'
-            cmake --version
-            git --version
-            Write-Output 'NATIVE-STEP: clone SDK'
-            git clone --depth 1 --branch v3.8.0_build_66 https://github.com/steinbergmedia/vst3sdk.git vst3sdk
-            if (-not $?) { throw 'VST3 SDK clone failed.' }
-            Write-Output 'NATIVE-STEP: submodules'
-            git -C vst3sdk submodule update --init base cmake pluginterfaces public.sdk vstgui4
-            if (-not $?) { throw 'VST3 SDK submodule checkout failed.' }
-            Write-Output 'NATIVE-STEP: configure SDK'
-            cmake -S vst3sdk -B vst3sdk-build -DSMTG_ENABLE_VST3_PLUGIN_EXAMPLES=ON -DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=OFF -DSMTG_ENABLE_VSTGUI_SUPPORT=ON
-            if (-not $?) { throw 'VST3 SDK configure failed.' }
-            Write-Output 'NATIVE-STEP: build again + sdk_hosting'
-            cmake --build vst3sdk-build --config Release --target again sdk_hosting --parallel 4
-            if (-not $?) { throw 'AGain / sdk_hosting build failed.' }
-            Write-Output 'NATIVE-STEP: configure bridge'
-            cmake -S Windows/native/vst3 -B vst3bridge-build -DVST3_SDK_ROOT="$PWD/vst3sdk" -DVST3_SDK_BUILD_DIR="$PWD/vst3sdk-build"
-            if (-not $?) { throw 'Bridge configure failed.' }
-            Write-Output 'NATIVE-STEP: build bridge'
-            cmake --build vst3bridge-build --config Release --parallel 4
-            if (-not $?) { throw 'Bridge build failed.' }
-            Write-Output 'NATIVE-STEP: copy outputs'
-            Copy-Item vst3bridge-build/bin/Release/Vst3BridgeHost.exe Windows/bin/
-            Copy-Item vst3bridge-build/bin/Release/CatCut.Vst3Bridge.dll Windows/bin/
-            $again = Get-ChildItem -Path vst3sdk-build -Recurse -Filter 'again.vst3' -Directory | Select-Object -First 1
-            if (-not $again) { throw 'again.vst3 bundle not found in SDK build output.' }
-            if (-not (Test-Path (Join-Path $again.FullName 'Contents/Resources/moduleinfo.json'))) { throw 'again.vst3 has no moduleinfo.json (moduleinfotool step missing).' }
-            New-Item -ItemType Directory -Force 'Windows/bin/Plugins' | Out-Null
-            Copy-Item -Recurse $again.FullName 'Windows/bin/Plugins/AGain.vst3'
-            Write-Output 'NATIVE-STEP: done'
-          } finally {
-            Stop-Transcript | Out-Null
-          }
+          function LogStep($m) { Add-Content -Path $log -Value $m }
+          function FailStep($m) { LogStep "FAILED: $m"; Get-Content $log -Tail 80; throw $m }
+          LogStep 'NATIVE-STEP: versions'
+          cmake --version *>> $log
+          git --version *>> $log
+          LogStep 'NATIVE-STEP: clone SDK'
+          git clone --depth 1 --branch v3.8.0_build_66 https://github.com/steinbergmedia/vst3sdk.git vst3sdk *>> $log
+          if (-not $?) { FailStep 'VST3 SDK clone failed.' }
+          LogStep 'NATIVE-STEP: submodules'
+          git -C vst3sdk submodule update --init base cmake pluginterfaces public.sdk vstgui4 *>> $log
+          if (-not $?) { FailStep 'VST3 SDK submodule checkout failed.' }
+          LogStep 'NATIVE-STEP: configure SDK'
+          cmake -S vst3sdk -B vst3sdk-build -DSMTG_ENABLE_VST3_PLUGIN_EXAMPLES=ON -DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=OFF -DSMTG_ENABLE_VSTGUI_SUPPORT=ON *>> $log
+          if (-not $?) { FailStep 'VST3 SDK configure failed.' }
+          LogStep 'NATIVE-STEP: build again + sdk_hosting'
+          cmake --build vst3sdk-build --config Release --target again sdk_hosting --parallel 4 *>> $log
+          if (-not $?) { FailStep 'AGain / sdk_hosting build failed.' }
+          LogStep 'NATIVE-STEP: configure bridge'
+          cmake -S Windows/native/vst3 -B vst3bridge-build -DVST3_SDK_ROOT="$PWD/vst3sdk" -DVST3_SDK_BUILD_DIR="$PWD/vst3sdk-build" *>> $log
+          if (-not $?) { FailStep 'Bridge configure failed.' }
+          LogStep 'NATIVE-STEP: build bridge'
+          cmake --build vst3bridge-build --config Release --parallel 4 *>> $log
+          if (-not $?) { FailStep 'Bridge build failed.' }
+          LogStep 'NATIVE-STEP: copy outputs'
+          Copy-Item vst3bridge-build/bin/Release/Vst3BridgeHost.exe Windows/bin/
+          Copy-Item vst3bridge-build/bin/Release/CatCut.Vst3Bridge.dll Windows/bin/
+          $again = Get-ChildItem -Path vst3sdk-build -Recurse -Filter 'again.vst3' -Directory | Select-Object -First 1
+          if (-not $again) { throw 'again.vst3 bundle not found in SDK build output.' }
+          if (-not (Test-Path (Join-Path $again.FullName 'Contents/Resources/moduleinfo.json'))) { throw 'again.vst3 has no moduleinfo.json (moduleinfotool step missing).' }
+          New-Item -ItemType Directory -Force 'Windows/bin/Plugins' | Out-Null
+          Copy-Item -Recurse $again.FullName 'Windows/bin/Plugins/AGain.vst3'
+          LogStep 'NATIVE-STEP: done'
 
       - name: Upload native build log
         if: always()
