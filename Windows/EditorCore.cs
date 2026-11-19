@@ -152,7 +152,9 @@ namespace DogSC.Replica {
    foreach(var layer in AdjustmentLayers)AdjustmentLayerFilter.Validate(layer,Length);
    foreach(var cc in CompoundClips){if(cc==null)throw new Exception("复合片段为空。");if(cc.Depth<0||cc.Depth>=CompoundTimeline.MaxDepth)throw new Exception("复合片段嵌套超过 2 层上限。");if(!Finite(cc.In)||!Finite(cc.Out)||cc.In<0||cc.Out<=cc.In)throw new Exception("复合片段窗口无效。");if(!string.IsNullOrEmpty(cc.ProjectPath)&&!File.Exists(cc.ProjectPath))throw new Exception("复合片段的子项目文件缺失："+cc.ProjectPath);}
    if(!Finite(FrameRate)||FrameRate<=0||FrameRate>240)FrameRate=30;
-   if(Cuts.Any(c=>!Finite(c.Start)||!Finite(c.End)||!Finite(c.Speed)||c.Start<0||c.End>Duration+.1||(!c.Gap&&(c.End<=c.Start||c.Speed<.5||c.Speed>2))||(c.Gap&&(!Finite(c.GapDuration)||c.GapDuration<=0||c.End<c.Start)))) throw new Exception("项目的剪辑范围无效。");
+   // W9：片段速度下限 0.3（不是 0.5）——只有一键删静音的压缩模式会造出
+   // 0.3x 片段；界面上的速度滑杆/按钮仍是 0.5–2×，用户手调不到 0.3。
+   if(Cuts.Any(c=>!Finite(c.Start)||!Finite(c.End)||!Finite(c.Speed)||c.Start<0||c.End>Duration+.1||(!c.Gap&&(c.End<=c.Start||c.Speed<.3||c.Speed>2))||(c.Gap&&(!Finite(c.GapDuration)||c.GapDuration<=0||c.End<c.Start)))) throw new Exception("项目的剪辑范围无效。");
    // W3：字幕 / 调色 / 混音 / 代理 / 多机位校验（范围外的值直接拒绝，不静默修正）。
    foreach(var s in Subtitles)if(!Finite(s.Start)||!Finite(s.End)||s.Start<0||s.End<=s.Start||s.End>Length+.1||string.IsNullOrWhiteSpace(s.Text)&&string.IsNullOrWhiteSpace(s.Text2))throw new Exception("字幕时间或文本无效。");
    if(!Finite(Grade.Brightness)||Grade.Brightness<-1||Grade.Brightness>1||!Finite(Grade.Contrast)||Grade.Contrast<0||Grade.Contrast>2||!Finite(Grade.Saturation)||Grade.Saturation<0||Grade.Saturation>2||!Finite(Grade.Temperature)||Grade.Temperature<-1||Grade.Temperature>1||!Finite(Grade.Tint)||Grade.Tint<-1||Grade.Tint>1)throw new Exception("调色参数超出范围。");
@@ -341,12 +343,12 @@ namespace DogSC.Replica {
     if(g.Gap){s.Append("color=c=black:s="+doc.Width+"x"+doc.Height+":r="+Media.N(doc.FrameRate)+":d="+Media.N(g.Length)+"[v"+i+"];\n");if(audio)s.Append("anullsrc=r=48000:cl=stereo:d="+Media.N(g.Length)+"[a"+i+"];\n");}
     // W8 AudioOnly（联动关时删视频留音频）：视频黑场，音频照常用 J/L 窗口走；
     // 音频窗口耗尽的段补静音（anullsrc，与空隙同款）。
-    else if(g.AudioOnly){s.Append("color=c=black:s="+doc.Width+"x"+doc.Height+":r="+Media.N(doc.FrameRate)+":d="+Media.N(g.Length)+"[v"+i+"];\n");if(audio){if(g.AudioSilent)s.Append("anullsrc=r=48000:cl=stereo:d="+Media.N(g.Length)+"[a"+i+"];\n");else s.Append("[0:a:0]atrim=start="+Media.N(g.AudioStart)+":end="+Media.N(g.AudioEnd)+",asetpts=PTS-STARTPTS,atempo="+Media.N(g.Speed)+",apad,atrim=duration="+Media.N(g.Length)+"[a"+i+"];\n");}}
+    else if(g.AudioOnly){s.Append("color=c=black:s="+doc.Width+"x"+doc.Height+":r="+Media.N(doc.FrameRate)+":d="+Media.N(g.Length)+"[v"+i+"];\n");if(audio){if(g.AudioSilent)s.Append("anullsrc=r=48000:cl=stereo:d="+Media.N(g.Length)+"[a"+i+"];\n");else s.Append("[0:a:0]atrim=start="+Media.N(g.AudioStart)+":end="+Media.N(g.AudioEnd)+",asetpts=PTS-STARTPTS,"+SilenceCut.AtempoChain(g.Speed)+",apad,atrim=duration="+Media.N(g.Length)+"[a"+i+"];\n");}}
     else{int v=inputOf(g.File);s.Append("["+v+":v]trim=start="+Media.N(g.SourceStart)+":end="+Media.N(g.SourceEnd)+",setpts=(PTS-STARTPTS)/"+Media.N(g.Speed)+"[v"+i+"];\n");
      // W8 J/L：音频用 AudioStart/AudioEnd（默认等于视频源范围）；窗口长于视频时
      // apad 补静音、短于视频时 atrim 截到视频时长（与引擎 clipAudioChains 同款）；
      // 窗口已耗尽的段直接补静音。
-     if(audio){if(g.AudioSilent)s.Append("anullsrc=r=48000:cl=stereo:d="+Media.N(g.Length)+"[a"+i+"];\n");else s.Append("[0:a:0]atrim=start="+Media.N(g.AudioStart)+":end="+Media.N(g.AudioEnd)+",asetpts=PTS-STARTPTS,atempo="+Media.N(g.Speed)+",apad,atrim=duration="+Media.N(g.Length)+"[a"+i+"];\n");}}
+     if(audio){if(g.AudioSilent)s.Append("anullsrc=r=48000:cl=stereo:d="+Media.N(g.Length)+"[a"+i+"];\n");else s.Append("[0:a:0]atrim=start="+Media.N(g.AudioStart)+":end="+Media.N(g.AudioEnd)+",asetpts=PTS-STARTPTS,"+SilenceCut.AtempoChain(g.Speed)+",apad,atrim=duration="+Media.N(g.Length)+"[a"+i+"];\n");}}
     tracks.Append("[v"+i+"]");if(audio)tracks.Append("[a"+i+"]");
     string tag;if(morphAt.TryGetValue(i,out tag)){
      // A 尾 = [新 SourceEnd, 新 SourceEnd+half]，B 头 = [新 SourceStart-half, 新 SourceStart]。
@@ -606,8 +608,11 @@ namespace DogSC.Replica {
     // W5：降噪（整条时间线统一强度）拼进解码 vf；美颜有遮罩时走遮罩图
     // （第二输入是遮罩文件）。直接路径复用源遮罩、两路同裁；时间线路径
     // 从 timeline.mp4 重建遮罩——源遮罩与拼好的时间线不对齐（切分/变速/
-    // 空隙）。遮罩图里调色在 overlay 之后贴（W5Media.MaskedFilterComplex
-    // 内部拼 GradeChain），videoFilters 里只放 fps/scale/降噪，不重复贴调色。
+    // 空隙）。W9：美颜与 W8 高级调色合成，顺序是美颜（只修人像）→ 全局
+    // W8 调色链（输入转换/镜头匹配/节点或线性调色/LUT 库/输出转换）→
+    // 蒙版节点/跟踪窗口分段 → 色度键：不走 -vf 时调色贴在 overlay 之后
+    // （MaskedFilterComplex 的 gradeFilters 参数），要走 complex 解码器
+    // 时用 W8ColourExport.DecoderArgsWithBeauty 合成一张图；两边都不丢。
     string effectVf=W5Effects.VideoFilter(doc);
     // W8 调整层：eq/colorbalance + enable=between 拼进解码 vf（时间线时间 t）；
     // 美颜遮罩路径的 videoFilters 字符串里同样带 effectVf，两路都覆盖。
@@ -634,8 +639,16 @@ namespace DogSC.Replica {
     // 蒙版文件在 work 目录里现烘）；其余调色只加 lut3d，走 -vf 链。
     StagePrep w8prep=null;
     if(W8ColourFilters.NeedsComplexDecoder(doc)){progress(.1,"准备高级调色遮罩…");w8prep=W8ColourExport.Prepare(doc,work,dw,dh,fps,token);}
-    if(maskFile!=null){
-     string graph=W5Media.MaskedFilterComplex((direct?"fps="+fps+",":"")+"scale="+dw+":"+dh+effectVf,fps,dw.ToString(CultureInfo.InvariantCulture),dh.ToString(CultureInfo.InvariantCulture),doc);
+    if(maskFile!=null&&w8prep!=null){
+     // W9：美颜 + 蒙版节点/跟踪窗口/色度键——合成图（美颜 → 全局调色链 →
+     // 蒙版分段 → 色度键），见 W8ColourExport.DecoderArgsWithBeauty。
+     decoder=Media.Start("ffmpeg",W8ColourExport.DecoderArgsWithBeauty(doc,w8prep,media,selection,dw,dh,fps,(direct?"fps="+fps+",":"")+"scale="+dw+":"+dh+effectVf,maskFile,doc.BeautyStrength,doc.BeautyEdgeFeather),true);
+    }
+    else if(maskFile!=null){
+     // W9：美颜 + 非 complex 高级调色（节点 LUT/镜头匹配/色彩管理/LUT 库）
+     // ——调色链以 gradeFilters 贴在美颜 overlay 之后；无高级调色时
+     // ChainForGraph 与老 GradeChain 逐字一致，老行为不变。
+     string graph=W5Media.MaskedFilterComplex((direct?"fps="+fps+",":"")+"scale="+dw+":"+dh+effectVf,fps,dw.ToString(CultureInfo.InvariantCulture),dh.ToString(CultureInfo.InvariantCulture),doc,W8ColourFilters.ChainForGraph(doc));
      decoder=Media.Start("ffmpeg","-v error "+selection+"-i "+Media.Q(media)+" "+selection+"-i "+Media.Q(maskFile)+" -filter_complex "+Media.Q(graph)+" -map [out] -an -pix_fmt bgra -f rawvideo pipe:1",true);
     }
     else if(portraitMask!=null){

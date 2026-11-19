@@ -195,7 +195,27 @@ namespace DogSC.Replica {
  // 一键删静音：silencedetect 定位静音段（源时间），从 Cuts 里抠掉，
  // 字幕/标记/缩放/贴图按时间线位置跟随前移。卡点闪白的节拍是源时间，
  // 删静音后源时间变了——不跟随，面板会提醒重新检测节拍。
+ // W9：压缩模式（ApplyCompress）——静音段不删除，改以 0.3x 慢放（原声保留、
+ // 拉长），与引擎 silencecut.ts 的 compress 模式同名但方向相反：引擎是把
+ // 静音加速压短（0.3 = 压到 0.3 倍长），这里按任务要求是 0.3x 慢放拉长
+ // （静音段时长 × 1/0.3）。FFmpeg 单个 atempo 只认 0.5–100（本地探针：
+ // atempo=0.3 直接报错 exit 222），0.3x 必须链式 atempo=0.5,atempo=0.6
+ // （0.5×0.6=0.3，2 秒音实测拉到 6.63 秒，音调不变）。
  static class SilenceCut {
+  public const double CompressSpeed = 0.3;
+  // 变速对应的 atempo 链：0.5–100 直接一个 atempo；低于 0.5 拆成多个 0.5
+  // 再补一个余数（0.3 → atempo=0.5,atempo=0.6）。视频侧不用这个——
+  // setpts=(PTS-STARTPTS)/Speed 直接支持 0.3。
+  public static string AtempoChain(double speed) {
+   if (!EditDocument.Finite(speed) || speed <= 0 || speed > 100) throw new Exception("变速超出范围：" + Media.N(speed) + "（0–100）。");
+   var parts = new List<string>();
+   double s = speed;
+   int guard = 0;
+   while (s < 0.5 && guard < 4) { parts.Add("atempo=0.5"); s /= 0.5; guard++; }
+   if (s < 0.5 || s > 100) throw new Exception("变速无法拆成 atempo 链：" + Media.N(speed) + "。");
+   parts.Add("atempo=" + Media.N(s));
+   return string.Join(",", parts.ToArray());
+  }
   public class Span { public double Start; public double End; public double Length { get { return End - Start; } } }
   // ffmpeg silencedetect 输出示例：
   // [Parsed_silencedetect_0] silence_start: 2.005375
@@ -306,6 +326,74 @@ namespace DogSC.Replica {
    }
    doc.Cuts = kept;
    return before - doc.Length;
+  }
+  // 在时间线时刻 t 之前，压缩一共拉长了多少秒（静音段按时间线区间计，
+  // 拉长系数 1/0.3−1；t 落在静音段内时按段内比例算，与 RemovedBefore 对称）。
+  static double ExpandedBefore(EditDocument doc, List<Span> spans, double t) {
+   double added = 0;
+   double factor = 1 / CompressSpeed - 1;
+   foreach (var s in spans) {
+    double t0 = SourceToTimeline(doc, s.Start), t1 = SourceToTimeline(doc, s.End);
+    if (t1 <= t0) continue;
+    if (t <= t0) break;
+    added += (t >= t1 ? (t1 - t0) : (t - t0)) * factor;
+   }
+   return added;
+  }
+  // 压缩模式：静音段不删除，改以 0.3x 慢放（原声保留、拉长）。返回拉长的
+  // 总时长（时间线秒）。调用前先 Checkpoint（可撤销）。
+  // 限制（与引擎 compressSilences 的守卫同款，诚实报错不静默）：只支持
+  // 1× 常速片段（变速片段的静音段对不齐）；J/L 音频窗口只保留在 1× 的
+  // 说话段上（0.3x 段上 JlAudio.Validate 本来就禁窗口，窗口丢了音频仍按
+  // 该段源范围走，不丢声）。字幕/标记/缩放/贴图按拉长后的时间轴跟随。
+  public static double ApplyCompress(EditDocument doc, List<Span> spans) {
+   if (doc == null) throw new Exception("没有打开的项目。");
+   CheckSpans(spans, doc.Duration);
+   if (spans.Count == 0) return 0;
+   foreach (var c in doc.Cuts) if (!c.Gap && Math.Abs(c.Speed - 1) > 0.000001) throw new Exception("静音压缩只支持 1× 常速片段（变速片段的静音段对不齐），请先把速度改回 1×。");
+   double before = doc.Length;
+   var rebuilt = new List<Cut>();
+   foreach (var c in doc.Cuts) {
+    if (c.Gap) { rebuilt.Add(c); continue; }
+    double cur = c.Start;
+    foreach (var s in spans) {
+     if (s.End <= cur || s.Start >= c.End) continue;
+     double segEnd = Math.Min(c.End, Math.Max(cur, s.Start));
+     if (segEnd > cur + 0.001) rebuilt.Add(SubCut(c, cur, segEnd, 1));
+     double silEnd = Math.Min(c.End, s.End);
+     if (silEnd > Math.Max(cur, s.Start) + 0.001) rebuilt.Add(SubCut(c, Math.Max(cur, s.Start), silEnd, CompressSpeed));
+     cur = Math.Max(cur, s.End);
+    }
+    if (c.End > cur + 0.001) rebuilt.Add(SubCut(c, cur, c.End, 1));
+   }
+   // 时间线上的东西跟随后移/拉长（按压缩之前的映射算）。
+   foreach (var cue in doc.Subtitles) {
+    double ns = cue.Start + ExpandedBefore(doc, spans, cue.Start), ne = cue.End + ExpandedBefore(doc, spans, cue.End);
+    cue.Start = Math.Max(0, ns); cue.End = Math.Max(cue.Start + 0.05, ne);
+   }
+   foreach (var m in doc.RecordingMarkers) m.Time = Math.Max(0, m.Time + ExpandedBefore(doc, spans, m.Time));
+   foreach (var z in doc.Zooms) {
+    double ns = z.Start + ExpandedBefore(doc, spans, z.Start), ne = z.End + ExpandedBefore(doc, spans, z.End);
+    z.Start = Math.Max(0, ns); z.End = Math.Max(z.Start + 0.05, ne);
+   }
+   foreach (var o in doc.Overlays) {
+    double ns = o.Start + ExpandedBefore(doc, spans, o.Start), ne = o.End + ExpandedBefore(doc, spans, o.End);
+    o.Start = Math.Max(0, ns); o.End = Math.Max(o.Start + 0.05, ne);
+   }
+   doc.Cuts = rebuilt;
+   return doc.Length - before;
+  }
+  // 从原片段里切一段 [a, b]：1× 段保留 J/L 音频窗口（裁到段内）与
+  // AudioOnly；0.3x 段不带窗口（JlAudio 只认 1×，窗口丢了音频仍按段内
+  // 源范围走），AudioOnly 照留（Filter 里走同一条 atempo 链）。
+  static Cut SubCut(Cut c, double a, double b, double speed) {
+   var cut = new Cut { Start = a, End = b, Speed = speed, AudioOnly = c.AudioOnly };
+   if (Math.Abs(speed - 1) <= 0.000001) {
+    if (c.AudioIn.HasValue) cut.AudioIn = Math.Max(c.AudioIn.Value, a);
+    if (c.AudioOut.HasValue) cut.AudioOut = Math.Min(c.AudioOut.Value, b);
+    if (cut.AudioIn.HasValue && cut.AudioOut.HasValue && cut.AudioOut.Value <= cut.AudioIn.Value) { cut.AudioIn = null; cut.AudioOut = null; }
+   }
+   return cut;
   }
  }
 }
