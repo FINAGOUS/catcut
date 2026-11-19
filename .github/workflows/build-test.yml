@@ -66,13 +66,21 @@ jobs:
           cmake --build vst3bridge-build --config Release --parallel 4 *>> $log
           if (-not $?) { FailStep 'Bridge build failed.' }
           LogStep 'NATIVE-STEP: copy outputs'
-          Copy-Item vst3bridge-build/bin/Release/Vst3BridgeHost.exe Windows/bin/
-          Copy-Item vst3bridge-build/bin/Release/CatCut.Vst3Bridge.dll Windows/bin/
-          $again = Get-ChildItem -Path vst3sdk-build -Recurse -Filter 'again.vst3' -Directory | Select-Object -First 1
-          if (-not $again) { throw 'again.vst3 bundle not found in SDK build output.' }
-          if (-not (Test-Path (Join-Path $again.FullName 'Contents/Resources/moduleinfo.json'))) { throw 'again.vst3 has no moduleinfo.json (moduleinfotool step missing).' }
-          New-Item -ItemType Directory -Force 'Windows/bin/Plugins' | Out-Null
-          Copy-Item -Recurse $again.FullName 'Windows/bin/Plugins/AGain.vst3'
+          # 注意：这步跑在 build.ps1 之前，Windows/bin 还不存在；
+          # Copy-Item 不会自己建目标目录，先建好再拷。
+          # 拷失败要进 native-build.log（裸 throw 只进 job 日志，artifact 里看不到）。
+          try {
+            New-Item -ItemType Directory -Force 'Windows/bin' | Out-Null
+            New-Item -ItemType Directory -Force 'Windows/bin/Plugins' | Out-Null
+            Copy-Item vst3bridge-build/bin/Release/Vst3BridgeHost.exe Windows/bin/
+            Copy-Item vst3bridge-build/bin/Release/CatCut.Vst3Bridge.dll Windows/bin/
+            $again = Get-ChildItem -Path vst3sdk-build -Recurse -Filter 'again.vst3' -Directory | Select-Object -First 1
+            if (-not $again) { throw 'again.vst3 bundle not found in SDK build output.' }
+            if (-not (Test-Path (Join-Path $again.FullName 'Contents/Resources/moduleinfo.json'))) { throw 'again.vst3 has no moduleinfo.json (moduleinfotool step missing).' }
+            Copy-Item -Recurse $again.FullName 'Windows/bin/Plugins/AGain.vst3'
+          } catch {
+            FailStep "Copy outputs failed: $($_.Exception.Message)"
+          }
           LogStep 'NATIVE-STEP: done'
 
       - name: Upload native build log
