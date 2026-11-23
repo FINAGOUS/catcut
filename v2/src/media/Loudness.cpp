@@ -78,9 +78,13 @@ double Loudness::measureIntegrated(const QVector<float>& samples, QString& error
     }
     const AVFilter* abuffer = avfilter_get_by_name("abuffer");
     const AVFilter* loudnorm = avfilter_get_by_name("loudnorm");
-    const AVFilter* sink = avfilter_get_by_name("anullsink");
+    // NOTE: the sink MUST be abuffersink. anullsink discards frames
+    // but does not implement the buffersink pull API — calling
+    // av_buffersink_get_frame() on it dereferences a null callback
+    // and segfaults inside libavfilter (found by a local gdb run).
+    const AVFilter* sink = avfilter_get_by_name("abuffersink");
     if (!abuffer || !loudnorm || !sink) {
-        error = QStringLiteral("响度测量：FFmpeg 缺少 abuffer/loudnorm/anullsink 滤镜。");
+        error = QStringLiteral("响度测量：FFmpeg 缺少 abuffer/loudnorm/abuffersink 滤镜。");
         return std::numeric_limits<double>::quiet_NaN();
     }
 
@@ -151,6 +155,7 @@ double Loudness::measureIntegrated(const QVector<float>& samples, QString& error
     // which resets to the default callback.)
     const int previousLogLevel = av_log_get_level();
     av_log_set_level(AV_LOG_INFO);
+    av_log_set_callback(loudnormLogCallback);
     capturedLog.clear();
     g_loudnormLog = &capturedLog;
 
