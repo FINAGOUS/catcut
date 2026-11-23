@@ -99,6 +99,8 @@ target_compile_definitions(catcut_media PUBLIC
 
 target_link_libraries(catcut_media PUBLIC
   Qt6::Widgets
+  Qt6::GuiPrivate
+  Qt6::ShaderTools
   ${FFMPEG_avformat_LIBRARY}
   ${FFMPEG_avcodec_LIBRARY}
   ${FFMPEG_avfilter_LIBRARY}
@@ -134,8 +136,11 @@ target_link_libraries(CatCut-v2 PRIVATE catcut_media Qt6::Widgets)
 
 # Preview shaders, compiled at build time by qsb and embedded as
 # resources (":/shaders/texture.vert.qsb", ":/shaders/texture.frag.qsb").
+# NOTE: with PREFIX "/" the alias is the file path relative to this
+# CMakeLists dir; PREFIX "/shaders" would double it to
+# ":/shaders/shaders/..." (seen in run 45231564114's configure log).
 qt_add_shaders(CatCut-v2 "catcut_preview_shaders"
-  PREFIX "/shaders"
+  PREFIX "/"
   FILES
     shaders/texture.vert
     shaders/texture.frag
