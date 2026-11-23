@@ -1,4 +1,4 @@
-// CatCut v2 — S2 timeline: TimelineEvaluator.
+// CatCut v2 — S3 colour & picture: TimelineEvaluator.
 //
 // The single evaluation path (architecture doc section 4): a timeline
 // is first evaluated at time `t` into one immutable FrameScene
@@ -6,6 +6,14 @@
 // interpolation results) and only then handed to a renderer. Preview
 // and S4 export share this evaluator — evaluation logic lives here,
 // never in the UI.
+//
+// S3 additions (all evaluated here, applied by TimelineFrameRenderer):
+//   * per-clip grade / beauty / chroma key ride on FrameLayer;
+//   * project-level canvas style, active mosaics (with progress),
+//     auto-zoom factor + focus, screen-3D pose, pointer sample +
+//     visibility, and the winning focus effect ride on FrameScene.
+//   * focus rule (DogSC): when a 3D focus and a zoom focus are both
+//     active, only the 3D one is used — never two full-frame blurs.
 //
 // Transition semantics: a transition of duration d on the boundary
 // (cut) between two primary clips occupies the centred window
@@ -21,9 +29,14 @@
 #pragma once
 
 #include <QList>
+#include <QPointF>
 #include <QSize>
 #include <QString>
 
+#include "core/BeautyKeying.h"
+#include "core/CameraMotion.h"
+#include "core/CanvasStyle.h"
+#include "core/ColorGrade.h"
 #include "core/TimelineModel.h"
 
 namespace catcut {
@@ -47,6 +60,7 @@ struct FrameLayer {
     double sourceTime = 0.0; // seconds into the source media
     bool clampedToHandle = false; // sourceTime was clamped (see header)
     bool enabled = true;
+    bool isPrimary = false; // primary storyline (mosaics apply here)
     LayerGeometry geometry;
 
     // Transition participation (both false outside a transition).
@@ -54,6 +68,21 @@ struct FrameLayer {
     bool isTransitionIncoming = false;
     TransitionType transitionType = TransitionType::Dissolve;
     double transitionProgress = 0.0; // 0..1 across the window
+
+    // --- S3 per-clip picture effects (copied from the clip) ---
+    ColorGrade grade;
+    bool hasGrade = false; // clip.gradeEnabled
+    BeautySettings beauty;
+    ChromaKey chromaKey;
+    MaskShape mask;
+    bool hasMask = false; // clip.maskEnabled
+
+    // --- S3 scene motion, copied onto every layer so the renderer
+    // (drawLayer) can apply it without knowing the scene ---
+    double sceneZoom = 1.0;          // auto-zoom factor at this time
+    QPointF sceneZoomFocus{0.5, 0.5};
+    Screen3D scene3DPose;            // identity when inactive
+    bool scene3DActive = false;
 };
 
 // One audible layer of a single frame (S4 mix uses this; the S2
@@ -66,6 +95,12 @@ struct FrameAudioLayer {
     bool enabled = true;
 };
 
+// One mosaic clip active at the evaluated time, with its fade progress.
+struct ActiveMosaic {
+    MosaicClip clip;
+    double progress = 0.0; // 0..1
+};
+
 // Immutable snapshot of one frame. Renderers must not mutate it.
 struct FrameScene {
     double time = 0.0;
@@ -75,6 +110,19 @@ struct FrameScene {
     bool hasTransition = false;
     TransitionType transitionType = TransitionType::Dissolve;
     double transitionProgress = 0.0;
+
+    // --- S3 project-level picture state at this time ---
+    CanvasStyle canvasStyle;
+    QList<ActiveMosaic> activeMosaics;
+    double autoZoom = 1.0;
+    QPointF autoZoomFocus{0.5, 0.5};
+    Screen3D screen3DPose;
+    bool screen3DActive = false;
+    PointerSample pointer;
+    bool pointerVisible = false;
+    double pointerSize = 1.0; // pointer track size multiplier
+    FocusSource focusSource = FocusSource::None;
+    FocusEffect focusEffect; // the winning effect (when focusSource != None)
 };
 
 class TimelineEvaluator {
