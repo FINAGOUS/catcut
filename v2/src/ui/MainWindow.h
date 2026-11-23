@@ -12,6 +12,7 @@ class QTableWidget;
 
 namespace catcut {
 
+class ColorPanelWidget;
 class ProjectModel;
 class PreviewWidget;
 class ProxyJob;
@@ -82,6 +83,7 @@ private:
     QDockWidget* m_previewDock = nullptr;
     QDockWidget* m_timelineDock = nullptr;
     QDockWidget* m_inspectorDock = nullptr;
+    QDockWidget* m_colorDock = nullptr;
 
     QTableWidget* m_mediaTable = nullptr;
     PreviewWidget* m_previewWidget = nullptr;
@@ -89,6 +91,7 @@ private:
     TimelineWidget* m_timelineWidget = nullptr;
     InspectorWidget* m_inspectorWidget = nullptr;
     KeyframeChartWidget* m_chartWidget = nullptr;
+    ColorPanelWidget* m_colorPanel = nullptr;
 
     // Media-library drag source state (event filter on the table viewport).
     QPoint m_mediaDragStart;
