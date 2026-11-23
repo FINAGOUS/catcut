@@ -142,6 +142,8 @@ QJsonObject Clip::toJson() const
     o.insert(QStringLiteral("storylineId"), storylineId);
     o.insert(QStringLiteral("detached"), detached);
     o.insert(QStringLiteral("volume"), volume);
+    o.insert(QStringLiteral("fadeInSeconds"), fadeInSeconds);
+    o.insert(QStringLiteral("fadeOutSeconds"), fadeOutSeconds);
     o.insert(QStringLiteral("keyframes"), keyframeSetToJson(keyframes));
     // S3 per-clip effects (absent in S2 files: fromJson defaults apply).
     o.insert(QStringLiteral("gradeEnabled"), gradeEnabled);
@@ -177,6 +179,8 @@ Clip Clip::fromJson(const QJsonObject& o, bool& ok)
     c.storylineId = o.value(QStringLiteral("storylineId")).toString();
     c.detached = o.value(QStringLiteral("detached")).toBool(false);
     c.volume = o.value(QStringLiteral("volume")).toDouble(1.0);
+    c.fadeInSeconds = std::max(0.0, o.value(QStringLiteral("fadeInSeconds")).toDouble(0.0));
+    c.fadeOutSeconds = std::max(0.0, o.value(QStringLiteral("fadeOutSeconds")).toDouble(0.0));
     c.keyframes = keyframeSetFromJson(o.value(QStringLiteral("keyframes")).toObject());
     c.gradeEnabled = o.value(QStringLiteral("gradeEnabled")).toBool(false);
     c.grade = ColorGrade::fromJson(o.value(QStringLiteral("grade")).toObject());
@@ -819,6 +823,8 @@ QJsonObject TimelineModel::toJson() const
     root.insert(QStringLiteral("screen3DFocus"), m_screen3DFocus.toJson());
     root.insert(QStringLiteral("screenSpring"), m_screenSpring.toJson());
     root.insert(QStringLiteral("cursorSpring"), m_cursorSpring.toJson());
+    // --- S4 subtitles (absent in S2/S3 files: fromJson defaults apply) ---
+    root.insert(QStringLiteral("subtitles"), m_subtitles.toJson());
     return root;
 }
 
@@ -983,6 +989,7 @@ bool TimelineModel::fromJson(const QJsonObject& object, QString& error)
         FocusEffect::fromJson(object.value(QStringLiteral("screen3DFocus")).toObject());
     fresh.m_screenSpring = SpringParams::fromJson(object.value(QStringLiteral("screenSpring")).toObject());
     fresh.m_cursorSpring = SpringParams::fromJson(object.value(QStringLiteral("cursorSpring")).toObject());
+    fresh.m_subtitles = SubtitleTrack::fromJson(object.value(QStringLiteral("subtitles")).toObject());
 
     fresh.recomputeConnected();
 
