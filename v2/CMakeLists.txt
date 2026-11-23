@@ -178,6 +178,8 @@ add_executable(CatCut-v2
   src/main.cpp
   src/ui/MainWindow.h
   src/ui/MainWindow.cpp
+  src/ui/ExportDialog.h
+  src/ui/ExportDialog.cpp
   src/ui/TimelineWidget.h
   src/ui/TimelineWidget.cpp
   src/ui/KeyframeChartWidget.h
@@ -295,3 +297,22 @@ target_include_directories(verify-s4 PRIVATE
 )
 
 target_link_libraries(verify-s4 PRIVATE catcut_media catcut_core Qt6::Gui)
+
+# ---------------------------------------------------------------- self-test
+# verify-s5: the S5 export dialog (File -> 导出), headless offscreen:
+# 6 built-in presets, default 1080p H.264 + S4 recommended bitrate,
+# export disabled for an empty timeline, enabled once a clip exists,
+# all builtins valid, 8K bitrate clamped to the 130 Mbps cap.
+# Console program (QApplication, offscreen platform in CI).
+# Exit 0 = all checks passed.
+add_executable(verify-s5
+  tests/verify-s5/main.cpp
+  src/ui/ExportDialog.h
+  src/ui/ExportDialog.cpp
+)
+
+target_include_directories(verify-s5 PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/src"
+)
+
+target_link_libraries(verify-s5 PRIVATE catcut_media catcut_core Qt6::Widgets)
