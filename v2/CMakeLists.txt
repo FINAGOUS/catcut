@@ -136,11 +136,12 @@ target_link_libraries(CatCut-v2 PRIVATE catcut_media Qt6::Widgets)
 
 # Preview shaders, compiled at build time by qsb and embedded as
 # resources (":/shaders/texture.vert.qsb", ":/shaders/texture.frag.qsb").
-# NOTE: with PREFIX "/" the alias is the file path relative to this
-# CMakeLists dir; PREFIX "/shaders" would double it to
-# ":/shaders/shaders/..." (seen in run 45231564114's configure log).
+# NOTE: BASE strips the "shaders/" directory from the alias; without it
+# the alias doubles to ":/shaders/shaders/..." (run 45231564114), and
+# with PREFIX "/" alone it becomes "://shaders/..." (run 45232433853).
 qt_add_shaders(CatCut-v2 "catcut_preview_shaders"
-  PREFIX "/"
+  PREFIX "/shaders"
+  BASE "shaders"
   FILES
     shaders/texture.vert
     shaders/texture.frag
