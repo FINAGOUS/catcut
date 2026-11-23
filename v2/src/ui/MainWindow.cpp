@@ -1,16 +1,24 @@
 #include "ui/MainWindow.h"
 
 #include "core/ProjectModel.h"
+#include "core/TimelineEvaluator.h"
+#include "core/TimelineFrameRenderer.h"
+#include "media/Decoder.h"
 #include "media/MediaProbe.h"
 #include "media/PreviewRenderer.h"
 #include "media/ProxyJob.h"
+#include "ui/InspectorWidget.h"
+#include "ui/KeyframeChartWidget.h"
 #include "ui/PreviewWidget.h"
+#include "ui/TimelineWidget.h"
 
 #include <QApplication>
 #include <QCloseEvent>
+#include <QComboBox>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QDockWidget>
+#include <QDrag>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHeaderView>
@@ -19,8 +27,11 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMetaObject>
+#include <QMimeData>
+#include <QMouseEvent>
 #include <QPointer>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QStatusBar>
@@ -31,16 +42,6 @@
 namespace catcut {
 
 namespace {
-
-QLabel* placeholderLabel(const QString& text, bool dark = false)
-{
-    auto* label = new QLabel(text);
-    label->setAlignment(Qt::AlignCenter);
-    label->setWordWrap(true);
-    if (dark)
-        label->setStyleSheet(QStringLiteral("background-color: black; color: #888888;"));
-    return label;
-}
 
 QDockWidget* makeDock(const QString& title)
 {
@@ -111,12 +112,13 @@ void MainWindow::setupDocks()
         m_mediaTable->horizontalHeader()->setStretchLastSection(true);
         m_mediaTable->setSelectionBehavior(QAbstractItemView::SelectRows);
         m_mediaTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        m_mediaTable->viewport()->installEventFilter(this);
         layout->addWidget(m_mediaTable);
         m_mediaDock->setWidget(mediaWidget);
     }
     m_mediaDock->setObjectName(QStringLiteral("dockMedia"));
 
-    // --- Preview (S1): real first-frame rendering via PreviewWidget. ---
+    // --- Preview (S1 first frame; S2 timeline frame at the playhead). ---
     m_previewDock = makeDock(QStringLiteral("预览"));
     {
         auto* previewWidget = new QWidget();
@@ -131,12 +133,55 @@ void MainWindow::setupDocks()
     }
     m_previewDock->setObjectName(QStringLiteral("dockPreview"));
 
+    // --- Timeline (S2): real timeline widget, replacing the S1 placeholder. ---
     m_timelineDock = makeDock(QStringLiteral("时间线"));
-    m_timelineDock->setWidget(placeholderLabel(QStringLiteral("时间线\n（S2 接入时间线编辑）")));
+    {
+        m_timelineWidget = new TimelineWidget();
+        auto* timelineWidget = new QWidget();
+        auto* layout = new QVBoxLayout(timelineWidget);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->addWidget(m_timelineWidget->createToolbar());
+        auto* scroll = new QScrollArea();
+        scroll->setWidget(m_timelineWidget);
+        scroll->setWidgetResizable(false);
+        layout->addWidget(scroll, 1);
+        m_timelineDock->setWidget(timelineWidget);
+        connect(m_timelineWidget, &TimelineWidget::playheadChanged,
+                this, &MainWindow::onPlayheadChanged);
+        connect(m_timelineWidget, &TimelineWidget::modelChanged,
+                this, &MainWindow::onTimelineChanged);
+        connect(m_timelineWidget, &TimelineWidget::selectionChanged,
+                this, &MainWindow::onTimelineSelectionChanged);
+    }
     m_timelineDock->setObjectName(QStringLiteral("dockTimeline"));
 
+    // --- Inspector (S2): clip/transition inspector + keyframe chart. ---
     m_inspectorDock = makeDock(QStringLiteral("检查器"));
-    m_inspectorDock->setWidget(placeholderLabel(QStringLiteral("检查器\n未选中任何片段")));
+    {
+        auto* inspectorWidget = new QWidget();
+        auto* layout = new QVBoxLayout(inspectorWidget);
+        layout->setContentsMargins(0, 0, 0, 0);
+        m_inspectorWidget = new InspectorWidget();
+        m_inspectorWidget->setModel(m_timelineWidget->model());
+        connect(m_inspectorWidget, &InspectorWidget::changed,
+                this, &MainWindow::onTimelineChanged);
+        layout->addWidget(m_inspectorWidget);
+        auto* chartLabel = new QLabel(QStringLiteral("关键帧曲线"));
+        layout->addWidget(chartLabel);
+        auto* paramCombo = new QComboBox();
+        for (const QString& name : KeyframeChartWidget::parameterNames())
+            paramCombo->addItem(KeyframeChartWidget::parameterDisplayName(name), name);
+        layout->addWidget(paramCombo);
+        m_chartWidget = new KeyframeChartWidget();
+        m_chartWidget->setModel(m_timelineWidget->model());
+        connect(paramCombo, &QComboBox::currentIndexChanged, this, [this, paramCombo]() {
+            m_chartWidget->setParameter(paramCombo->currentData().toString());
+        });
+        connect(m_chartWidget, &KeyframeChartWidget::keyframesChanged,
+                this, &MainWindow::onTimelineChanged);
+        layout->addWidget(m_chartWidget, 1);
+        m_inspectorDock->setWidget(inspectorWidget);
+    }
     m_inspectorDock->setObjectName(QStringLiteral("dockInspector"));
 }
 
@@ -231,6 +276,13 @@ bool MainWindow::openProject(const QString& path)
     }
     m_project = std::move(fresh);
     m_projectPath = path;
+    // S2: restore the timeline (empty for S0/S1 projects).
+    QString timelineError;
+    if (!m_timelineWidget->model()->fromJson(m_project->timelineJson(), timelineError)) {
+        QMessageBox::warning(this, QStringLiteral("时间线恢复失败"), timelineError);
+    }
+    m_timelineWidget->setPlayhead(0.0);
+    refreshInspector();
     updateWindowTitle();
     statusBar()->showMessage(QStringLiteral("已打开 %1").arg(path), 3000);
     return true;
@@ -240,6 +292,10 @@ void MainWindow::onNewProject()
 {
     m_project = std::make_unique<ProjectModel>();
     m_projectPath.clear();
+    QString error;
+    m_timelineWidget->model()->fromJson(QJsonObject(), error);
+    m_timelineWidget->setPlayhead(0.0);
+    refreshInspector();
     updateWindowTitle();
     statusBar()->showMessage(QStringLiteral("已新建工程"), 3000);
 }
@@ -259,6 +315,8 @@ void MainWindow::onSaveProject()
         onSaveProjectAs();
         return;
     }
+    // S2: persist the timeline into the project before saving.
+    m_project->setTimelineJson(m_timelineWidget->model()->toJson());
     QString error;
     if (!m_project->saveToFile(m_projectPath, error)) {
         QMessageBox::critical(this, QStringLiteral("保存失败"), error);
@@ -357,6 +415,95 @@ void MainWindow::onProxyFinished(int row, bool ok, const QString& error, const Q
            : QStringLiteral("失败：%1").arg(error)));
     if (!ok)
         statusBar()->showMessage(QStringLiteral("代理生成失败：%1").arg(error), 5000);
+}
+
+// ------------------------------------------------------------- S2 timeline
+
+void MainWindow::onTimelineChanged()
+{
+    refreshInspector();
+    renderPreviewAtPlayhead();
+}
+
+void MainWindow::onTimelineSelectionChanged()
+{
+    refreshInspector();
+}
+
+void MainWindow::onPlayheadChanged(double /*seconds*/)
+{
+    refreshInspector();
+    renderPreviewAtPlayhead();
+}
+
+void MainWindow::refreshInspector()
+{
+    if (!m_inspectorWidget || !m_timelineWidget)
+        return;
+    m_inspectorWidget->refresh(m_timelineWidget->selectedClipId(),
+                               m_timelineWidget->selectedTransitionLeftId(),
+                               m_timelineWidget->playhead());
+    if (m_chartWidget)
+        m_chartWidget->setClip(m_timelineWidget->selectedClipId());
+}
+
+void MainWindow::renderPreviewAtPlayhead()
+{
+    TimelineModel* timelineModel = m_timelineWidget->model();
+    if (!timelineModel || timelineModel->isEmpty())
+        return;
+    TimelineEvaluator evaluator(timelineModel, QSize(m_project->canvasWidth(), m_project->canvasHeight()));
+    const FrameScene scene = evaluator.evaluate(m_timelineWidget->playhead());
+    if (scene.videoLayers.isEmpty())
+        return;
+    TimelineFrameProvider provider = [](const QString& path, double sourceTime, QImage& out) {
+        QString error;
+        Decoder decoder;
+        return decoder.decodeFrameAt(path, sourceTime, QSize(960, 540), out, error);
+    };
+    QImage image;
+    QString error;
+    if (!TimelineFrameRenderer::render(scene, provider, image, error, QSize(960, 540))) {
+        m_previewStatus->setText(QStringLiteral("预览渲染失败：%1").arg(error));
+        return;
+    }
+    m_previewWidget->setImage(image);
+    m_previewStatus->setText(
+        QStringLiteral("播放头 %1s / 共 %2s%3")
+            .arg(m_timelineWidget->playhead(), 0, 'f', 2)
+            .arg(timelineModel->totalDuration(), 0, 'f', 1)
+            .arg(scene.hasTransition ? QStringLiteral("（转场中）") : QString()));
+}
+
+bool MainWindow::eventFilter(QObject* watched, QEvent* event)
+{
+    if (watched == m_mediaTable->viewport()) {
+        if (event->type() == QEvent::MouseButtonPress) {
+            auto* mouseEvent = static_cast<QMouseEvent*>(event);
+            m_mediaDragStart = mouseEvent->pos();
+            m_mediaDragRow = m_mediaTable->rowAt(mouseEvent->pos().y());
+            return false;
+        }
+        if (event->type() == QEvent::MouseMove) {
+            auto* mouseEvent = static_cast<QMouseEvent*>(event);
+            if (m_mediaDragRow >= 0 && m_mediaDragRow < m_media.size()
+                && (mouseEvent->buttons() & Qt::LeftButton)
+                && (mouseEvent->pos() - m_mediaDragStart).manhattanLength()
+                    > QApplication::startDragDistance()) {
+                auto* drag = new QDrag(m_mediaTable->viewport());
+                auto* mime = new QMimeData();
+                mime->setData(QStringLiteral("application/x-catcut-media-path"),
+                              m_media[m_mediaDragRow].path.toUtf8());
+                mime->setText(m_media[m_mediaDragRow].path);
+                drag->setMimeData(mime);
+                drag->exec(Qt::CopyAction);
+                m_mediaDragRow = -1;
+                return true;
+            }
+            return false;
+        }
+    }
+    return QMainWindow::eventFilter(watched, event);
 }
 
 void MainWindow::closeEvent(QCloseEvent* event)
