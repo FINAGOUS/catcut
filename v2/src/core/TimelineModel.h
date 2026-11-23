@@ -24,11 +24,17 @@
 
 #pragma once
 
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
 #include <QMap>
+#include <QPointF>
 #include <QString>
 
+#include "core/BeautyKeying.h"
+#include "core/CameraMotion.h"
+#include "core/CanvasStyle.h"
+#include "core/ColorGrade.h"
 #include "core/Keyframes.h"
 #include "core/Roles.h"
 #include "core/Transitions.h"
@@ -70,6 +76,19 @@ struct Clip {
 
     KeyframeSet keyframes;
     double volume = 1.0; // audio gain, 0..1+ (S4 honours it)
+
+    // --- S3 colour / picture effects (per clip) ---
+    // Grade is evaluated into FrameLayer by TimelineEvaluator and
+    // applied by TimelineFrameRenderer (the one shared preview/export
+    // path). gradeEnabled=false means "no grade on this clip".
+    ColorGrade grade;
+    bool gradeEnabled = false;
+    BeautySettings beauty;
+    ChromaKey chromaKey; // green-screen key; portrait-background
+                         // keying lives here too (see S3 doc: beauty and
+                         // portrait keying are mutually exclusive)
+    MaskShape mask;      // shape mask (rectangle / circle / pen polygon)
+    bool maskEnabled = false;
 
     double duration() const { return sourceOut - sourceIn; }
     double timelineEnd() const { return timelineStart + duration(); }
@@ -183,6 +202,45 @@ public:
     void recomputeConnected();
     static constexpr double kMinClipDuration = 0.1;
 
+    // --- S3 project-level picture state (canvas / motion / pointer) ---
+    const CanvasStyle& canvasStyle() const { return m_canvas; }
+    void setCanvasStyle(const CanvasStyle& style) { m_canvas = style; }
+
+    const QList<MosaicClip>& mosaics() const { return m_mosaics; }
+    void addMosaic(const MosaicClip& clip) { m_mosaics.append(clip); }
+    bool removeMosaic(const QString& clipId);
+    MosaicClip* findMosaic(const QString& clipId);
+
+    const QList<ClickEvent>& clickEvents() const { return m_clicks; }
+    void setClickEvents(const QList<ClickEvent>& clicks) { m_clicks = clicks; }
+    void addClickEvent(const ClickEvent& click) { m_clicks.append(click); }
+
+    const QList<AutoZoomSegment>& manualZoomSegments() const { return m_manualZoom; }
+    void setManualZoomSegments(const QList<AutoZoomSegment>& segments) { m_manualZoom = segments; }
+    bool autoZoomEnabled() const { return m_autoZoomEnabled; }
+    void setAutoZoomEnabled(bool enabled) { m_autoZoomEnabled = enabled; }
+    // Planned auto-zoom segments (auto groups + manual, sorted).
+    QList<AutoZoomSegment> plannedAutoZoom() const;
+    double autoZoomAt(double t, QPointF& focusOut) const;
+
+    const QList<ScreenMotionSegment>& screenMotions() const { return m_screenMotions; }
+    void addScreenMotion(const ScreenMotionSegment& segment) { m_screenMotions.append(segment); }
+    bool removeScreenMotion(const QString& segmentId);
+    // Interpolated 3D pose at `t` (identity + active=false outside).
+    Screen3D screen3DPoseAt(double t, bool& activeOut) const;
+
+    const PointerTrack& pointerTrack() const { return m_pointer; }
+    void setPointerTrack(const PointerTrack& track) { m_pointer = track; }
+
+    const FocusEffect& zoomFocus() const { return m_zoomFocus; }
+    void setZoomFocus(const FocusEffect& focus) { m_zoomFocus = focus; }
+    const FocusEffect& screen3DFocus() const { return m_screen3DFocus; }
+    void setScreen3DFocus(const FocusEffect& focus) { m_screen3DFocus = focus; }
+    const SpringParams& screenSpring() const { return m_screenSpring; }
+    void setScreenSpring(const SpringParams& spring) { m_screenSpring = spring; }
+    const SpringParams& cursorSpring() const { return m_cursorSpring; }
+    void setCursorSpring(const SpringParams& spring) { m_cursorSpring = spring; }
+
     QJsonObject toJson() const;
     bool fromJson(const QJsonObject& object, QString& error);
 
@@ -197,6 +255,19 @@ private:
     QMap<QString, Transition> m_transitions; // key: left (primary) clip id
     QMap<QString, QString> m_storylineNames; // storyline id -> name
     RoleRegistry m_roles;
+
+    // --- S3 project-level picture state ---
+    CanvasStyle m_canvas;
+    QList<MosaicClip> m_mosaics;
+    QList<ClickEvent> m_clicks;
+    QList<AutoZoomSegment> m_manualZoom;
+    bool m_autoZoomEnabled = true;
+    QList<ScreenMotionSegment> m_screenMotions;
+    PointerTrack m_pointer;
+    FocusEffect m_zoomFocus;
+    FocusEffect m_screen3DFocus;
+    SpringParams m_screenSpring;
+    SpringParams m_cursorSpring;
 };
 
 } // namespace catcut
