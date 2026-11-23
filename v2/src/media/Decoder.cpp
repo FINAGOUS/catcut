@@ -13,9 +13,11 @@ extern "C" {
 #include <libavutil/imgutils.h>
 #include <libavutil/pixdesc.h>
 #include <libswscale/swscale.h>
-#ifdef _WIN32
-#include <libavutil/hwcontext_d3d11va.h>
-#endif
+// NOTE: do NOT include <libavutil/hwcontext_d3d11va.h> here: it pulls in
+// <d3d11.h>, whose C++ operator overloads cannot live inside an
+// extern "C" block (MSVC C2733). Nothing in this file needs it —
+// AV_PIX_FMT_D3D11 comes from pixfmt.h, av_hwdevice_ctx_create from
+// hwcontext.h.
 }
 
 namespace catcut {
