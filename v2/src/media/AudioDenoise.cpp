@@ -89,16 +89,30 @@ QVector<float> AudioDenoise::applyAfftdn(const QVector<float>& samples, QString&
         if (!drained)
             return false;
         while (av_buffersink_get_frame(sinkCtx, drained) >= 0) {
-            if (drained->format != AV_SAMPLE_FMT_FLT || drained->ch_layout.nb_channels != 2) {
+            // afftdn prefers planar float: the negotiated output is
+            // FLTP (data[0] = left plane, data[1] = right plane),
+            // not the packed FLT fed in. Accept both and interleave.
+            const bool packed = drained->format == AV_SAMPLE_FMT_FLT;
+            const bool planar = drained->format == AV_SAMPLE_FMT_FLTP;
+            if ((!packed && !planar) || drained->ch_layout.nb_channels != 2) {
                 av_frame_unref(drained);
                 av_frame_free(&drained);
                 return false;
             }
-            const float* data = reinterpret_cast<const float*>(drained->data[0]);
-            const int n = drained->nb_samples * 2;
+            const int n = drained->nb_samples;
             const int start = out.size();
-            out.resize(out.size() + n);
-            std::memcpy(out.data() + start, data, static_cast<size_t>(n) * sizeof(float));
+            out.resize(out.size() + n * 2);
+            if (packed) {
+                const float* data = reinterpret_cast<const float*>(drained->data[0]);
+                std::memcpy(out.data() + start, data, static_cast<size_t>(n) * 2 * sizeof(float));
+            } else {
+                const float* left = reinterpret_cast<const float*>(drained->data[0]);
+                const float* right = reinterpret_cast<const float*>(drained->data[1]);
+                for (int i = 0; i < n; ++i) {
+                    out[start + i * 2] = left[i];
+                    out[start + i * 2 + 1] = right[i];
+                }
+            }
             av_frame_unref(drained);
         }
         av_frame_free(&drained);
