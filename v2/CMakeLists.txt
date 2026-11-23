@@ -42,6 +42,8 @@ foreach(_header
     include/libavcodec/avcodec.h
     include/libavformat/avformat.h
     include/libavfilter/avfilter.h
+    include/libavfilter/buffersrc.h
+    include/libavfilter/buffersink.h
     include/libavutil/avutil.h
     include/libavutil/hwcontext.h
     include/libswscale/swscale.h
@@ -99,6 +101,12 @@ add_library(catcut_core STATIC
   src/core/CanvasStyle.cpp
   src/core/ProjectModel.h
   src/core/ProjectModel.cpp
+  src/core/ExportPreset.h
+  src/core/ExportPreset.cpp
+  src/core/AudioMix.h
+  src/core/AudioMix.cpp
+  src/core/Subtitles.h
+  src/core/Subtitles.cpp
 )
 
 target_include_directories(catcut_core PUBLIC
@@ -124,6 +132,16 @@ add_library(catcut_media STATIC
   src/media/PreviewRenderer.cpp
   src/media/ExportFrameRenderer.h
   src/media/ExportFrameRenderer.cpp
+  src/media/AudioDecoder.h
+  src/media/AudioDecoder.cpp
+  src/media/Loudness.h
+  src/media/Loudness.cpp
+  src/media/ExportPipeline.h
+  src/media/ExportPipeline.cpp
+  src/media/VocalSeparation.h
+  src/media/VocalSeparation.cpp
+  src/media/AutoTranscription.h
+  src/media/AutoTranscription.cpp
   src/ui/PreviewWidget.h
   src/ui/PreviewWidget.cpp
 )
@@ -258,3 +276,22 @@ qt_add_shaders(verify-s3 "catcut_grade_shader_check"
   FILES
     shaders/grade.frag
 )
+
+# ---------------------------------------------------------------- self-test
+# verify-s4: export presets + bitrate formula, Roles mix + fades,
+# loudness (loudnorm measure + -16 LUFS normalisation), SRT
+# import/export + burn-in through the shared renderer, a real MP4
+# export (3 clips + 1 transition + grade, 1080p H.264 software
+# path), per-role stems, preview-vs-export consistency, the vocal
+# separation + auto-transcription honest-error hooks, and cancel.
+# Console program (QGuiApplication, offscreen platform in CI).
+# Exit 0 = all checks passed.
+add_executable(verify-s4
+  tests/verify-s4/main.cpp
+)
+
+target_include_directories(verify-s4 PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/src"
+)
+
+target_link_libraries(verify-s4 PRIVATE catcut_core catcut_media Qt6::Gui)
