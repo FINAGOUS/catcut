@@ -294,4 +294,4 @@ target_include_directories(verify-s4 PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 
-target_link_libraries(verify-s4 PRIVATE catcut_core catcut_media Qt6::Gui)
+target_link_libraries(verify-s4 PRIVATE catcut_media catcut_core Qt6::Gui)
