@@ -96,6 +96,12 @@ FFmpeg `afftdn` 是本阶段的指定方案，但 S4 没有把它做成导出管
 
 ## 6. 已知缺口清单（S4 结束时）
 
+（S4 实施中顺带修掉的两个旧问题，写在这里备查：① 求值器以前把纯音频
+片段也放进 `FrameScene::videoLayers`，渲染器去解码 WAV 当画面，整个
+导出失败——现音频片段只进 audio layers，渲染器另有一道 `ClipKind::Audio`
+跳过保护；② `Loudness` 的测量曾用 `anullsink` 当 sink，`av_buffersink_get_frame`
+在它上面是空指针解引用（本地 gdb 定位）——现用 `abuffersink`。）
+
 1. H.265 软编码：LGPL 发行版无软 HEVC 编码器，无 GPU 的机器导不出 H.265（可读报错）。见 §1。
 2. 人声分离、自动识别字幕：只有 hook + honest error，见 §5。
 3. 降噪（afftdn）未接进导出效果链：需先对源音频预处理，见 §2。
