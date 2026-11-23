@@ -1,4 +1,4 @@
-# CatCut v2 — S1 media pipeline (Qt 6 + C++20 + FFmpeg LGPL shared).
+# CatCut v2 — S2 timeline (Qt 6 + C++20 + FFmpeg LGPL shared).
 #
 # FFmpeg is linked in-process as dynamic libraries (libavformat,
 # libavcodec, libavfilter, libavutil, libswscale, libswresample).
@@ -72,6 +72,36 @@ if(_gpl_files)
     "Use an LGPL build (BtbN ffmpeg-master-latest-win64-lgpl-shared).")
 endif()
 
+# ---------------------------------------------------------------- core lib
+# catcut_core: platform-free timeline core (model, keyframes,
+# transitions, evaluator, frame renderer). The UI and the self-tests
+# link it; S4 export will reuse the evaluator from here.
+add_library(catcut_core STATIC
+  src/core/Roles.h
+  src/core/Roles.cpp
+  src/core/Keyframes.h
+  src/core/Keyframes.cpp
+  src/core/Transitions.h
+  src/core/Transitions.cpp
+  src/core/TimelineModel.h
+  src/core/TimelineModel.cpp
+  src/core/TimelineEvaluator.h
+  src/core/TimelineEvaluator.cpp
+  src/core/TimelineFrameRenderer.h
+  src/core/TimelineFrameRenderer.cpp
+  src/core/ProjectModel.h
+  src/core/ProjectModel.cpp
+)
+
+target_include_directories(catcut_core PUBLIC
+  "${CMAKE_CURRENT_SOURCE_DIR}/src"
+)
+
+target_link_libraries(catcut_core PUBLIC
+  Qt6::Core
+  Qt6::Gui
+)
+
 # ---------------------------------------------------------------- media lib
 add_library(catcut_media STATIC
   src/media/MediaCommon.h
@@ -120,8 +150,12 @@ add_executable(CatCut-v2
   src/main.cpp
   src/ui/MainWindow.h
   src/ui/MainWindow.cpp
-  src/core/ProjectModel.h
-  src/core/ProjectModel.cpp
+  src/ui/TimelineWidget.h
+  src/ui/TimelineWidget.cpp
+  src/ui/KeyframeChartWidget.h
+  src/ui/KeyframeChartWidget.cpp
+  src/ui/InspectorWidget.h
+  src/ui/InspectorWidget.cpp
 )
 
 target_include_directories(CatCut-v2 PRIVATE
@@ -132,7 +166,7 @@ target_compile_definitions(CatCut-v2 PRIVATE
   CATCUT_VERSION_STRING="${CATCUT_VERSION}"
 )
 
-target_link_libraries(CatCut-v2 PRIVATE catcut_media Qt6::Widgets)
+target_link_libraries(CatCut-v2 PRIVATE catcut_core catcut_media Qt6::Widgets)
 
 # Preview shaders, compiled at build time by qsb and embedded as
 # resources (":/shaders/texture.vert.qsb", ":/shaders/texture.frag.qsb").
@@ -167,3 +201,20 @@ target_include_directories(verify-s1 PRIVATE
 )
 
 target_link_libraries(verify-s1 PRIVATE catcut_media Qt6::Gui)
+
+# ---------------------------------------------------------------- self-test
+# verify-s2: timeline model (ripple, connected clips, disconnect,
+# roles/lanes, transitions, keyframes, JSON round-trip) + a timeline
+# render test (3 clips + 1 transition, first frame + mid-transition
+# frame offscreen to PNG via the same evaluator/renderer the preview
+# uses). Console program (QGuiApplication, offscreen platform in CI).
+# Exit 0 = all checks passed.
+add_executable(verify-s2
+  tests/verify-s2/main.cpp
+)
+
+target_include_directories(verify-s2 PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/src"
+)
+
+target_link_libraries(verify-s2 PRIVATE catcut_core catcut_media Qt6::Gui)
