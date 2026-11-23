@@ -69,12 +69,9 @@ QVector<float> AudioDenoise::applyAfftdn(const QVector<float>& samples, QString&
     ret = avfilter_graph_create_filter(&sinkCtx, sink, "out", nullptr, nullptr, graph);
     if (ret < 0)
         return failGraph(QStringLiteral("降噪：创建输出端失败（%1）。").arg(avErrorText(ret)));
-    // Ask the sink for the same format we feed in (float stereo),
-    // so the drained frames can be copied without resampling.
-    const int outFmts[] = { AV_SAMPLE_FMT_FLT, AV_SAMPLE_FMT_NONE };
-    ret = av_opt_set_int_list(sinkCtx, "sample_fmts", outFmts, AV_SAMPLE_FMT_NONE, 0);
-    if (ret < 0)
-        return failGraph(QStringLiteral("降噪：设置输出采样格式失败（%1）。").arg(avErrorText(ret)));
+    // No sample_fmts constraint on the sink: abuffer only offers
+    // flt, so the negotiated format through afftdn is flt anyway;
+    // the drain below verifies the format of every frame instead.
     if (avfilter_link(srcCtx, 0, dnCtx, 0) < 0)
         return failGraph(QStringLiteral("降噪：链接滤镜失败（输入端）。"));
     if (avfilter_link(dnCtx, 0, sinkCtx, 0) < 0)
@@ -99,7 +96,9 @@ QVector<float> AudioDenoise::applyAfftdn(const QVector<float>& samples, QString&
             }
             const float* data = reinterpret_cast<const float*>(drained->data[0]);
             const int n = drained->nb_samples * 2;
-            out.append(data, n);
+            const int start = out.size();
+            out.resize(out.size() + n);
+            std::memcpy(out.data() + start, data, static_cast<size_t>(n) * sizeof(float));
             av_frame_unref(drained);
         }
         av_frame_free(&drained);
@@ -145,7 +144,8 @@ QVector<float> AudioDenoise::applyAfftdn(const QVector<float>& samples, QString&
         }
     }
     if (feedOk) {
-        av_buffersrc_add_frame_flags(srcCtx, nullptr, 0); // EOF
+        const int eofRet = av_buffersrc_add_frame_flags(srcCtx, nullptr, 0); // EOF
+        (void)eofRet;
         if (!drain())
             feedOk = false;
     }
