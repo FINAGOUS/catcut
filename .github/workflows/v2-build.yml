@@ -241,8 +241,14 @@ jobs:
           if (-not (Test-Path -LiteralPath $installer)) { throw 'Installer not found for self-test.' }
           $installDir = Join-Path $env:LOCALAPPDATA 'Programs\CatCut'
           if (Test-Path $installDir) { Remove-Item $installDir -Recurse -Force }
-          & $installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER
-          if ($LASTEXITCODE -ne 0) { throw "Silent install failed with exit code $LASTEXITCODE." }
+          # NOTE: the Inno Setup installer is a GUI-subsystem exe:
+          # PowerShell's call operator (&) does NOT wait for it and
+          # leaves $LASTEXITCODE unset, so `& $installer` followed by
+          # `if ($LASTEXITCODE -ne 0)` always throws (run 45262665239).
+          # Start-Process -Wait -PassThru is the correct way to run a
+          # GUI installer/uninstaller and read its real exit code.
+          $installProc = Start-Process -FilePath $installer -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER') -Wait -PassThru
+          if ($installProc.ExitCode -ne 0) { throw "Silent install failed with exit code $($installProc.ExitCode)." }
           $exe = Join-Path $installDir 'CatCut-v2.exe'
           if (-not (Test-Path -LiteralPath $exe)) { throw "Installed exe not found: $exe" }
           "Installed exe found: $exe" | Out-Host
@@ -255,8 +261,8 @@ jobs:
           Get-Process -Name 'CatCut-v2' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
           $uninstaller = Join-Path $installDir 'unins000.exe'
           if (-not (Test-Path -LiteralPath $uninstaller)) { throw 'Uninstaller not found.' }
-          & $uninstaller /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
-          if ($LASTEXITCODE -ne 0) { throw "Silent uninstall failed with exit code $LASTEXITCODE." }
+          $uninstallProc = Start-Process -FilePath $uninstaller -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
+          if ($uninstallProc.ExitCode -ne 0) { throw "Silent uninstall failed with exit code $($uninstallProc.ExitCode)." }
           Start-Sleep -Seconds 2
           if (Test-Path $installDir) { throw 'Install directory still exists after uninstall.' }
           "INSTALL SELF-TEST: PASS" | Out-Host
