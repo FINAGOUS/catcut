@@ -36,4 +36,6 @@ Name: "{autodesktop}\CatCut"; Filename: "{app}\CatCut-v2.exe"; WorkingDir: "{app
 
 [Run]
 Filename: "{app}\CatCut-v2.exe"; Description: "Start CatCut"; Flags: nowait postinstall skipifsilent
-Filename: "{app}\CatCut-v2.exe"; Flags: nowait skipifnotsilent
+; S6: the second entry (skipifnotsilent) launched the GUI once more
+; after a SILENT install — removed. A silent install must not leave
+; a running CatCut process behind (S5 completion doc, gap D-17).
