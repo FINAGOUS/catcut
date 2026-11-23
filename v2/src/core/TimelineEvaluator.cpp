@@ -93,6 +93,13 @@ FrameScene TimelineEvaluator::evaluate(double timeSeconds) const
     else if (scene.focusSource == FocusSource::Zoom)
         scene.focusEffect = m_model->zoomFocus();
 
+    // --- S4 active subtitle at this time ---
+    const SubtitleItem* subtitle = m_model->subtitles().itemAt(timeSeconds);
+    if (subtitle) {
+        scene.activeSubtitle = subtitle->text;
+        scene.hasSubtitle = true;
+    }
+
     Transition transition;
     double progress = 0.0;
     QString leftId, rightId;
@@ -148,6 +155,8 @@ FrameScene TimelineEvaluator::evaluate(double timeSeconds) const
             audio.gain = clip.volume * clip.keyframes.volumeAt(
                 std::clamp(timeSeconds - clip.timelineStart, 0.0, clip.duration()));
             audio.enabled = clip.enabled;
+            audio.fadeInSeconds = clip.fadeInSeconds;
+            audio.fadeOutSeconds = clip.fadeOutSeconds;
             scene.audioLayers.append(audio);
         }
     }
@@ -174,6 +183,8 @@ FrameScene TimelineEvaluator::evaluate(double timeSeconds) const
             audio.gain = clip.volume * clip.keyframes.volumeAt(
                 std::clamp(timeSeconds - clip.timelineStart, 0.0, clip.duration()));
             audio.enabled = clip.enabled;
+            audio.fadeInSeconds = clip.fadeInSeconds;
+            audio.fadeOutSeconds = clip.fadeOutSeconds;
             scene.audioLayers.append(audio);
         }
     }
