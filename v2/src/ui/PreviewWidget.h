@@ -46,7 +46,9 @@ public:
 protected:
     void initialize(QRhiCommandBuffer* cb) override;
     void render(QRhiCommandBuffer* cb) override;
-    void release() override;
+    // QRhiWidget calls this when the RHI is about to go away (and the
+    // docs expect the same cleanup in the destructor).
+    void releaseResources() override;
 
 private:
     bool createPipeline();
