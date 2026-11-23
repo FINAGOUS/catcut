@@ -1,4 +1,5 @@
 #include "core/BeautyKeying.h"
+#include <QJsonArray>
 
 #include <algorithm>
 #include <cmath>
