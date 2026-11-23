@@ -83,19 +83,57 @@ S3 文档 §8 的 7 条细化缺口（人像遮罩、逐层裁切、拖拽曲线
 
 ## 3. 全量回归与安装自测（S5 run）
 
-> 本节在 S5 run 成功后填入实测数。基线（S4 收口 run 45260141454，
-> success；安装包 80,655,174 字节，SHA256 `4ad8dfec…`）：
-> verify-s1 20/20、verify-s2 84/84、verify-s3 87/87、verify-s4 100/100，
-> 全部 PASS；预览与导出一致性误差 0.6904/255；成品响度 -16.03 LUFS。
+S5 共跑了两轮（第二轮是修完安装自测脚本 bug 后的重跑）。两轮的全量
+回归结果完全一致。
 
-| 套件 | S5 run 结果 |
-|---|---|
-| verify-s1（探针/解码/代理/首帧） | （待填：S5 run 日志） |
-| verify-s2（时间线模型/转场/求值/渲染） | （待填） |
-| verify-s3（调色/美颜/抠像/运镜/一致性） | （待填） |
-| verify-s4（预设/混音/响度/SRT/导出/分轨/取消） | （待填） |
-| verify-s5（导出对话框：6 预设/码率/空时间线门禁） | （待填） |
-| 安装自测（静默装/启动/静默卸载/目录清理） | （待填） |
+| 套件 | run 45262665239 | run 45265011593 |
+|---|---|---|
+| verify-s1（探针/解码/代理/首帧） | 20/20 PASS | 20/20 PASS |
+| verify-s2（时间线模型/转场/求值/渲染） | 84/84 PASS | 84/84 PASS |
+| verify-s3（调色/美颜/抠像/运镜/一致性） | 87/87 PASS | 87/87 PASS |
+| verify-s4（预设/混音/响度/SRT/导出/分轨/取消） | 100/100 PASS | 100/100 PASS |
+| verify-s5（导出对话框：6 预设/码率/空时间线门禁） | 8/8 PASS | 8/8 PASS |
+| **合计** | **299 PASS，0 FAIL** | **299 PASS，0 FAIL** |
+
+关键实测数（两轮一致）：预览与导出一致性误差 0.6904/255（目标
+< 1% 即 < 2.55/255）；成品响度 -16.03 LUFS（目标 -16）；
+云端编码器 libopenh264（软件回退，runner 无 GPU，符合预期）。
+自测输出全文：`~/workspace/goals/windows/hidden_files/v2-s5-verify.txt`。
+
+### 安装自测：失败（两轮都失败，原因不同）
+
+- **第一轮 run 45262665239（failure）：**步骤 "Install self-test" 在
+  第 8 行立即抛错：`Silent install failed with exit code .`——
+  `$LASTEXITCODE` 是空的。根因：PowerShell 的 `&` 调用 GUI 子系统
+  exe（Inno Setup 安装器）时不等它结束，也不设置 `$LASTEXITCODE`，
+  于是 `if ($LASTEXITCODE -ne 0)` 恒为真。修法（已推上 main）：
+  安装器与卸载器改用 `Start-Process -Wait -PassThru` 读真实 ExitCode。
+  本轮全量回归已全部通过（299 PASS），安装器本身已成功构建
+  （"Build installer" success），但因该步骤失败，后续 upload-artifact
+  步骤被跳过，**本轮没有产出安装包 artifact**。
+- **第二轮 run 45265011593（cancelled，30 分钟 job 超时）：**
+  步骤 "Install self-test" 21:05:44 开始，跑到 job 超时（约 21:33）
+  被取消，27 分钟零输出。日志里该步骤只有脚本回显，没有任何一行
+  实际输出——连 `Installed exe found` 都没打印，说明卡在第一条阻塞
+  调用 `Start-Process -FilePath $installer … -Wait` 上，安装器进程
+  始终没有返回。最可能的根因：**未签名的安装包触发了 Windows
+  SmartScreen 拦截弹窗**（云端 runner 无人可点"仍要运行"），安装器
+  一直等用户确认。/VERYSILENT 压不住 SmartScreen，这是 OS 层弹窗，
+  不是安装器自己的 UI。尚未证实——runner 日志里看不到桌面弹窗，
+  只能从"零输出 + 卡在启动安装器"推断。
+  本轮全量回归同样全部通过（299 PASS），安装器同样已成功构建，
+  但 upload-artifact 步骤没跑到，**本轮也没有安装包 artifact**。
+  因此 S5 **没有可下载验证的安装包**，本地验证（大小/SHA256/MZ 头/
+  Inno Setup 字符串）无包可验。
+
+下一步修法建议（未做，等拍板——S5 的一次修的预算已用完）：
+① 安装自测前加 `Unblock-File` + 关 SmartScreen 注册表
+（`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\SmartScreenEnabled=Off`
+或组策略同等项，runner 是一次性 VM，改注册表无持久影响）再跑安装器；
+② 给 `Start-Process -Wait` 加超时兜底（`Wait-Process -Timeout 300`，
+超时则杀进程并报"安装器疑似被 SmartScreen 拦截"而不是静等 30 分钟
+拖垮整轮）；③ 顺带修 S4 遗留的 `[Run] skipifnotsilent`（静默安装后
+多余拉起 GUI，见 §5 D-17）。
 
 ## 4. 云端已验 vs 待用户电脑真机验的分界线
 
@@ -171,9 +209,12 @@ verify-s1~s5 全部 exit 0；软件编解码回退路径；探针素材跑通；
 
 - Demo 完成度 **约 91%（32/35）**，未到 95%。差的 3 项全在 S4 的
   音频效果链（降噪/人声分离/自动字幕）。
-- 云端能验的部分（构建、自测、软件回退、安装包安装/启动/卸载）已验；
-  性能与硬件相关的判定（§4 的 8 项）必须等用户电脑真机实测，
-  云端绿不能代替。
+- 云端能验的部分里，构建、自测、软件回退已验；**安装包安装/启动/
+  卸载未验**——两轮 S5 run 都没跑通安装自测（第一轮脚本 bug，
+  第二轮安装器疑似被 SmartScreen 拦截卡住直至超时），且两轮都没
+  产出可下载的安装包 artifact。S4 收口 run 45260141454 的安装包
+  （80,655,174 字节，SHA256 `4ad8dfec…`）是旧版（无导出 UI、无安装
+  自测），不能当作 S5 的交付物。
 - 建议下一步（按优先级）：① 真机验 §4 的 8 项；② 补 A 类 3 项中的
   降噪接链（最小）；③ 修 D 类 17（安装后多余拉起进程）；④ 再议
   macOS 构建。
