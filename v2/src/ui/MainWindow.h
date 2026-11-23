@@ -55,6 +55,7 @@ private slots:
     void onRestoreDefaultLayout();
     void onImportMedia();
     void onExport();
+    void onVocalSeparate(); // S6: centre-elimination vocal separation
     void onProxyFinished(int row, bool ok, const QString& error, const QString& encoderUsed);
     void onTimelineChanged();
     void onTimelineSelectionChanged();
@@ -85,6 +86,7 @@ private:
     QDockWidget* m_timelineDock = nullptr;
     QDockWidget* m_inspectorDock = nullptr;
     QDockWidget* m_colorDock = nullptr;
+    QDockWidget* m_audioDock = nullptr; // S6: vocal separation (centre)
 
     QTableWidget* m_mediaTable = nullptr;
     PreviewWidget* m_previewWidget = nullptr;
