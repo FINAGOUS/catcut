@@ -32,7 +32,10 @@ jobs:
           host: windows
           target: desktop
           arch: win64_msvc2022_64
-          modules: qtbase
+          # NOTE: no `modules:` here. `qtbase` is the base package itself,
+          # not an aqt module — passing `modules: qtbase` makes aqt fail
+          # with "The packages ['qtbase'] were not found". Qt Widgets
+          # ships in the base package, which is all S0 needs.
 
       - name: Configure and build (Release)
         run: |
