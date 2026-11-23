@@ -93,6 +93,9 @@ struct FrameAudioLayer {
     double sourceTime = 0.0;
     double gain = 1.0; // clip.volume * volume keyframe
     bool enabled = true;
+    // S4 clip fades (clip-local output time), copied from the clip.
+    double fadeInSeconds = 0.0;
+    double fadeOutSeconds = 0.0;
 };
 
 // One mosaic clip active at the evaluated time, with its fade progress.
@@ -110,6 +113,11 @@ struct FrameScene {
     bool hasTransition = false;
     TransitionType transitionType = TransitionType::Dissolve;
     double transitionProgress = 0.0;
+
+    // --- S4 active subtitle at this time (burned by the renderer,
+    // preview and export alike) ---
+    QString activeSubtitle;
+    bool hasSubtitle = false;
 
     // --- S3 project-level picture state at this time ---
     CanvasStyle canvasStyle;
