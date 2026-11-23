@@ -37,6 +37,7 @@
 #include "core/ColorGrade.h"
 #include "core/Keyframes.h"
 #include "core/Roles.h"
+#include "core/Subtitles.h"
 #include "core/Transitions.h"
 
 namespace catcut {
@@ -76,6 +77,10 @@ struct Clip {
 
     KeyframeSet keyframes;
     double volume = 1.0; // audio gain, 0..1+ (S4 honours it)
+
+    // --- S4 audio fades (clip-local output time, seconds) ---
+    double fadeInSeconds = 0.0;
+    double fadeOutSeconds = 0.0;
 
     // --- S3 colour / picture effects (per clip) ---
     // Grade is evaluated into FrameLayer by TimelineEvaluator and
@@ -241,6 +246,11 @@ public:
     const SpringParams& cursorSpring() const { return m_cursorSpring; }
     void setCursorSpring(const SpringParams& spring) { m_cursorSpring = spring; }
 
+    // --- S4 subtitles (project-level track; S4 burns them through
+    // the shared renderer, preview and export alike) ---
+    const SubtitleTrack& subtitles() const { return m_subtitles; }
+    void setSubtitles(const SubtitleTrack& track) { m_subtitles = track; }
+
     QJsonObject toJson() const;
     bool fromJson(const QJsonObject& object, QString& error);
 
@@ -268,6 +278,9 @@ private:
     FocusEffect m_screen3DFocus;
     SpringParams m_screenSpring;
     SpringParams m_cursorSpring;
+
+    // --- S4 project-level subtitles ---
+    SubtitleTrack m_subtitles;
 };
 
 } // namespace catcut
