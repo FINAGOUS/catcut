@@ -128,7 +128,8 @@ int main(int argc, char* argv[])
     }();
     check(decoded8k >= 3, QStringLiteral("decode 3 frames of 8K"),
           QStringLiteral("decoded=%1 path=%2 (%3) err=%4")
-              .arg(decoded8k, decoder8k.decodePath(), decoder8k.decodePathDetail(), decodeError));
+              .arg(QString::number(decoded8k), decoder8k.decodePath(),
+                   decoder8k.decodePathDetail(), decodeError));
     out << "DECODE_PATH_8K=" << decoder8k.decodePath() << "\n";
     out.flush();
 
@@ -141,7 +142,8 @@ int main(int argc, char* argv[])
     }();
     check(decoded4k >= 10, QStringLiteral("decode 10 frames of 4K"),
           QStringLiteral("decoded=%1 path=%2 (%3) err=%4")
-              .arg(decoded4k, decoder4k.decodePath(), decoder4k.decodePathDetail(), decodeError));
+              .arg(QString::number(decoded4k), decoder4k.decodePath(),
+                   decoder4k.decodePathDetail(), decodeError));
     out << "DECODE_PATH=" << decoder4k.decodePath() << "\n";
     out.flush();
     // Cloud runners have no GPU: the honest expectation is the software
