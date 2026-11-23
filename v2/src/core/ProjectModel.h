@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QJsonObject>
 #include <QString>
 
 namespace catcut {
@@ -35,11 +36,18 @@ public:
     // Saves atomically (temp file + atomic move, via QSaveFile).
     bool saveToFile(const QString& path, QString& error) const;
 
+    // Timeline JSON (S2): the TimelineModel serialisation, stored
+    // under the "timeline" key. Empty when the project has no timeline
+    // yet (S0 projects load fine).
+    void setTimelineJson(const QJsonObject& timeline) { m_timelineJson = timeline; }
+    const QJsonObject& timelineJson() const { return m_timelineJson; }
+
     QString displayTitle() const;
 
 private:
     QString m_title;
     int m_canvasWidth = 1920;
     int m_canvasHeight = 1080;
+    QJsonObject m_timelineJson;
 };
 }
