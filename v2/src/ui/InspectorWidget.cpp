@@ -7,10 +7,13 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QTabWidget>
 #include <QVBoxLayout>
 
 #include <algorithm>
 #include <cmath>
+
+#include "ui/ColorPanelWidget.h"
 
 namespace catcut {
 
@@ -18,11 +21,18 @@ InspectorWidget::InspectorWidget(QWidget* parent)
     : QWidget(parent)
 {
     auto* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(6, 6, 6, 6);
+    layout->setContentsMargins(0, 0, 0, 0);
+
+    // S3: two tabs — "片段" (the S2 clip/transition form) and "调色"
+    // (the shared colour panel, also available as its own dock).
+    auto* tabs = new QTabWidget(this);
+    auto* clipPage = new QWidget();
+    auto* pageLayout = new QVBoxLayout(clipPage);
+    pageLayout->setContentsMargins(6, 6, 6, 6);
 
     m_titleLabel = new QLabel(QStringLiteral("未选中任何片段"));
     m_titleLabel->setWordWrap(true);
-    layout->addWidget(m_titleLabel);
+    pageLayout->addWidget(m_titleLabel);
 
     // --- clip section ---
     m_clipSection = new QWidget();
@@ -101,7 +111,7 @@ InspectorWidget::InspectorWidget(QWidget* parent)
     });
     form->addRow(m_keyframeParamCombo, keyframeButton);
 
-    layout->addWidget(m_clipSection);
+    pageLayout->addWidget(m_clipSection);
 
     // --- transition section ---
     m_transitionSection = new QWidget();
@@ -126,9 +136,14 @@ InspectorWidget::InspectorWidget(QWidget* parent)
         emit changed();
     });
     tForm->addRow(QStringLiteral("时长（秒）"), m_transitionDurationSpin);
-    layout->addWidget(m_transitionSection);
+    pageLayout->addWidget(m_transitionSection);
 
-    layout->addStretch();
+    pageLayout->addStretch();
+    tabs->addTab(clipPage, QStringLiteral("片段"));
+    m_colorPanel = new ColorPanelWidget();
+    connect(m_colorPanel, &ColorPanelWidget::changed, this, &InspectorWidget::changed);
+    tabs->addTab(m_colorPanel, QStringLiteral("调色"));
+    layout->addWidget(tabs);
     refresh(QString(), QString(), 0.0);
 }
 
@@ -145,12 +160,29 @@ void InspectorWidget::rebuildRoleCombo(const QString& currentRole)
     m_roleCombo->setCurrentText(currentRole);
 }
 
+void InspectorWidget::setModel(TimelineModel* model)
+{
+    m_model = model;
+    if (m_colorPanel)
+        m_colorPanel->setModel(model);
+}
+
+void InspectorWidget::setScopesImage(const QImage& image)
+{
+    if (m_colorPanel)
+        m_colorPanel->setScopesImage(image);
+}
+
 void InspectorWidget::refresh(const QString& clipId, const QString& transitionLeftId,
                               double playheadSeconds)
 {
     m_clipId = clipId;
     m_transitionLeftId = transitionLeftId;
     m_playhead = playheadSeconds;
+    // The colour tab stays live even with no clip selected (its
+    // project sections — canvas / motion — do not need a clip).
+    if (m_colorPanel)
+        m_colorPanel->refresh(clipId, playheadSeconds);
     const Clip* clip = m_model ? m_model->findClip(clipId) : nullptr;
     const Transition* transition = m_model && !transitionLeftId.isEmpty()
         ? m_model->transitionAfter(transitionLeftId) : nullptr;
