@@ -54,6 +54,7 @@ private slots:
     void onSaveWorkspace();
     void onRestoreDefaultLayout();
     void onImportMedia();
+    void onExport();
     void onProxyFinished(int row, bool ok, const QString& error, const QString& encoderUsed);
     void onTimelineChanged();
     void onTimelineSelectionChanged();
