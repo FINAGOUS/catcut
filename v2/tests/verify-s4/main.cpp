@@ -21,9 +21,11 @@
 //   8. subtitles: SRT sidecar written; a frame rendered with the
 //      subtitle differs from the same frame without it in the
 //      bottom band (burn-in through the shared renderer)
-//   9. hooks: vocal separation + auto transcription report
-//      honest errors (no fake stems / subtitles) and isAvailable()
-//      is false
+//   9. hooks: auto transcription still reports an honest error
+//      (no fake subtitles) and isAvailable() is false; vocal
+//      separation is NO LONGER a hook since S6 — it runs the
+//      built-in centre-channel elimination (non-AI), so this
+//      section checks it really separates instead of failing.
 //  10. cancel: a pre-cancelled export fails fast, marks cancelled,
 //      and leaves no output file
 //
@@ -561,18 +563,47 @@ int main(int argc, char* argv[])
         }
     }
 
-    // --------------------------------------------- 9. honest-error hooks
+    // --------------------------------------------- 9. vocal separation
+    // S6: centre-channel elimination (non-AI) is wired in, so the
+    // old "hook fails honestly" check is replaced: separation must
+    // succeed and the music track must be real. test_tone.wav is a
+    // mono sine duplicated to both channels, so its centre IS the
+    // whole signal: the music track must come out (near-)silent
+    // while the centre file keeps the tone. Auto transcription is
+    // still a hook (see below).
     {
-        check(!catcut::VocalSeparator::isAvailable(),
-              "hook: vocal separation reports no backend connected");
+        check(catcut::VocalSeparator::isAvailable(),
+              "vocal: centre-elimination backend reports available");
+        check(catcut::VocalSeparator::methodDescription().contains(QStringLiteral("非 AI")),
+              "vocal: method is honestly labelled non-AI",
+              catcut::VocalSeparator::methodDescription());
         QString vocals, accomp, sepError;
         const bool separated = catcut::VocalSeparator::separate(
             toneWav, outDir.absolutePath(), vocals, accomp, sepError);
-        check(!separated && vocals.isEmpty() && accomp.isEmpty(),
-              "hook: vocal separation fails without returning fake stems");
-        check(sepError.contains(QStringLiteral("Demucs")),
-              "hook: vocal separation error names Demucs + setup",
-              sepError.left(60));
+        check(separated, "vocal: separation succeeds on the stereo tone file", sepError);
+        check(QFileInfo::exists(accomp) && QFileInfo::exists(vocals),
+              "vocal: music + centre files exist", accomp + " / " + vocals);
+        if (separated) {
+            catcut::DecodedAudio musicAudio, centreAudio;
+            QString decodeError;
+            const bool musicOk = catcut::AudioDecoder::decodeAll(accomp, musicAudio, decodeError);
+            const bool centreOk = catcut::AudioDecoder::decodeAll(vocals, centreAudio, decodeError);
+            check(musicOk && centreOk, "vocal: both output files decode", decodeError);
+            if (musicOk && centreOk) {
+                // Identical channels cancel: music ~silent, centre ~tone.
+                check(musicAudio.isSilent(1e-3),
+                      "vocal: fully-centred tone cancels out of the music track",
+                      QString("music rms=%1").arg(musicAudio.rms()));
+                check(!centreAudio.isSilent(),
+                      "vocal: centre file keeps the tone",
+                      QString("centre rms=%1").arg(centreAudio.rms()));
+            }
+        }
+        QString missingVocals, missingAccomp, missingError;
+        check(!catcut::VocalSeparator::separate(
+                  outDir.filePath(QStringLiteral("does-not-exist.wav")),
+                  outDir.absolutePath(), missingVocals, missingAccomp, missingError),
+              "vocal: missing source fails with a readable error", missingError);
         check(!catcut::AutoTranscriber::isAvailable(),
               "hook: auto transcription reports no model connected");
         QList<catcut::SubtitleItem> items;
