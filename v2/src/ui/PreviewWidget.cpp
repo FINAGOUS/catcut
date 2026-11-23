@@ -45,7 +45,10 @@ PreviewWidget::PreviewWidget(QWidget* parent)
     setClearColor(QColor(0, 0, 0));
 }
 
-PreviewWidget::~PreviewWidget() = default;
+PreviewWidget::~PreviewWidget()
+{
+    releaseRhiResources();
+}
 
 void PreviewWidget::setImage(const QImage& image)
 {
@@ -59,6 +62,14 @@ void PreviewWidget::setImage(const QImage& image)
 
 void PreviewWidget::initialize(QRhiCommandBuffer* cb)
 {
+    // initialize() is re-invoked when the widget moves to a new QRhi
+    // (resize, reparent, new top-level window). Drop resources owned by
+    // the old QRhi first; if the QRhi is unchanged and we already have
+    // a pipeline, there is nothing to do.
+    if (m_rhi && m_rhi != rhi())
+        releaseRhiResources();
+    if (m_rhi && m_rhi == rhi() && m_pipeline)
+        return;
     m_rhi = rhi();
     if (!m_rhi)
         return;
@@ -179,7 +190,7 @@ void PreviewWidget::render(QRhiCommandBuffer* cb)
     cb->endPass();
 }
 
-void PreviewWidget::release()
+void PreviewWidget::releaseResources()
 {
     releaseRhiResources();
     m_rhi = nullptr;
