@@ -1,17 +1,22 @@
-# CatCut v2 — S4 audio / subtitles / export build (manual trigger only).
+# CatCut v2 — S5收尾 build (manual trigger only).
 # Builds the Qt 6 app with the FFmpeg LGPL media pipeline + the S2
 # magnetic timeline + the S3 colour & picture stage (GPU grade shader,
 # beauty, keying, masks, camera motion, canvas) + the S4 audio /
 # subtitles / export stage (Roles mix, -16 LUFS loudness, SRT +
 # burn-in, ExportPipeline with hardware-then-software encoding,
-# per-role stems), runs the headless smoke test + the verify-s1
+# per-role stems) + the S5 export dialog (File -> 导出, preset picker
+# / bitrate tiers / output path / progress / cancel, through the S4
+# ExportPipeline), runs the headless smoke test + the verify-s1
 # self-test (probe / decode / proxy / offscreen first-frame render) +
 # the verify-s2 self-test (timeline model / keyframes / transitions /
 # evaluator / timeline render) + the verify-s3 self-test (grade math /
 # beauty / keying / motion / canvas / preview-vs-export consistency) +
 # the verify-s4 self-test (presets / mix / loudness / SRT / real MP4
-# export / stems / subtitle burn-in / honest-error hooks / cancel),
-# then packs an Inno Setup exe installer as a private workflow artifact.
+# export / stems / subtitle burn-in / honest-error hooks / cancel) +
+# the verify-s5 self-test (export dialog presets / bitrate / empty
+# timeline gating), then packs an Inno Setup exe installer as a private
+# workflow artifact and install-tests it: silent install, installed
+# exe --smoke-test, silent uninstall, install directory gone.
 # No Release is created. No GPL encoder (libx264/libx265) is involved:
 # the FFmpeg tree is checked for them at download time and again at
 # CMake configure time.
@@ -173,6 +178,17 @@ jobs:
           Get-Content -LiteralPath $log | Out-Host
           if ($code -ne 0) { throw "verify-s4 failed with exit code $code." }
 
+      - name: Run verify-s5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $log = Join-Path $PWD 'v2-s5-verify.txt'
+          $exe = Join-Path $PWD 'v2/build/Release/verify-s5.exe'
+          & $exe (Join-Path $PWD 'verify-s5-out') > $log 2>&1
+          $code = $LASTEXITCODE
+          Get-Content -LiteralPath $log | Out-Host
+          if ($code -ne 0) { throw "verify-s5 failed with exit code $code." }
+
       - name: Stage package
         run: |
           $ErrorActionPreference = 'Stop'
@@ -211,6 +227,40 @@ jobs:
           $installer = Join-Path $PWD "installer-output/CatCut-$env:RELEASE_TAG-setup-x64.exe"
           if (-not (Test-Path -LiteralPath $installer)) { throw 'Installer not found.' }
 
+      - name: Install self-test
+        # S5: the installer must actually install, launch and uninstall
+        # on a clean machine — never shipped untested again. Silent
+        # install -> installed exe exists -> --smoke-test prints
+        # "CatCut v2 smoke OK" -> silent uninstall -> directory gone.
+        # NOTE: installer.iss has a [Run] entry with skipifnotsilent,
+        # so a silent install launches the GUI app; stop it before
+        # uninstalling or the uninstaller cannot remove the files.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Join-Path $PWD "installer-output/CatCut-$env:RELEASE_TAG-setup-x64.exe"
+          if (-not (Test-Path -LiteralPath $installer)) { throw 'Installer not found for self-test.' }
+          $installDir = Join-Path $env:LOCALAPPDATA 'Programs\CatCut'
+          if (Test-Path $installDir) { Remove-Item $installDir -Recurse -Force }
+          & $installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER
+          if ($LASTEXITCODE -ne 0) { throw "Silent install failed with exit code $LASTEXITCODE." }
+          $exe = Join-Path $installDir 'CatCut-v2.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw "Installed exe not found: $exe" }
+          "Installed exe found: $exe" | Out-Host
+          $smokeOut = & $exe --smoke-test
+          if ($LASTEXITCODE -ne 0) { throw 'Installed exe smoke test failed.' }
+          if (-not ($smokeOut -match 'CatCut v2 smoke OK')) { throw 'Installed exe smoke output missing.' }
+          "Installed exe smoke test OK." | Out-Host
+          Get-Process -Name 'CatCut-v2' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          Get-Process -Name 'CatCut-v2' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          $uninstaller = Join-Path $installDir 'unins000.exe'
+          if (-not (Test-Path -LiteralPath $uninstaller)) { throw 'Uninstaller not found.' }
+          & $uninstaller /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+          if ($LASTEXITCODE -ne 0) { throw "Silent uninstall failed with exit code $LASTEXITCODE." }
+          Start-Sleep -Seconds 2
+          if (Test-Path $installDir) { throw 'Install directory still exists after uninstall.' }
+          "INSTALL SELF-TEST: PASS" | Out-Host
+
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
@@ -245,6 +295,13 @@ jobs:
             v2-s3-verify.txt
             verify-s3-out/s3-preview-graded.png
             verify-s3-out/s3-export-graded.png
+          retention-days: 7
+
+      - name: Upload verify-s5 log
+        uses: actions/upload-artifact@v4
+        with:
+          name: catcut-v2-s5-verify
+          path: v2-s5-verify.txt
           retention-days: 7
 
       - name: Upload verify-s4 log
