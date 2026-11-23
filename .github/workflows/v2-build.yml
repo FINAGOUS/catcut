@@ -1,0 +1,95 @@
+# CatCut v2 — S0 skeleton build (manual trigger only).
+# Builds the Qt 6 skeleton, runs the headless smoke test, then packs an
+# Inno Setup exe installer as a private workflow artifact.
+# No Release is created, no FFmpeg is involved (S1).
+
+name: Build CatCut v2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      RELEASE_TAG: v2.0.0-alpha.1
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Qt 6.8.3
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: 6.8.3
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtbase
+
+      - name: Configure and build (Release)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cmake -S v2 -B v2/build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
+          if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed.' }
+          cmake --build v2/build --config Release
+          if ($LASTEXITCODE -ne 0) { throw 'CMake build failed.' }
+
+      - name: Smoke test
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $PWD 'v2/build/Release/CatCut-v2.exe'
+          $versionOut = & $exe --version
+          if ($LASTEXITCODE -ne 0 -or -not ($versionOut -match 'CatCut v2 v2.0.0-alpha.1')) { throw 'Version check failed.' }
+          $smokeOut = & $exe --smoke-test
+          if ($LASTEXITCODE -ne 0) { throw 'Smoke test failed.' }
+          if (-not ($smokeOut -match 'CatCut v2 smoke OK')) { throw 'Smoke test output missing.' }
+
+      - name: Stage package
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pkg = Join-Path $PWD 'v2-package'
+          New-Item -ItemType Directory -Path $pkg | Out-Null
+          Copy-Item -LiteralPath (Join-Path $PWD 'v2/build/Release/CatCut-v2.exe') -Destination $pkg
+          Copy-Item -LiteralPath (Join-Path $PWD 'v2/version.txt') -Destination $pkg
+          $windeployqt = (Get-Command windeployqt -ErrorAction SilentlyContinue).Source
+          if (-not $windeployqt) { $windeployqt = Join-Path $env:Qt6_DIR 'bin/windeployqt.exe' }
+          & $windeployqt (Join-Path $pkg 'CatCut-v2.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'windeployqt failed.' }
+
+      - name: Prepare verified portable installer compiler
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $tool = Join-Path $PWD 'v2/tools/innosetup-6.7.4.exe'
+          New-Item -ItemType Directory -Path (Split-Path $tool) -Force | Out-Null
+          Invoke-WebRequest -Uri 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_4/innosetup-6.7.4.exe' -OutFile $tool
+          $signature = Get-AuthenticodeSignature -LiteralPath $tool
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'CN=Pyrsys B\.V\.') { throw 'Inno Setup signature verification failed.' }
+          $compilerDir = Join-Path $PWD 'v2/tools/inno-portable'
+          $install = Start-Process -FilePath $tool -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', '/PORTABLE=1', '/NOICONS', ('/DIR="' + $compilerDir + '"')) -WindowStyle Hidden -PassThru -Wait
+          if ($install.ExitCode -ne 0 -or -not (Test-Path (Join-Path $compilerDir 'ISCC.exe'))) { throw 'Inno Setup preparation failed.' }
+
+      - name: Build installer
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $compiler = Join-Path $PWD 'v2/tools/inno-portable/ISCC.exe'
+          $pkg = Join-Path $PWD 'v2-package'
+          & $compiler /Qp "/DPackageRoot=$pkg" "/DReleaseTag=$env:RELEASE_TAG" (Join-Path $PWD 'v2/installer/installer.iss')
+          if ($LASTEXITCODE -ne 0) { throw 'Installer build failed.' }
+          $installer = Join-Path $PWD "installer-output/CatCut-$env:RELEASE_TAG-setup-x64.exe"
+          if (-not (Test-Path -LiteralPath $installer)) { throw 'Installer not found.' }
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: catcut-v2-installer
+          path: installer-output/CatCut-v2.0.0-alpha.1-setup-x64.exe
+          retention-days: 7
