@@ -483,6 +483,14 @@ ColorScopes ColorScopes::compute(const QImage& image)
             scopes.vectorGrid[static_cast<size_t>(vy * 128 + vx)] += 1.0f;
         }
     }
+    // Columns no pixel wrote to keep the init values (min 1.0 > max 0.0);
+    // normalise them to an empty range so callers never see min > max.
+    for (int i = 0; i < 256; ++i) {
+        if (scopes.waveMin[i] > scopes.waveMax[i]) {
+            scopes.waveMin[i] = 0.0f;
+            scopes.waveMax[i] = 0.0f;
+        }
+    }
     return scopes;
 }
 
