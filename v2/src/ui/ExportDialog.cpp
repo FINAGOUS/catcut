@@ -3,6 +3,7 @@
 #include "core/TimelineModel.h"
 #include "media/ExportPipeline.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDir>
 #include <QFileDialog>
@@ -29,11 +30,12 @@ class ExportWorker : public QObject {
     Q_OBJECT
 public:
     ExportWorker(const TimelineModel* model, ExportPreset preset, QString outputPath,
-                 std::atomic<bool>* cancel)
+                 std::atomic<bool>* cancel, bool denoise)
         : m_model(model)
         , m_preset(preset)
         , m_outputPath(std::move(outputPath))
         , m_cancel(cancel)
+        , m_denoise(denoise)
     {
     }
 
@@ -48,6 +50,7 @@ public slots:
     {
         ExportOptions options;
         options.cancel = m_cancel;
+        options.denoise = m_denoise;
         options.progress = [this](int done, int total) { emit progress(done, total); };
         const ExportResult result =
             ExportPipeline::exportTimeline(m_model, m_preset, m_outputPath, options);
@@ -61,6 +64,7 @@ private:
     ExportPreset m_preset;
     QString m_outputPath;
     std::atomic<bool>* m_cancel = nullptr;
+    bool m_denoise = false;
 };
 
 QString tierDisplayName(BitrateTier tier)
@@ -124,6 +128,15 @@ ExportDialog::ExportDialog(const TimelineModel* model, QWidget* parent)
     m_bitrateLabel = new QLabel();
     tierRow->addWidget(m_bitrateLabel, 1);
     layout->addLayout(tierRow);
+
+    // --- Denoise row (S6): afftdn on the export mix, default off. ---
+    m_denoiseCheck = new QCheckBox(QStringLiteral("降噪（afftdn）"));
+    m_denoiseCheck->setChecked(false);
+    m_denoiseCheck->setToolTip(
+        QStringLiteral("导出时用 FFmpeg afftdn 给混音降噪：只对接近本底噪声的"
+                       "轻微嘶声 / 环境底噪有效，响亮的宽带噪声去不掉，"
+                       "也不会损伤人声与乐器的主体电平。默认关闭。"));
+    layout->addWidget(m_denoiseCheck);
 
     // --- Output path row. ---
     auto* outputRow = new QHBoxLayout();
@@ -195,6 +208,11 @@ qint64 ExportDialog::currentBitrateBps() const
 bool ExportDialog::exportEnabled() const
 {
     return m_exportButton && m_exportButton->isEnabled();
+}
+
+bool ExportDialog::denoiseChecked() const
+{
+    return m_denoiseCheck && m_denoiseCheck->isChecked();
 }
 
 ExportPreset ExportDialog::currentPreset() const
@@ -273,6 +291,8 @@ void ExportDialog::setExporting(bool exporting)
     m_exporting = exporting;
     m_presetCombo->setEnabled(!exporting);
     m_tierCombo->setEnabled(!exporting);
+    if (m_denoiseCheck)
+        m_denoiseCheck->setEnabled(!exporting);
     if (m_customBitrateSpin)
         m_customBitrateSpin->setEnabled(!exporting);
     m_outputEdit->setEnabled(!exporting);
@@ -322,7 +342,8 @@ void ExportDialog::onExportClicked()
     m_statusLabel->setText(QStringLiteral("正在导出…"));
     setExporting(true);
 
-    auto* worker = new ExportWorker(m_model, preset, outputPath, &m_cancel);
+    auto* worker = new ExportWorker(m_model, preset, outputPath, &m_cancel,
+                                    m_denoiseCheck && m_denoiseCheck->isChecked());
     m_exportThread = new QThread(this);
     worker->moveToThread(m_exportThread);
     connect(m_exportThread, &QThread::started, worker, &ExportWorker::run);
