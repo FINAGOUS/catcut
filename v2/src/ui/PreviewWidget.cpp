@@ -41,8 +41,8 @@ QShader loadShader(const QString& resourcePath)
 PreviewWidget::PreviewWidget(QWidget* parent)
     : QRhiWidget(parent)
 {
-    // Keep the clear colour black until a frame arrives.
-    setClearColor(QColor(0, 0, 0));
+    // The clear colour is passed to beginPass() in render(); QRhiWidget
+    // 6.8 has no setClearColor/clearColor of its own.
 }
 
 PreviewWidget::~PreviewWidget()
@@ -82,7 +82,8 @@ void PreviewWidget::initialize(QRhiCommandBuffer* cb)
                                       sizeof(kQuadVertices));
     m_vertexBuffer->create();
     QRhiResourceUpdateBatch* rub = m_rhi->nextResourceUpdateBatch();
-    rub->uploadStaticBuffer(m_vertexBuffer, 0, kQuadVertices, sizeof(kQuadVertices));
+    // Qt 6.8 signature: (buffer, offset, size, data) — size before data.
+    rub->uploadStaticBuffer(m_vertexBuffer, 0, static_cast<quint32>(sizeof(kQuadVertices)), kQuadVertices);
     cb->resourceUpdate(rub);
 
     // The pipeline needs shader resource bindings at creation time, so
@@ -176,7 +177,7 @@ void PreviewWidget::render(QRhiCommandBuffer* cb)
     }
 
     QRhiRenderTarget* rt = renderTarget();
-    cb->beginPass(rt, clearColor(), { 1.0f, 0 });
+    cb->beginPass(rt, QColor(0, 0, 0), { 1.0f, 0 });
     if (m_pipeline && m_texture && m_srb) {
         cb->setGraphicsPipeline(m_pipeline);
         const QSize outputSize = rt->pixelSize();
