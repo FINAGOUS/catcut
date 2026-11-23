@@ -1,8 +1,10 @@
-# CatCut v2 — S1 media pipeline build (manual trigger only).
-# Builds the Qt 6 app with the FFmpeg LGPL media pipeline, runs the
-# headless smoke test + the verify-s1 self-test (probe / decode /
-# proxy / offscreen first-frame render), then packs an Inno Setup exe
-# installer as a private workflow artifact.
+# CatCut v2 — S2 timeline build (manual trigger only).
+# Builds the Qt 6 app with the FFmpeg LGPL media pipeline + the S2
+# magnetic timeline, runs the headless smoke test + the verify-s1
+# self-test (probe / decode / proxy / offscreen first-frame render)
+# + the verify-s2 self-test (timeline model / keyframes /
+# transitions / evaluator / timeline render), then packs an Inno
+# Setup exe installer as a private workflow artifact.
 # No Release is created. No GPL encoder (libx264/libx265) is involved:
 # the FFmpeg tree is checked for them at download time and again at
 # CMake configure time.
@@ -128,6 +130,17 @@ jobs:
           Get-Content -LiteralPath $log | Out-Host
           if ($code -ne 0) { throw "verify-s1 failed with exit code $code." }
 
+      - name: Run verify-s2
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $log = Join-Path $PWD 'v2-s2-verify.txt'
+          $exe = Join-Path $PWD 'v2/build/Release/verify-s2.exe'
+          & $exe (Join-Path $PWD 'probe-media') (Join-Path $PWD 'verify-s2-out') > $log 2>&1
+          $code = $LASTEXITCODE
+          Get-Content -LiteralPath $log | Out-Host
+          if ($code -ne 0) { throw "verify-s2 failed with exit code $code." }
+
       - name: Stage package
         run: |
           $ErrorActionPreference = 'Stop'
@@ -180,4 +193,14 @@ jobs:
           path: |
             v2-s1-verify.txt
             verify-s1-out/first-frame.png
+          retention-days: 7
+
+      - name: Upload verify-s2 log
+        uses: actions/upload-artifact@v4
+        with:
+          name: catcut-v2-s2-verify
+          path: |
+            v2-s2-verify.txt
+            verify-s2-out/timeline-first.png
+            verify-s2-out/timeline-transition.png
           retention-days: 7
