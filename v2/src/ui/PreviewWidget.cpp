@@ -3,8 +3,8 @@
 #include "ui/PreviewWidget.h"
 
 #include <QFile>
-#include <QShader>
 #include <rhi/qrhi.h>
+#include <rhi/qshader.h>
 
 namespace catcut {
 
