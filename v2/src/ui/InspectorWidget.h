@@ -1,4 +1,4 @@
-// CatCut v2 — S2 timeline: inspector.
+// CatCut v2 — S3 colour & picture: inspector.
 //
 // Context panel for the current selection: clip properties (role,
 // enabled, geometry at the playhead) and, when a transition is
@@ -7,9 +7,15 @@
 // inspector never stores a separate "base value" that could disagree
 // with the keyframe tracks. The disconnect button is the escape hatch
 // (see TimelineModel::disconnectClip).
+//
+// S3: the inspector is tabbed — "片段" (the S2 form) and "调色"
+// (the shared ColorPanelWidget: grade / beauty / keying / canvas /
+// motion + live scopes). The same panel also lives as its own
+// detachable dock in MainWindow; both edit the same model.
 
 #pragma once
 
+#include <QImage>
 #include <QString>
 #include <QWidget>
 
@@ -23,16 +29,20 @@ class QPushButton;
 
 namespace catcut {
 
+class ColorPanelWidget;
+
 class InspectorWidget : public QWidget {
     Q_OBJECT
 public:
     explicit InspectorWidget(QWidget* parent = nullptr);
 
-    void setModel(TimelineModel* model) { m_model = model; }
+    void setModel(TimelineModel* model);
     // Refreshes from the current selection. `playheadSeconds` is the
     // timeline time the geometry spinboxes read/write keyframes at.
     void refresh(const QString& clipId, const QString& transitionLeftId,
                  double playheadSeconds);
+    // Graded frame for the colour tab's scopes.
+    void setScopesImage(const QImage& image);
 
 signals:
     void changed();
@@ -60,6 +70,7 @@ private:
     QDoubleSpinBox* m_transitionDurationSpin = nullptr;
     QWidget* m_clipSection = nullptr;
     QWidget* m_transitionSection = nullptr;
+    ColorPanelWidget* m_colorPanel = nullptr;
 };
 
 } // namespace catcut
