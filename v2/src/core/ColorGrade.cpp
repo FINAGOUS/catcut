@@ -1,4 +1,5 @@
 #include "core/ColorGrade.h"
+#include <QJsonArray>
 
 #include <QFile>
 #include <QTextStream>
