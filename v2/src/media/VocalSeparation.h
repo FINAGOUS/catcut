@@ -1,17 +1,33 @@
-// CatCut v2 — S4 vocal separation: pipeline hook, honest error.
+// CatCut v2 — S6 vocal separation: centre-channel elimination.
 //
-// The old TS engine (vocalsep.ts) ran Demucs (Python + PyTorch) as
-// an external helper: the engine owned the interface + validation,
-// the separation itself ran in scripts/vocalsep.py. v2 keeps the
-// same shape: this class is the interface + validation + wiring,
-// and it reports honestly that no separation backend is connected
-// yet instead of returning fake stems. Wiring a real backend means:
-// install Demucs (see setupInstructions), run it on the source,
-// and return the two stems — the ExportPipeline mix already accepts
-// a stem file as an ordinary audio clip, so no other code changes.
+// S4 left this as a hook with an honest error ("no backend") and a
+// note saying "do NOT implement this by filtering (e.g. a centre
+// -channel cut): that is not vocal separation". S6 changes the scope
+// deliberately, with the user's sign-off: a Demucs-grade AI
+// separation is NOT what this ships — it is too heavy for this round
+// (Python + PyTorch + ~400 MB of weights, see setupInstructions).
+// What ships instead is the classic out-of-phase stereo (OOPS)
+// centre-channel elimination, labelled honestly everywhere as
+// "中置声道消除（非 AI）":
 //
-// Do NOT "implement" this by filtering (e.g. a centre-channel cut):
-// that is not vocal separation and must not be shipped as if it were.
+//   music L = (L - R) / 2,  music R = (R - L) / 2
+//   centre  = (L + R) / 2   (both channels; the extracted centre
+//                             content — voice + centred instruments)
+//
+// Anything panned dead centre cancels out of the music track; the
+// centre file is what was removed, not an isolated vocal. It works
+// well on studio mixes where the lead vocal sits centre and the
+// instruments are spread, and poorly on mono sources (nothing to
+// cancel: a mono file fails with a readable error) and on mixes
+// where the vocal is not centred. The UI, the docs and the self-test
+// all say this plainly; nothing here claims to be AI separation.
+//
+// separate() returns two WAVs in `outDir`:
+//   <base>_music.wav   — the accompaniment (centre removed)
+//   <base>_center.wav  — the extracted centre content
+// `vocalsPath` is set to the centre file; callers must NOT present
+// it as isolated vocals. Demucs remains the documented follow-up
+// for real AI separation.
 
 #pragma once
 
@@ -21,18 +37,26 @@ namespace catcut {
 
 class VocalSeparator {
 public:
-    // No backend is vendored in S4: always false. Kept as a query so
-    // callers (and the self-test) can branch on it.
+    // S6: the built-in centre-elimination backend is always present
+    // (pure sample math on the decoded audio, no model, no download).
     static bool isAvailable();
 
-    // Attempts a separation. Always fails in S4 with an honest error
-    // (no backend connected) + the setup instructions. Never returns
-    // empty or fabricated stems.
+    // Honest method label, shown in the UI and the docs.
+    // "中置声道消除（非 AI）" — never "AI 人声分离".
+    static QString methodDescription();
+
+    // Separates `sourcePath` (must be stereo) into a music track and
+    // a centre-content track in `outDir` (created if needed).
+    // Returns false + a readable `error` when the file is missing,
+    // has no decodable audio, or is not stereo. Never returns fake
+    // or empty stems on success: both files are written and
+    // non-silent-checked by the caller-facing self-test.
     static bool separate(const QString& sourcePath, const QString& outDir,
                          QString& vocalsPath, QString& accompanimentPath,
                          QString& error);
 
-    // Demucs setup instructions (mirrors the old engine's DEMUCS_SETUP).
+    // Demucs (AI) setup instructions — the follow-up route for real
+    // AI separation, NOT what separate() runs today.
     static QString setupInstructions();
 };
 
