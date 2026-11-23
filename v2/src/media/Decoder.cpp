@@ -11,7 +11,10 @@ extern "C" {
 #include <libavutil/avutil.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/mathematics.h>
 #include <libavutil/pixdesc.h>
+#include <libavutil/rational.h>
+#include <libavutil/time.h>
 #include <libswscale/swscale.h>
 // NOTE: do NOT include <libavutil/hwcontext_d3d11va.h> here: it pulls in
 // <d3d11.h>, whose C++ operator overloads cannot live inside an
@@ -62,6 +65,9 @@ struct Decoder::Impl {
     bool hwFallbackTried = false; // already re-opened in software once
     QString hwFailReason;
     QString pathDetail;
+    double lastPtsSeconds = 0.0; // pts of the most recently decoded frame
+    double fps = 30.0;           // from the probe; pts fallback only
+    long long frameIndex = 0;
 
     ~Impl()
     {
@@ -113,6 +119,11 @@ QString Decoder::decodePath() const
 QString Decoder::decodePathDetail() const
 {
     return m_impl->pathDetail;
+}
+
+double Decoder::lastFramePtsSeconds() const
+{
+    return m_impl->lastPtsSeconds;
 }
 
 void Decoder::close()
@@ -260,6 +271,9 @@ bool Decoder::openInternal(const QString& path, const QSize& targetSize,
     }
 
     im.openFlag = true;
+    im.fps = info.fps > 0.0 ? info.fps : 30.0;
+    im.frameIndex = 0;
+    im.lastPtsSeconds = 0.0;
     return true;
 }
 
@@ -277,6 +291,16 @@ bool Decoder::decodeNextFrame(QImage& out, QString& error)
     while (true) {
         int ret = avcodec_receive_frame(im.codecCtx, im.frame);
         if (ret == 0) {
+            // Presentation time of this frame, for decodeFrameAt().
+            // best_effort_timestamp is the decoder's own best guess;
+            // when the stream carries no timestamps, fall back to the
+            // frame index over the probed fps.
+            const int64_t pts = im.frame->best_effort_timestamp;
+            if (pts != AV_NOPTS_VALUE && im.videoStream)
+                im.lastPtsSeconds = static_cast<double>(pts) * av_q2d(im.videoStream->time_base);
+            else
+                im.lastPtsSeconds = static_cast<double>(im.frameIndex) / im.fps;
+            ++im.frameIndex;
             // If the hardware device was created but the decoder hands
             // back software frames, say so — decodePath() already
             // reports "software", the detail must not claim otherwise.
@@ -395,6 +419,42 @@ bool Decoder::decodeFirstFrame(const QString& path, const QSize& targetSize,
         close();
         return false;
     }
+    return true;
+}
+
+bool Decoder::decodeFrameAt(const QString& path, double timeSeconds,
+                            const QSize& targetSize, QImage& out, QString& error)
+{
+    if (!open(path, targetSize, error))
+        return false;
+    Impl& im = *m_impl;
+    if (timeSeconds > 0.0 && im.videoStream) {
+        const int64_t ts = av_rescale_q(
+            static_cast<int64_t>(timeSeconds * 1000000.0), AV_TIME_BASE_Q,
+            im.videoStream->time_base);
+        if (av_seek_frame(im.fmtCtx, im.videoStreamIndex, ts, AVSEEK_FLAG_BACKWARD) >= 0)
+            avcodec_flush_buffers(im.codecCtx);
+        // Seek failure: fall through to sequential decode from the
+        // start — same frame, only slower.
+    }
+    QImage last;
+    bool gotFrame = false;
+    while (true) {
+        QImage image;
+        QString decodeError;
+        if (!decodeNextFrame(image, decodeError))
+            break;
+        last = image;
+        gotFrame = true;
+        if (im.lastPtsSeconds >= timeSeconds - 1e-6)
+            break;
+    }
+    if (!gotFrame) {
+        error = QStringLiteral("在 %1s 处没有可解码的视频帧").arg(timeSeconds, 0, 'f', 2);
+        close();
+        return false;
+    }
+    out = last;
     return true;
 }
 
