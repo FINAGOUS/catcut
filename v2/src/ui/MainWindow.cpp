@@ -7,6 +7,7 @@
 #include "media/MediaProbe.h"
 #include "media/PreviewRenderer.h"
 #include "media/ProxyJob.h"
+#include "ui/ColorPanelWidget.h"
 #include "ui/InspectorWidget.h"
 #include "ui/KeyframeChartWidget.h"
 #include "ui/PreviewWidget.h"
@@ -183,6 +184,19 @@ void MainWindow::setupDocks()
         m_inspectorDock->setWidget(inspectorWidget);
     }
     m_inspectorDock->setObjectName(QStringLiteral("dockInspector"));
+
+    // --- Colour (S3): the same ColorPanelWidget as the inspector's
+    // "调色" tab, as its own detachable dock (left, tabbed with the
+    // media library — architecture doc section 6: colour on the left).
+    m_colorDock = makeDock(QStringLiteral("调色"));
+    {
+        m_colorPanel = new ColorPanelWidget();
+        m_colorPanel->setModel(m_timelineWidget->model());
+        connect(m_colorPanel, &ColorPanelWidget::changed,
+                this, &MainWindow::onTimelineChanged);
+        m_colorDock->setWidget(m_colorPanel);
+    }
+    m_colorDock->setObjectName(QStringLiteral("dockColor"));
 }
 
 void MainWindow::setupMenus()
@@ -212,7 +226,8 @@ void MainWindow::applyDefaultLayout()
 {
     // Default layout (architecture doc section 6):
     // preview centre-top, timeline bottom, inspector right, media left.
-    for (QDockWidget* dock : {m_mediaDock, m_previewDock, m_timelineDock, m_inspectorDock}) {
+    // S3: the colour dock tabs with the media library on the left.
+    for (QDockWidget* dock : {m_mediaDock, m_previewDock, m_timelineDock, m_inspectorDock, m_colorDock}) {
         dock->setFloating(false);
         dock->show();
         removeDockWidget(dock);
@@ -221,6 +236,8 @@ void MainWindow::applyDefaultLayout()
     addDockWidget(Qt::RightDockWidgetArea, m_inspectorDock);
     addDockWidget(Qt::BottomDockWidgetArea, m_timelineDock);
     splitDockWidget(m_mediaDock, m_previewDock, Qt::Horizontal);
+    addDockWidget(Qt::LeftDockWidgetArea, m_colorDock);
+    tabifyDockWidget(m_mediaDock, m_colorDock);
     resizeDocks({m_mediaDock, m_previewDock, m_inspectorDock}, {260, 680, 300}, Qt::Horizontal);
     resizeDocks({m_previewDock, m_timelineDock}, {520, 200}, Qt::Vertical);
 }
@@ -443,6 +460,9 @@ void MainWindow::refreshInspector()
     m_inspectorWidget->refresh(m_timelineWidget->selectedClipId(),
                                m_timelineWidget->selectedTransitionLeftId(),
                                m_timelineWidget->playhead());
+    if (m_colorPanel)
+        m_colorPanel->refresh(m_timelineWidget->selectedClipId(),
+                              m_timelineWidget->playhead());
     if (m_chartWidget)
         m_chartWidget->setClip(m_timelineWidget->selectedClipId());
 }
@@ -461,13 +481,58 @@ void MainWindow::renderPreviewAtPlayhead()
         Decoder decoder;
         return decoder.decodeFrameAt(path, sourceTime, QSize(960, 540), out, error);
     };
+    // S3 GPU grade: when the scene is a single graded video layer and
+    // nothing else needs the CPU picture path (beauty, keying, mask,
+    // mosaic, focus), the composite is rendered WITHOUT the grade and
+    // the PreviewWidget applies that grade on the GPU (grade.frag).
+    // Every other scene renders graded on the CPU, as before. Either
+    // way the math and the order are the same (ColorGrade).
+    const FrameLayer* gradedLayer = nullptr;
+    bool gpuEligible = scene.activeMosaics.isEmpty()
+        && scene.focusSource == FocusSource::None;
+    int videoLayers = 0;
+    for (const FrameLayer& layer : scene.videoLayers) {
+        if (layer.kind == ClipKind::Title)
+            continue;
+        ++videoLayers;
+        if (layer.beauty.enabled || layer.chromaKey.enabled || layer.hasMask)
+            gpuEligible = false;
+        if (layer.hasGrade && !layer.grade.isIdentity()) {
+            if (gradedLayer)
+                gpuEligible = false; // two graded layers: CPU path
+            gradedLayer = &layer;
+        }
+    }
+    if (videoLayers != 1)
+        gpuEligible = false;
     QImage image;
     QString error;
-    if (!TimelineFrameRenderer::render(scene, provider, image, error, QSize(960, 540))) {
-        m_previewStatus->setText(QStringLiteral("预览渲染失败：%1").arg(error));
-        return;
+    if (gpuEligible && gradedLayer) {
+        if (!TimelineFrameRenderer::render(scene, provider, image, error, QSize(960, 540),
+                                           false)) {
+            m_previewStatus->setText(QStringLiteral("预览渲染失败：%1").arg(error));
+            return;
+        }
+        m_previewWidget->setGradedImage(image, gradedLayer->grade);
+    } else {
+        if (!TimelineFrameRenderer::render(scene, provider, image, error, QSize(960, 540))) {
+            m_previewStatus->setText(QStringLiteral("预览渲染失败：%1").arg(error));
+            return;
+        }
+        m_previewWidget->setImage(image);
     }
-    m_previewWidget->setImage(image);
+    // Scopes: always from a small CPU-graded render (analysis only —
+    // the scopes never grade the picture themselves).
+    {
+        QImage scopesImage;
+        QString scopesError;
+        if (TimelineFrameRenderer::render(scene, provider, scopesImage, scopesError,
+                                          QSize(320, 180))) {
+            m_inspectorWidget->setScopesImage(scopesImage);
+            if (m_colorPanel)
+                m_colorPanel->setScopesImage(scopesImage);
+        }
+    }
     m_previewStatus->setText(
         QStringLiteral("播放头 %1s / 共 %2s%3")
             .arg(m_timelineWidget->playhead(), 0, 'f', 2)
