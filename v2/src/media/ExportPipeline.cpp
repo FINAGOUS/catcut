@@ -3,6 +3,7 @@
 #include "core/Subtitles.h"
 #include "core/TimelineEvaluator.h"
 #include "core/TimelineModel.h"
+#include "media/AudioDenoise.h"
 #include "media/ExportFrameRenderer.h"
 #include "media/Loudness.h"
 #include "media/MediaCommon.h"
@@ -291,6 +292,22 @@ ExportResult ExportPipeline::exportTimeline(const TimelineModel* model,
     // --- mix the audio first (cheap, in memory) ---
     DecodedAudio mixedAudio = mixTimelineAudio(model, options.mix);
     result.hasAudio = !mixedAudio.samples.isEmpty();
+    // S6: denoise runs on the mix BEFORE loudness normalisation,
+    // so the -16 LUFS measurement sees the denoised mix.
+    if (result.hasAudio && options.denoise) {
+        QString denoiseError;
+        QVector<float> denoised = AudioDenoise::applyAfftdn(mixedAudio.samples, denoiseError);
+        if (!denoised.isEmpty()) {
+            mixedAudio.samples = denoised;
+            result.denoiseApplied = true;
+            result.fallbackNote = QStringLiteral("降噪：已用 afftdn（nr=12）处理混音。");
+        } else {
+            // Denoise failure must not kill the export: keep the
+            // un-denoised mix and say so.
+            result.fallbackNote = QStringLiteral("降噪：afftdn 处理失败（%1），本次导出未降噪。")
+                                      .arg(denoiseError);
+        }
+    }
     if (result.hasAudio && options.loudnessNormalize) {
         double measuredBefore = 0.0, appliedGain = 0.0;
         QString loudnessError;
@@ -299,13 +316,18 @@ ExportResult ExportPipeline::exportTimeline(const TimelineModel* model,
         if (!normalised.isEmpty()) {
             mixedAudio.samples = normalised;
             result.loudnessLUFS = kLoudnessTargetLUFS;
-            result.fallbackNote = QStringLiteral("响度：实测 %1 LUFS，已用 %2 dB 线性增益统一到 -16 LUFS。")
+            // Append, not overwrite: a denoise note may already be here.
+            const QString loudnessNote = QStringLiteral("响度：实测 %1 LUFS，已用 %2 dB 线性增益统一到 -16 LUFS。")
                                       .arg(measuredBefore, 0, 'f', 2).arg(appliedGain, 0, 'f', 2);
+            result.fallbackNote = result.fallbackNote.isEmpty()
+                ? loudnessNote : result.fallbackNote + QStringLiteral("\n") + loudnessNote;
         } else {
             // Measurement failed: export with the un-normalised mix
             // and say so, instead of failing the whole export.
-            result.fallbackNote = QStringLiteral("响度：测量失败（%1），未做响度统一。")
+            const QString loudnessFailNote = QStringLiteral("响度：测量失败（%1），未做响度统一。")
                                       .arg(loudnessError);
+            result.fallbackNote = result.fallbackNote.isEmpty()
+                ? loudnessFailNote : result.fallbackNote + QStringLiteral("\n") + loudnessFailNote;
             QString measureError;
             const double measured = Loudness::measureIntegrated(mixedAudio.samples, measureError);
             result.loudnessLUFS = measured;
