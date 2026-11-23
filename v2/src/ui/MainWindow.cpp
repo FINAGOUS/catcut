@@ -8,6 +8,7 @@
 #include "media/PreviewRenderer.h"
 #include "media/ProxyJob.h"
 #include "ui/ColorPanelWidget.h"
+#include "ui/ExportDialog.h"
 #include "ui/InspectorWidget.h"
 #include "ui/KeyframeChartWidget.h"
 #include "ui/PreviewWidget.h"
@@ -214,6 +215,10 @@ void MainWindow::setupMenus()
     QAction* importAction = fileMenu->addAction(QStringLiteral("导入媒体…"), this, &MainWindow::onImportMedia);
     importAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_I));
     fileMenu->addSeparator();
+    // S5: export goes through the S4 ExportPipeline (ExportDialog).
+    QAction* exportAction = fileMenu->addAction(QStringLiteral("导出…"), this, &MainWindow::onExport);
+    exportAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_E));
+    fileMenu->addSeparator();
     QAction* quitAction = fileMenu->addAction(QStringLiteral("退出"), this, &QWidget::close);
     quitAction->setShortcut(QKeySequence::Quit);
 
@@ -419,6 +424,12 @@ void MainWindow::onImportMedia()
             });
         });
     statusBar()->showMessage(QStringLiteral("已导入 %1，正在生成代理…").arg(QFileInfo(path).fileName()), 3000);
+}
+
+void MainWindow::onExport()
+{
+    ExportDialog dialog(m_timelineWidget->model(), this);
+    dialog.exec();
 }
 
 void MainWindow::onProxyFinished(int row, bool ok, const QString& error, const QString& encoderUsed)
