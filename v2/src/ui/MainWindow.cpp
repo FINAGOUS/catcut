@@ -7,6 +7,7 @@
 #include "media/MediaProbe.h"
 #include "media/PreviewRenderer.h"
 #include "media/ProxyJob.h"
+#include "media/VocalSeparation.h"
 #include "ui/ColorPanelWidget.h"
 #include "ui/ExportDialog.h"
 #include "ui/InspectorWidget.h"
@@ -198,6 +199,31 @@ void MainWindow::setupDocks()
         m_colorDock->setWidget(m_colorPanel);
     }
     m_colorDock->setObjectName(QStringLiteral("dockColor"));
+
+    // --- Audio (S6): vocal separation by centre-channel elimination.
+    // Labelled honestly as non-AI everywhere; Demucs-grade AI
+    // separation is a documented follow-up, not what this button runs.
+    m_audioDock = makeDock(QStringLiteral("音频"));
+    {
+        auto* audioWidget = new QWidget();
+        auto* layout = new QVBoxLayout(audioWidget);
+        layout->setContentsMargins(4, 4, 4, 4);
+        auto* methodLabel = new QLabel(
+            QStringLiteral("人声分离：%1\n"
+                           "立体声左右声道相减，抵消居中的人声，输出音乐轨；"
+                           "居中的内容另存为 *_center.wav。不是 AI 分离："
+                           "居中乐器会一起被消掉，非居中的人声消不掉，"
+                           "单声道素材无法分离。")
+                .arg(VocalSeparator::methodDescription()));
+        methodLabel->setWordWrap(true);
+        layout->addWidget(methodLabel);
+        auto* separateButton = new QPushButton(QStringLiteral("人声分离（中置消除）…"));
+        connect(separateButton, &QPushButton::clicked, this, &MainWindow::onVocalSeparate);
+        layout->addWidget(separateButton);
+        layout->addStretch(1);
+        m_audioDock->setWidget(audioWidget);
+    }
+    m_audioDock->setObjectName(QStringLiteral("dockAudio"));
 }
 
 void MainWindow::setupMenus()
@@ -232,7 +258,7 @@ void MainWindow::applyDefaultLayout()
     // Default layout (architecture doc section 6):
     // preview centre-top, timeline bottom, inspector right, media left.
     // S3: the colour dock tabs with the media library on the left.
-    for (QDockWidget* dock : {m_mediaDock, m_previewDock, m_timelineDock, m_inspectorDock, m_colorDock}) {
+    for (QDockWidget* dock : {m_mediaDock, m_previewDock, m_timelineDock, m_inspectorDock, m_colorDock, m_audioDock}) {
         dock->setFloating(false);
         dock->show();
         removeDockWidget(dock);
@@ -243,6 +269,8 @@ void MainWindow::applyDefaultLayout()
     splitDockWidget(m_mediaDock, m_previewDock, Qt::Horizontal);
     addDockWidget(Qt::LeftDockWidgetArea, m_colorDock);
     tabifyDockWidget(m_mediaDock, m_colorDock);
+    addDockWidget(Qt::RightDockWidgetArea, m_audioDock);
+    tabifyDockWidget(m_inspectorDock, m_audioDock);
     resizeDocks({m_mediaDock, m_previewDock, m_inspectorDock}, {260, 680, 300}, Qt::Horizontal);
     resizeDocks({m_previewDock, m_timelineDock}, {520, 200}, Qt::Vertical);
 }
@@ -430,6 +458,31 @@ void MainWindow::onExport()
 {
     ExportDialog dialog(m_timelineWidget->model(), this);
     dialog.exec();
+}
+
+void MainWindow::onVocalSeparate()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, QStringLiteral("选择要分离的立体声音频"), QString(),
+        QStringLiteral("音频 (*.wav *.mp3 *.flac *.m4a *.aac *.ogg);;所有文件 (*)"));
+    if (path.isEmpty())
+        return;
+    const QString outDir = QFileInfo(path).absolutePath();
+    QString vocalsPath, accompanimentPath, error;
+    // Synchronous: a few seconds for typical clips. The button is
+    // in the audio dock, not on the export path, so no timeline
+    // model is touched while it runs.
+    if (!VocalSeparator::separate(path, outDir, vocalsPath, accompanimentPath, error)) {
+        QMessageBox::warning(this, QStringLiteral("人声分离失败"), error);
+        return;
+    }
+    statusBar()->showMessage(QStringLiteral("人声分离完成：%1").arg(accompanimentPath), 5000);
+    QMessageBox::information(
+        this, QStringLiteral("人声分离完成"),
+        QStringLiteral("方法：%1\n音乐轨：%2\n中置内容：%3\n\n"
+                       "注意：中置内容是被消掉的居中声部（人声 + 居中乐器），"
+                       "不是 AI 分离出的人声；音乐轨可直接拖回时间线当伴奏用。")
+            .arg(VocalSeparator::methodDescription(), accompanimentPath, vocalsPath));
 }
 
 void MainWindow::onProxyFinished(int row, bool ok, const QString& error, const QString& encoderUsed)
