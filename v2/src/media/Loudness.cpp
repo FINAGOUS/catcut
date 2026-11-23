@@ -147,7 +147,8 @@ double Loudness::measureIntegrated(const QVector<float>& samples, QString& error
 
     // Install the log capture for the feed + drain + free sequence:
     // loudnorm prints its JSON summary when the graph is freed.
-    void (*previousLogCallback)(void*, int, const char*, va_list) = av_log_get_callback();
+    // (libavutil has no av_log_get_callback: restore with nullptr,
+    // which resets to the default callback.)
     const int previousLogLevel = av_log_get_level();
     av_log_set_level(AV_LOG_INFO);
     capturedLog.clear();
@@ -193,7 +194,8 @@ double Loudness::measureIntegrated(const QVector<float>& samples, QString& error
         av_frame_free(&drained);
     }
     if (feedOk) {
-        av_buffersrc_add_frame_flags(srcCtx, nullptr, 0); // EOF
+        const int eofRet = av_buffersrc_add_frame_flags(srcCtx, nullptr, 0); // EOF
+        (void)eofRet;
         AVFrame* drained = av_frame_alloc();
         while (drained && av_buffersink_get_frame(sinkCtx, drained) >= 0)
             av_frame_unref(drained);
@@ -202,7 +204,7 @@ double Loudness::measureIntegrated(const QVector<float>& samples, QString& error
 
     avfilter_graph_free(&graph); // loudnorm prints its JSON here
     g_loudnormLog = nullptr;
-    av_log_set_callback(previousLogCallback);
+    av_log_set_callback(nullptr); // back to the default callback
     av_log_set_level(previousLogLevel);
 
     if (!feedOk) {
