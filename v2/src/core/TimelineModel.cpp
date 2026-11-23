@@ -143,6 +143,13 @@ QJsonObject Clip::toJson() const
     o.insert(QStringLiteral("detached"), detached);
     o.insert(QStringLiteral("volume"), volume);
     o.insert(QStringLiteral("keyframes"), keyframeSetToJson(keyframes));
+    // S3 per-clip effects (absent in S2 files: fromJson defaults apply).
+    o.insert(QStringLiteral("gradeEnabled"), gradeEnabled);
+    o.insert(QStringLiteral("grade"), grade.toJson());
+    o.insert(QStringLiteral("beauty"), beauty.toJson());
+    o.insert(QStringLiteral("chromaKey"), chromaKey.toJson());
+    o.insert(QStringLiteral("maskEnabled"), maskEnabled);
+    o.insert(QStringLiteral("mask"), mask.toJson());
     return o;
 }
 
@@ -171,6 +178,12 @@ Clip Clip::fromJson(const QJsonObject& o, bool& ok)
     c.detached = o.value(QStringLiteral("detached")).toBool(false);
     c.volume = o.value(QStringLiteral("volume")).toDouble(1.0);
     c.keyframes = keyframeSetFromJson(o.value(QStringLiteral("keyframes")).toObject());
+    c.gradeEnabled = o.value(QStringLiteral("gradeEnabled")).toBool(false);
+    c.grade = ColorGrade::fromJson(o.value(QStringLiteral("grade")).toObject());
+    c.beauty = BeautySettings::fromJson(o.value(QStringLiteral("beauty")).toObject());
+    c.chromaKey = ChromaKey::fromJson(o.value(QStringLiteral("chromaKey")).toObject());
+    c.maskEnabled = o.value(QStringLiteral("maskEnabled")).toBool(false);
+    c.mask = MaskShape::fromJson(o.value(QStringLiteral("mask")).toObject());
     ok = c.duration() > 0.0 && !c.id.isEmpty();
     return c;
 }
@@ -781,7 +794,94 @@ QJsonObject TimelineModel::toJson() const
             customRoles.append(role);
     }
     root.insert(QStringLiteral("customRoles"), customRoles);
+
+    // --- S3 project-level picture state ---
+    root.insert(QStringLiteral("canvas"), m_canvas.toJson());
+    QJsonArray mosaics;
+    for (const MosaicClip& m : m_mosaics)
+        mosaics.append(m.toJson());
+    root.insert(QStringLiteral("mosaics"), mosaics);
+    QJsonArray clicks;
+    for (const ClickEvent& c : m_clicks)
+        clicks.append(c.toJson());
+    root.insert(QStringLiteral("clickEvents"), clicks);
+    QJsonArray manualZoom;
+    for (const AutoZoomSegment& s : m_manualZoom)
+        manualZoom.append(s.toJson());
+    root.insert(QStringLiteral("manualZoom"), manualZoom);
+    root.insert(QStringLiteral("autoZoomEnabled"), m_autoZoomEnabled);
+    QJsonArray motions;
+    for (const ScreenMotionSegment& s : m_screenMotions)
+        motions.append(s.toJson());
+    root.insert(QStringLiteral("screenMotions"), motions);
+    root.insert(QStringLiteral("pointer"), m_pointer.toJson());
+    root.insert(QStringLiteral("zoomFocus"), m_zoomFocus.toJson());
+    root.insert(QStringLiteral("screen3DFocus"), m_screen3DFocus.toJson());
+    root.insert(QStringLiteral("screenSpring"), m_screenSpring.toJson());
+    root.insert(QStringLiteral("cursorSpring"), m_cursorSpring.toJson());
     return root;
+}
+
+// ------------------------------------------------------------ S3 methods
+
+bool TimelineModel::removeMosaic(const QString& clipId)
+{
+    for (int i = 0; i < m_mosaics.size(); ++i) {
+        if (m_mosaics[i].id == clipId) {
+            m_mosaics.removeAt(i);
+            return true;
+        }
+    }
+    return false;
+}
+
+MosaicClip* TimelineModel::findMosaic(const QString& clipId)
+{
+    for (MosaicClip& m : m_mosaics) {
+        if (m.id == clipId)
+            return &m;
+    }
+    return nullptr;
+}
+
+bool TimelineModel::removeScreenMotion(const QString& segmentId)
+{
+    for (int i = 0; i < m_screenMotions.size(); ++i) {
+        if (m_screenMotions[i].id == segmentId) {
+            m_screenMotions.removeAt(i);
+            return true;
+        }
+    }
+    return false;
+}
+
+QList<AutoZoomSegment> TimelineModel::plannedAutoZoom() const
+{
+    if (!m_autoZoomEnabled)
+        return m_manualZoom;
+    AutoZoomPlanner planner;
+    planner.spring = m_screenSpring;
+    return planner.plan(m_clicks, m_manualZoom);
+}
+
+double TimelineModel::autoZoomAt(double t, QPointF& focusOut) const
+{
+    const QList<AutoZoomSegment> segments = plannedAutoZoom();
+    focusOut = AutoZoomPlanner::focusAtTime(segments, t, m_screenSpring);
+    return AutoZoomPlanner::zoomAtTime(segments, t, m_screenSpring);
+}
+
+Screen3D TimelineModel::screen3DPoseAt(double t, bool& activeOut) const
+{
+    activeOut = false;
+    Screen3D pose;
+    for (const ScreenMotionSegment& s : m_screenMotions) {
+        if (t >= s.start && t < s.end()) {
+            pose = s.poseAt(t, m_screenSpring);
+            activeOut = true; // later segments win on overlap
+        }
+    }
+    return pose;
 }
 
 bool TimelineModel::fromJson(const QJsonObject& object, QString& error)
@@ -845,6 +945,45 @@ bool TimelineModel::fromJson(const QJsonObject& object, QString& error)
     const QJsonObject storylines = object.value(QStringLiteral("storylines")).toObject();
     for (auto it = storylines.begin(); it != storylines.end(); ++it)
         fresh.m_storylineNames.insert(it.key(), it.value().toString());
+
+    // --- S3 project-level picture state (absent in S2 files: defaults) ---
+    fresh.m_canvas = CanvasStyle::fromJson(object.value(QStringLiteral("canvas")).toObject());
+    const QJsonArray mosaics = object.value(QStringLiteral("mosaics")).toArray();
+    for (const QJsonValue& v : mosaics) {
+        bool ok = false;
+        MosaicClip m = MosaicClip::fromJson(v.toObject(), ok);
+        if (ok)
+            fresh.m_mosaics.append(m);
+    }
+    const QJsonArray clicks = object.value(QStringLiteral("clickEvents")).toArray();
+    for (const QJsonValue& v : clicks) {
+        bool ok = false;
+        ClickEvent c = ClickEvent::fromJson(v.toObject(), ok);
+        if (ok)
+            fresh.m_clicks.append(c);
+    }
+    const QJsonArray manualZoom = object.value(QStringLiteral("manualZoom")).toArray();
+    for (const QJsonValue& v : manualZoom) {
+        bool ok = false;
+        AutoZoomSegment s = AutoZoomSegment::fromJson(v.toObject(), ok);
+        if (ok)
+            fresh.m_manualZoom.append(s);
+    }
+    fresh.m_autoZoomEnabled = object.value(QStringLiteral("autoZoomEnabled")).toBool(true);
+    const QJsonArray motions = object.value(QStringLiteral("screenMotions")).toArray();
+    for (const QJsonValue& v : motions) {
+        bool ok = false;
+        ScreenMotionSegment s = ScreenMotionSegment::fromJson(v.toObject(), ok);
+        if (ok)
+            fresh.m_screenMotions.append(s);
+    }
+    fresh.m_pointer = PointerTrack::fromJson(object.value(QStringLiteral("pointer")).toObject());
+    fresh.m_zoomFocus = FocusEffect::fromJson(object.value(QStringLiteral("zoomFocus")).toObject());
+    fresh.m_screen3DFocus =
+        FocusEffect::fromJson(object.value(QStringLiteral("screen3DFocus")).toObject());
+    fresh.m_screenSpring = SpringParams::fromJson(object.value(QStringLiteral("screenSpring")).toObject());
+    fresh.m_cursorSpring = SpringParams::fromJson(object.value(QStringLiteral("cursorSpring")).toObject());
+
     fresh.recomputeConnected();
 
     *this = fresh;
