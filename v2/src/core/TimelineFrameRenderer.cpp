@@ -168,6 +168,10 @@ bool TimelineFrameRenderer::render(const FrameScene& scene,
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
 
     for (const FrameLayer& layer : scene.videoLayers) {
+        // Defence in depth: an audio-only layer must never reach the
+        // frame provider (the evaluator already excludes them).
+        if (layer.kind == ClipKind::Audio)
+            continue;
         if (layer.kind == ClipKind::Title) {
             drawLayer(&painter, layer, QImage(), size);
             continue;
