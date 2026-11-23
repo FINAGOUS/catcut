@@ -47,6 +47,14 @@ FrameLayer TimelineEvaluator::layerForClip(const Clip& clip, double timeSeconds,
         layer.transitionType = transition->type;
         layer.transitionProgress = progress;
     }
+
+    // --- S3 per-clip picture effects ---
+    layer.grade = clip.grade;
+    layer.hasGrade = clip.gradeEnabled;
+    layer.beauty = clip.beauty;
+    layer.chromaKey = clip.chromaKey;
+    layer.mask = clip.mask;
+    layer.hasMask = clip.maskEnabled;
     return layer;
 }
 
@@ -58,6 +66,33 @@ FrameScene TimelineEvaluator::evaluate(double timeSeconds) const
     if (!m_model)
         return scene;
 
+    // --- S3 project-level picture state at this time ---
+    scene.canvasStyle = m_model->canvasStyle();
+    for (const MosaicClip& mosaic : m_model->mosaics()) {
+        if (mosaic.activeAt(timeSeconds)) {
+            ActiveMosaic active;
+            active.clip = mosaic;
+            active.progress = mosaic.progressAt(timeSeconds);
+            scene.activeMosaics.append(active);
+        }
+    }
+    scene.autoZoom = m_model->autoZoomAt(timeSeconds, scene.autoZoomFocus);
+    scene.screen3DPose = m_model->screen3DPoseAt(timeSeconds, scene.screen3DActive);
+    scene.pointerVisible = m_model->pointerTrack().visibleAt(timeSeconds);
+    scene.pointerSize = m_model->pointerTrack().size;
+    if (scene.pointerVisible)
+        m_model->pointerTrack().sampleAt(timeSeconds, scene.pointer);
+    // Focus: 3D wins over zoom, never both (DogSC rule).
+    const bool zoomFocusActive =
+        m_model->zoomFocus().enabled && scene.autoZoom > 1.001;
+    const bool screen3DFocusActive =
+        m_model->screen3DFocus().enabled && scene.screen3DActive;
+    scene.focusSource = resolveFocus(zoomFocusActive, screen3DFocusActive);
+    if (scene.focusSource == FocusSource::Screen3D)
+        scene.focusEffect = m_model->screen3DFocus();
+    else if (scene.focusSource == FocusSource::Zoom)
+        scene.focusEffect = m_model->zoomFocus();
+
     Transition transition;
     double progress = 0.0;
     QString leftId, rightId;
@@ -67,6 +102,13 @@ FrameScene TimelineEvaluator::evaluate(double timeSeconds) const
         scene.transitionType = transition.type;
         scene.transitionProgress = progress;
     }
+
+    auto fillSceneMotion = [&scene](FrameLayer& layer) {
+        layer.sceneZoom = scene.autoZoom;
+        layer.sceneZoomFocus = scene.autoZoomFocus;
+        layer.scene3DPose = scene.screen3DPose;
+        layer.scene3DActive = scene.screen3DActive;
+    };
 
     // --- primary storyline (transition overlap extends each clip's
     // active range by half the neighbouring transition) ---
@@ -93,8 +135,10 @@ FrameScene TimelineEvaluator::evaluate(double timeSeconds) const
             continue;
         FrameLayer layer = layerForClip(clip, timeSeconds, outgoing, incoming,
                                         inTransition ? &transition : nullptr, progress);
+        layer.isPrimary = true;
         if (layer.geometry.opacity <= 0.0)
             continue;
+        fillSceneMotion(layer);
         scene.videoLayers.append(layer);
         if (clip.kind != ClipKind::Title) {
             FrameAudioLayer audio;
@@ -116,8 +160,10 @@ FrameScene TimelineEvaluator::evaluate(double timeSeconds) const
         if (!clip.enabled)
             continue;
         FrameLayer layer = layerForClip(clip, timeSeconds, false, false, nullptr, 0.0);
+        layer.isPrimary = false;
         if (layer.geometry.opacity <= 0.0)
             continue;
+        fillSceneMotion(layer);
         // Connected layers draw above the primary storyline, in lane order.
         scene.videoLayers.append(layer);
         if (clip.kind != ClipKind::Title) {
