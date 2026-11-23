@@ -62,9 +62,17 @@
 
 ### 降噪
 
-FFmpeg `afftdn` 是本阶段的指定方案，但 S4 没有把它做成导出管线内的
-默认音频效果链（效果链参数化是 S5/后续工作）：需要降噪时，对源音频
-先过 `afftdn` 生成处理过的中间文件再导入时间线。本节写明现状，不虚构已实现。
+FFmpeg `afftdn` 是本阶段的指定方案。S6 已把它接进导出效果链：
+`ExportOptions::denoise`（默认关）→ 导出对话框里的"降噪（afftdn）"
+复选框 → 混音先过 `AudioDenoise::applyAfftdn`（abuffer → afftdn
+nr=12 → abuffersink），再做响度统一。实现在
+`src/media/AudioDenoise.{h,cpp}`，量化自测在 verify-s6。
+
+实测口径（FFmpeg 8.1 afftdn 默认参数，本地探针）：轻微嘶声
+（0.02 幅白噪 + 0.5 的 440 Hz 音）高频 RMS 比率约 0.78，音调本身
+电平不变（-30.2 dB → -30.3 dB）；响亮的宽带噪声（0.3 幅）远高于
+afftdn 的 -50 dB 本底，几乎去不掉（比率约 1.0）。所以这是嘶声 /
+环境底噪消除器，不是"去掉一切噪声"的按钮，对话框 tooltip 如实写了这一点。
 
 ## 3. 字幕（Subtitles）
 
@@ -91,7 +99,7 @@ FFmpeg `afftdn` 是本阶段的指定方案，但 S4 没有把它做成导出管
 
 | 能力 | 状态 | 接入点 |
 |---|---|---|
-| 人声分离 | 未接入（`VocalSeparator::isAvailable()` 为 false） | `src/media/VocalSeparation.{h,cpp}`：接口 + 校验 + Demucs 安装说明；`separate()` 永远返回 honest error，不返回假 stem。接入后跑 Demucs 得 vocals / no_vocals 两个 WAV 再作为普通音频片段混音。模型权重不得随安装包分发（再分发前重核条款）。 |
+| 人声分离 | **S6 已接入：内置中置声道消除（非 AI）**，见下 | `src/media/VocalSeparation.{h,cpp}`：`isAvailable()` 为 true；`separate()` 解码成立体声后做左右相减 `(L-R)/2` 输出音乐轨，`(L+R)/2` 另存中置内容文件。UI 音频面板有"人声分离（中置消除）"按钮；处处诚实标注"中置声道消除（非 AI）"，绝不冒充 AI。Demucs 级 AI 分离是后续项（见 `setupInstructions()`）。单声道素材无法分离，报可读错误。 |
 | 自动识别字幕 | 未接入（`AutoTranscriber::isAvailable()` 为 false） | `src/media/AutoTranscription.{h,cpp}`：接口 + hook。计划路线是 whisper.cpp vendored 源码库（CI 干净编译才留）；替代路线是旧引擎已验证的 faster-whisper Python 助手（中文用 small 及以上，输出繁体转简体）。接入后只需产出带时间戳的 `SubtitleItem`，字幕模型/SRT/烧录已就绪。 |
 
 ## 6. 已知缺口清单（S4 结束时）
@@ -103,8 +111,9 @@ FFmpeg `afftdn` 是本阶段的指定方案，但 S4 没有把它做成导出管
 在它上面是空指针解引用（本地 gdb 定位）——现用 `abuffersink`。）
 
 1. H.265 软编码：LGPL 发行版无软 HEVC 编码器，无 GPU 的机器导不出 H.265（可读报错）。见 §1。
-2. 人声分离、自动识别字幕：只有 hook + honest error，见 §5。
-3. 降噪（afftdn）未接进导出效果链：需先对源音频预处理，见 §2。
+2. 自动识别字幕：只有 hook + honest error，见 §5。人声分离 S6 已接入
+   （中置声道消除，非 AI），不再是缺口；Demucs 级 AI 分离是后续项。
+3. ~~降噪（afftdn）未接进导出效果链~~ —— S6 已接进（见 §2），本条作废。
 4. 硬件编码（NVENC/QSV/AMF）与硬件解码的真机验证：云端无 GPU，只能验证
    编译 + 回退到软编码；NVENC/QSV/AMF 的实际速度与画质待用户电脑验证。
 5. 8K 导出速度（架构目标 ≥1× 实时，硬件编码）：云端只跑 1080p 软编码
@@ -115,13 +124,23 @@ FFmpeg `afftdn` 是本阶段的指定方案，但 S4 没有把它做成导出管
    进度条 / 预设选择器是 S5 的 UI 工作。
 8. 响度测量依赖 `loudnorm` 滤镜的日志输出解析；若 FFmpeg 未来改动其
    打印格式，测量会报可读错误而非静默错值（自测会立即失败）。
+9. 降噪只对接近本底的轻微噪声有效（见 §2 实测口径），响亮宽带噪声
+   去不掉；人声分离是中置消除不是 AI（见 §5），居中乐器会一起被消掉。
 
-## 7. 自测（verify-s4）
+## 7. 自测（verify-s4 + verify-s6）
+
+verify-s6（S6 新增，`v2/tests/verify-s6/main.cpp`）覆盖：afftdn 单元
+降噪（带噪音调高频 RMS 比率 < 0.90）、同一时间线导出两次（开降噪 /
+不开，响度统一关掉以便同增益比较，降噪版噪声电平更低，比率 < 0.95）、
+导出对话框降噪默认关、中置消除人声分离（Goertzel 频段检查：居中人声
+< 10%、左右乐器保留 > 30%、中置文件保留人声 > 30%）、单声道与缺失
+文件的可读拒绝。
 
 `v2/tests/verify-s4/main.cpp`，`verify-s4 <probe-dir> <output-dir>`，
 exit 0 为过。覆盖：预设码率公式与分档上限、Roles 混音数学（gain/pan/
 mute/solo）、淡入淡出、SRT 往返、3 段 + 1 叠化 + 调色导出 MP4（1080p
 H.264 软编码）、MediaProbe 核查（时长/分辨率/编码/音轨）、导出首帧与
 预览渲染的通道均值误差 < 1%、2 角色分轨 WAV（存在 + 时长）、成品响度
-复核（−16 ± 2 LUFS）、字幕烧录（底部像素带变化）、两个 hook 的 honest
-error、取消导出不留文件。
+复核（−16 ± 2 LUFS）、字幕烧录（底部像素带变化）、人声分离真实可用
+（S6 起：居中音调在音乐轨里抵消、中置文件保留音调；自动识别字幕仍是
+honest-error hook）、取消导出不留文件。
