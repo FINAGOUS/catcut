@@ -2,6 +2,8 @@
 
 #include "core/BeautyKeying.h"
 
+#include <QFont>
+#include <QFontMetrics>
 #include <QPainter>
 #include <QPainterPath>
 #include <QtMath>
@@ -252,6 +254,42 @@ bool TimelineFrameRenderer::render(const FrameScene& scene,
             pp.drawEllipse(QPointF(px + s * 0.4, py + s * 0.6), s * 0.9, s * 0.9);
         }
         pp.end();
+    }
+
+    // S4 subtitles: burn the active subtitle into the frame
+    // (bottom-centre, white text on a translucent black box). This
+    // runs in the one shared renderer, so preview and export burn
+    // the identical pixels — the evaluator already resolved which
+    // item is active at this time.
+    if (scene.hasSubtitle && !scene.activeSubtitle.isEmpty()) {
+        QPainter sp(&image);
+        sp.setRenderHint(QPainter::Antialiasing, true);
+        QFont font;
+        font.setBold(true);
+        font.setPixelSize(std::max(12, static_cast<int>(size.height() * 0.055)));
+        sp.setFont(font);
+        const QFontMetrics metrics(font);
+        const QStringList lines = scene.activeSubtitle.split(QStringLiteral("\n"));
+        int textWidth = 0;
+        for (const QString& line : lines)
+            textWidth = std::max(textWidth, metrics.horizontalAdvance(line));
+        const int lineHeight = metrics.height();
+        const int padX = size.width() / 64 + 8;
+        const int padY = size.height() / 72 + 4;
+        const int boxWidth = textWidth + padX * 2;
+        const int boxHeight = lineHeight * lines.size() + padY * 2;
+        const int boxX = (size.width() - boxWidth) / 2;
+        const int boxY = size.height() - boxHeight - size.height() / 24;
+        sp.setPen(Qt::NoPen);
+        sp.setBrush(QColor(0, 0, 0, 160));
+        sp.drawRoundedRect(boxX, boxY, boxWidth, boxHeight, 6, 6);
+        sp.setPen(Qt::white);
+        for (int i = 0; i < lines.size(); ++i) {
+            const int lineWidth = metrics.horizontalAdvance(lines[i]);
+            sp.drawText((size.width() - lineWidth) / 2,
+                        boxY + padY + metrics.ascent() + i * lineHeight, lines[i]);
+        }
+        sp.end();
     }
 
     // S3 canvas composition (crop / padding / rounded corners /
