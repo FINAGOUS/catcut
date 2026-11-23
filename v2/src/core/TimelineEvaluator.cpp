@@ -145,8 +145,13 @@ FrameScene TimelineEvaluator::evaluate(double timeSeconds) const
         layer.isPrimary = true;
         if (layer.geometry.opacity <= 0.0)
             continue;
-        fillSceneMotion(layer);
-        scene.videoLayers.append(layer);
+        // S4: audio-only clips have no picture — they ride the audio
+        // layers below, never the video layers (decoding a WAV as a
+        // frame used to fail the whole render).
+        if (clip.kind != ClipKind::Audio) {
+            fillSceneMotion(layer);
+            scene.videoLayers.append(layer);
+        }
         if (clip.kind != ClipKind::Title) {
             FrameAudioLayer audio;
             audio.clipId = clip.id;
@@ -172,9 +177,12 @@ FrameScene TimelineEvaluator::evaluate(double timeSeconds) const
         layer.isPrimary = false;
         if (layer.geometry.opacity <= 0.0)
             continue;
-        fillSceneMotion(layer);
-        // Connected layers draw above the primary storyline, in lane order.
-        scene.videoLayers.append(layer);
+        // S4: audio-only clips have no picture (see the primary loop).
+        if (clip.kind != ClipKind::Audio) {
+            fillSceneMotion(layer);
+            // Connected layers draw above the primary storyline, in lane order.
+            scene.videoLayers.append(layer);
+        }
         if (clip.kind != ClipKind::Title) {
             FrameAudioLayer audio;
             audio.clipId = clip.id;
