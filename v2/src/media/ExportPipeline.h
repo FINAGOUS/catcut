@@ -39,6 +39,8 @@ class TimelineModel;
 struct ExportOptions {
     RoleMixTable mix;              // per-role gain / pan / mute / solo
     bool loudnessNormalize = true; // normalise the mix to -16 LUFS
+    bool denoise = false;          // S6: run the mix through afftdn
+                                   // before loudness normalisation
     bool writeSrtSidecar = true;   // write <output>.srt when subtitles exist
     // Progress: (framesDone, totalFrames). Called from the export thread.
     std::function<void(int, int)> progress;
@@ -57,6 +59,7 @@ struct ExportResult {
     double durationSeconds = 0.0;
     double loudnessLUFS = 0.0; // NaN when the timeline has no audio
     bool hasAudio = false;
+    bool denoiseApplied = false; // the mix really went through afftdn
 };
 
 struct StemResult {
