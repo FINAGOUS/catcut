@@ -189,7 +189,9 @@ int main(int argc, char* argv[])
               QString::number(table[128]));
         catcut::ColorGrade curved;
         curved.curves = curves;
-        curved.applyPixel(0.5f, 0.5f, 0.5f, r, g, b);
+        // Curves run in linear working space: probe with the sRGB value
+        // whose linear value is 0.5 (~0.73), so the table value 0.75 applies.
+        curved.applyPixel(0.73f, 0.73f, 0.73f, r, g, b);
         check(r > 0.6f, "grade: master curve lifts mid grey", QString("r=%1").arg(r));
 
         // HSL: zone weights (centre 1, half-width 0) and circular wrap.
@@ -351,7 +353,9 @@ int main(int argc, char* argv[])
               "keying: pure green keys out (alpha 0)");
         check(nearValue(key.alphaFor(1.0, 0.0, 0.0), 1.0, 1e-9),
               "keying: pure red is kept (alpha 1)");
-        check(key.alphaFor(0.0, 0.9, 0.1) < 1.0 && key.alphaFor(0.0, 0.9, 0.1) > 0.0,
+        // Probe colour at normalised distance ~0.28 from key green, inside
+        // the feather band (0.25, 0.35): alpha must be strictly between 0 and 1.
+        check(key.alphaFor(0.0, 0.55, 0.2) < 1.0 && key.alphaFor(0.0, 0.55, 0.2) > 0.0,
               "keying: near-green is feathered, not binary");
         QImage keyed = solidImage(4, 4, 0, 255, 0);
         check(catcut::applyChromaKey(keyed, key) && keyed.pixel(0, 0) >> 24 == 0,
