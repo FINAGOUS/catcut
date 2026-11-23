@@ -1,4 +1,4 @@
-# CatCut v2 — S2 timeline (Qt 6 + C++20 + FFmpeg LGPL shared).
+# CatCut v2 — S3 colour & picture (Qt 6 + C++20 + FFmpeg LGPL shared).
 #
 # FFmpeg is linked in-process as dynamic libraries (libavformat,
 # libavcodec, libavfilter, libavutil, libswscale, libswresample).
@@ -89,6 +89,14 @@ add_library(catcut_core STATIC
   src/core/TimelineEvaluator.cpp
   src/core/TimelineFrameRenderer.h
   src/core/TimelineFrameRenderer.cpp
+  src/core/ColorGrade.h
+  src/core/ColorGrade.cpp
+  src/core/BeautyKeying.h
+  src/core/BeautyKeying.cpp
+  src/core/CameraMotion.h
+  src/core/CameraMotion.cpp
+  src/core/CanvasStyle.h
+  src/core/CanvasStyle.cpp
   src/core/ProjectModel.h
   src/core/ProjectModel.cpp
 )
@@ -114,6 +122,8 @@ add_library(catcut_media STATIC
   src/media/ProxyJob.cpp
   src/media/PreviewRenderer.h
   src/media/PreviewRenderer.cpp
+  src/media/ExportFrameRenderer.h
+  src/media/ExportFrameRenderer.cpp
   src/ui/PreviewWidget.h
   src/ui/PreviewWidget.cpp
 )
@@ -156,6 +166,8 @@ add_executable(CatCut-v2
   src/ui/KeyframeChartWidget.cpp
   src/ui/InspectorWidget.h
   src/ui/InspectorWidget.cpp
+  src/ui/ColorPanelWidget.h
+  src/ui/ColorPanelWidget.cpp
 )
 
 target_include_directories(CatCut-v2 PRIVATE
@@ -169,7 +181,8 @@ target_compile_definitions(CatCut-v2 PRIVATE
 target_link_libraries(CatCut-v2 PRIVATE catcut_core catcut_media Qt6::Widgets)
 
 # Preview shaders, compiled at build time by qsb and embedded as
-# resources (":/shaders/texture.vert.qsb", ":/shaders/texture.frag.qsb").
+# resources (":/shaders/texture.vert.qsb", ":/shaders/texture.frag.qsb",
+# ":/shaders/grade.frag.qsb" — S3 GPU grade).
 # NOTE: BASE strips the "shaders/" directory from the alias; without it
 # the alias doubles to ":/shaders/shaders/..." (run 45231564114), and
 # with PREFIX "/" alone it becomes "://shaders/..." (run 45232433853).
@@ -179,6 +192,7 @@ qt_add_shaders(CatCut-v2 "catcut_preview_shaders"
   FILES
     shaders/texture.vert
     shaders/texture.frag
+    shaders/grade.frag
 )
 
 # NOTE (S0): console subsystem on Windows, deliberately. --version and
@@ -218,3 +232,29 @@ target_include_directories(verify-s2 PRIVATE
 )
 
 target_link_libraries(verify-s2 PRIVATE catcut_core catcut_media Qt6::Gui)
+
+# ---------------------------------------------------------------- self-test
+# verify-s3: colour grade math (wheels / curves / HSL / LUT / scopes),
+# beauty / keying / masks / mosaic, camera motion (auto-zoom + spring /
+# screen 3D / pointer track), canvas composition, evaluator S3 state,
+# preview-vs-export consistency (mean error < 1%), and the compiled
+# grade.frag.qsb resource. Console program (QGuiApplication, offscreen
+# platform in CI). Exit 0 = all checks passed.
+add_executable(verify-s3
+  tests/verify-s3/main.cpp
+)
+
+target_include_directories(verify-s3 PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/src"
+)
+
+target_link_libraries(verify-s3 PRIVATE catcut_core catcut_media Qt6::Gui)
+
+# The grade shader resource, so the self-test can prove the shader
+# compiles and loads (the live GPU path itself needs a real machine).
+qt_add_shaders(verify-s3 "catcut_grade_shader_check"
+  PREFIX "/shaders"
+  BASE "shaders"
+  FILES
+    shaders/grade.frag
+)
