@@ -1,13 +1,17 @@
-# CatCut v2 — S3 colour & picture build (manual trigger only).
+# CatCut v2 — S4 audio / subtitles / export build (manual trigger only).
 # Builds the Qt 6 app with the FFmpeg LGPL media pipeline + the S2
 # magnetic timeline + the S3 colour & picture stage (GPU grade shader,
-# beauty, keying, masks, camera motion, canvas), runs the headless
-# smoke test + the verify-s1 self-test (probe / decode / proxy /
-# offscreen first-frame render) + the verify-s2 self-test (timeline
-# model / keyframes / transitions / evaluator / timeline render) +
-# the verify-s3 self-test (grade math / beauty / keying / motion /
-# canvas / preview-vs-export consistency), then packs an Inno
-# Setup exe installer as a private workflow artifact.
+# beauty, keying, masks, camera motion, canvas) + the S4 audio /
+# subtitles / export stage (Roles mix, -16 LUFS loudness, SRT +
+# burn-in, ExportPipeline with hardware-then-software encoding,
+# per-role stems), runs the headless smoke test + the verify-s1
+# self-test (probe / decode / proxy / offscreen first-frame render) +
+# the verify-s2 self-test (timeline model / keyframes / transitions /
+# evaluator / timeline render) + the verify-s3 self-test (grade math /
+# beauty / keying / motion / canvas / preview-vs-export consistency) +
+# the verify-s4 self-test (presets / mix / loudness / SRT / real MP4
+# export / stems / subtitle burn-in / honest-error hooks / cancel),
+# then packs an Inno Setup exe installer as a private workflow artifact.
 # No Release is created. No GPL encoder (libx264/libx265) is involved:
 # the FFmpeg tree is checked for them at download time and again at
 # CMake configure time.
@@ -120,6 +124,9 @@ jobs:
           $bytes = [System.IO.File]::ReadAllBytes($src)
           $half = [int]($bytes.Length / 2)
           [System.IO.File]::WriteAllBytes((Join-Path $probe 'test_corrupt.mp4'), $bytes[0..($half - 1)])
+          # Audio probe for verify-s4: 6 s 440 Hz sine, 48 kHz stereo WAV.
+          & $ff -y -f lavfi -i sine=frequency=440:sample_rate=48000:duration=6 -ac 2 -c:a pcm_s16le (Join-Path $probe 'test_tone.wav')
+          if ($LASTEXITCODE -ne 0) { throw 'Tone probe generation failed.' }
           Get-ChildItem $probe | Select-Object Name, Length | Out-Host
 
       - name: Run verify-s1
@@ -154,6 +161,17 @@ jobs:
           $code = $LASTEXITCODE
           Get-Content -LiteralPath $log | Out-Host
           if ($code -ne 0) { throw "verify-s3 failed with exit code $code." }
+
+      - name: Run verify-s4
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $log = Join-Path $PWD 'v2-s4-verify.txt'
+          $exe = Join-Path $PWD 'v2/build/Release/verify-s4.exe'
+          & $exe (Join-Path $PWD 'probe-media') (Join-Path $PWD 'verify-s4-out') > $log 2>&1
+          $code = $LASTEXITCODE
+          Get-Content -LiteralPath $log | Out-Host
+          if ($code -ne 0) { throw "verify-s4 failed with exit code $code." }
 
       - name: Stage package
         run: |
@@ -227,4 +245,17 @@ jobs:
             v2-s3-verify.txt
             verify-s3-out/s3-preview-graded.png
             verify-s3-out/s3-export-graded.png
+          retention-days: 7
+
+      - name: Upload verify-s4 log
+        uses: actions/upload-artifact@v4
+        with:
+          name: catcut-v2-s4-verify
+          path: |
+            v2-s4-verify.txt
+            verify-s4-out/s4-export.mp4
+            verify-s4-out/s4-export.mp4.srt
+            verify-s4-out/s4-export-first.png
+            verify-s4-out/s4-preview-first.png
+            verify-s4-out/s4-subtitle-burned.png
           retention-days: 7
