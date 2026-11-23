@@ -47,6 +47,22 @@ public:
     bool decodeFirstFrame(const QString& path, const QSize& targetSize,
                           QImage& out, QString& error);
 
+    // Decodes the frame at (or just after) `timeSeconds`: seeks to the
+    // nearest keyframe at or before the target, then decodes forward
+    // until a frame timestamp reaches the target. When seeking is not
+    // supported by the container it degrades to sequential decode from
+    // the start — the result is the same frame, only slower. Used by
+    // the S2 timeline preview (scrub / playhead render) and the
+    // verify-s2 render test. Returns false with a readable `error`
+    // when no frame can be decoded at all.
+    bool decodeFrameAt(const QString& path, double timeSeconds,
+                       const QSize& targetSize, QImage& out, QString& error);
+
+    // Presentation time (seconds) of the most recently decoded frame;
+    // 0 before the first frame. Invalid timestamps fall back to
+    // frameIndex / fps, so this never returns a nonsense value.
+    double lastFramePtsSeconds() const;
+
     // Decodes up to `count` frames. Returns how many were actually
     // decoded (0 at end of stream / on error). Never throws.
     int decodeFrames(int count, QString& error);
