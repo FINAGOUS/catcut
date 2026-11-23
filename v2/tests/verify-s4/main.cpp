@@ -377,12 +377,15 @@ int main(int argc, char* argv[])
               QString::number(model.stemsByRole().size()));
 
         model.setSubtitles(track);
+        // Evaluate at 1.5s: outside the dissolve window [0.75, 1.25],
+        // so only clip B is active on the primary storyline (at 1.0s
+        // both A-outgoing and B-incoming would be active: 4 layers).
         const catcut::TimelineEvaluator evaluator(&model, QSize(1920, 1080));
-        const catcut::FrameScene scene = evaluator.evaluate(1.0);
+        const catcut::FrameScene scene = evaluator.evaluate(1.5);
         check(scene.hasSubtitle && scene.activeSubtitle == QStringLiteral("你好，世界"),
-              "timeline: evaluator exposes the active subtitle at 1.0s");
+              "timeline: evaluator exposes the active subtitle at 1.5s");
         check(scene.audioLayers.size() == 3,
-              "timeline: evaluator exposes 3 audio layers at 1.0s "
+              "timeline: evaluator exposes 3 audio layers at 1.5s "
               "(primary clip B + dialogue + music)",
               QString::number(scene.audioLayers.size()));
         bool fadeSeen = false;
