@@ -1,16 +1,30 @@
 #include "ui/MainWindow.h"
 
 #include "core/ProjectModel.h"
+#include "media/MediaProbe.h"
+#include "media/PreviewRenderer.h"
+#include "media/ProxyJob.h"
+#include "ui/PreviewWidget.h"
 
+#include <QApplication>
 #include <QCloseEvent>
+#include <QCryptographicHash>
+#include <QDir>
 #include <QDockWidget>
 #include <QFileDialog>
+#include <QFileInfo>
+#include <QHeaderView>
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QMetaObject>
+#include <QPointer>
+#include <QPushButton>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QStatusBar>
+#include <QTableWidget>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -18,7 +32,6 @@ namespace catcut {
 
 namespace {
 
-// Placeholder label used for the S0 skeleton panels.
 QLabel* placeholderLabel(const QString& text, bool dark = false)
 {
     auto* label = new QLabel(text);
@@ -36,6 +49,17 @@ QDockWidget* makeDock(const QString& title)
     dock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable
                       | QDockWidget::DockWidgetClosable);
     return dock;
+}
+
+// Cache location for generated proxies: <cache>/catcut/proxies/<sha1>.mp4
+QString proxyPathFor(const QString& sourcePath)
+{
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
+        + QStringLiteral("/catcut/proxies");
+    QDir().mkpath(dir);
+    const QString hash = QString::fromLatin1(
+        QCryptographicHash::hash(sourcePath.toUtf8(), QCryptographicHash::Sha1).toHex());
+    return dir + QStringLiteral("/") + hash + QStringLiteral(".mp4");
 }
 
 } // namespace
@@ -71,12 +95,40 @@ MainWindow::~MainWindow() = default;
 
 void MainWindow::setupDocks()
 {
+    // --- Media library (S1): import button + table with proxy status. ---
     m_mediaDock = makeDock(QStringLiteral("素材库"));
-    m_mediaDock->setWidget(placeholderLabel(QStringLiteral("素材库\n（S1 接入媒体管线）")));
+    {
+        auto* mediaWidget = new QWidget();
+        auto* layout = new QVBoxLayout(mediaWidget);
+        layout->setContentsMargins(4, 4, 4, 4);
+        auto* importButton = new QPushButton(QStringLiteral("导入媒体…"));
+        connect(importButton, &QPushButton::clicked, this, &MainWindow::onImportMedia);
+        layout->addWidget(importButton);
+        m_mediaTable = new QTableWidget(0, 4);
+        m_mediaTable->setHorizontalHeaderLabels(
+            { QStringLiteral("文件"), QStringLiteral("分辨率"),
+              QStringLiteral("时长"), QStringLiteral("代理状态") });
+        m_mediaTable->horizontalHeader()->setStretchLastSection(true);
+        m_mediaTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+        m_mediaTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        layout->addWidget(m_mediaTable);
+        m_mediaDock->setWidget(mediaWidget);
+    }
     m_mediaDock->setObjectName(QStringLiteral("dockMedia"));
 
+    // --- Preview (S1): real first-frame rendering via PreviewWidget. ---
     m_previewDock = makeDock(QStringLiteral("预览"));
-    m_previewDock->setWidget(placeholderLabel(QStringLiteral("预览区"), true));
+    {
+        auto* previewWidget = new QWidget();
+        auto* layout = new QVBoxLayout(previewWidget);
+        layout->setContentsMargins(0, 0, 0, 0);
+        m_previewWidget = new PreviewWidget();
+        layout->addWidget(m_previewWidget, 1);
+        m_previewStatus = new QLabel(QStringLiteral("未导入媒体"));
+        m_previewStatus->setAlignment(Qt::AlignCenter);
+        layout->addWidget(m_previewStatus);
+        m_previewDock->setWidget(previewWidget);
+    }
     m_previewDock->setObjectName(QStringLiteral("dockPreview"));
 
     m_timelineDock = makeDock(QStringLiteral("时间线"));
@@ -99,6 +151,9 @@ void MainWindow::setupMenus()
     saveAction->setShortcut(QKeySequence::Save);
     QAction* saveAsAction = fileMenu->addAction(QStringLiteral("工程另存为…"), this, &MainWindow::onSaveProjectAs);
     saveAsAction->setShortcut(QKeySequence::SaveAs);
+    fileMenu->addSeparator();
+    QAction* importAction = fileMenu->addAction(QStringLiteral("导入媒体…"), this, &MainWindow::onImportMedia);
+    importAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_I));
     fileMenu->addSeparator();
     QAction* quitAction = fileMenu->addAction(QStringLiteral("退出"), this, &QWidget::close);
     quitAction->setShortcut(QKeySequence::Quit);
@@ -222,6 +277,86 @@ void MainWindow::onSaveProjectAs()
         return;
     m_projectPath = path;
     onSaveProject();
+}
+
+void MainWindow::onImportMedia()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, QStringLiteral("导入媒体"), QString(),
+        QStringLiteral("视频 (*.mp4 *.mov *.mkv *.webm *.avi *.m4v *.mpg *.mpeg *.wmv);;所有文件 (*)"));
+    if (path.isEmpty())
+        return;
+
+    const MediaInfo info = MediaProbe::probe(path);
+    if (!info.ok) {
+        QMessageBox::warning(this, QStringLiteral("无法导入"), info.error);
+        return;
+    }
+    if (!info.hasVideo) {
+        QMessageBox::warning(this, QStringLiteral("无法导入"),
+                             QStringLiteral("该文件没有视频轨，无法作为视频素材导入。"));
+        return;
+    }
+
+    const int row = m_mediaTable->rowCount();
+    m_mediaTable->insertRow(row);
+    m_mediaTable->setItem(row, 0, new QTableWidgetItem(QFileInfo(path).fileName()));
+    m_mediaTable->setItem(row, 1, new QTableWidgetItem(
+        QStringLiteral("%1x%2").arg(info.width).arg(info.height)));
+    m_mediaTable->setItem(row, 2, new QTableWidgetItem(
+        info.durationSeconds > 0.0
+            ? QStringLiteral("%1s").arg(info.durationSeconds, 0, 'f', 1)
+            : QStringLiteral("未知")));
+    m_mediaTable->setItem(row, 3, new QTableWidgetItem(QStringLiteral("生成中…")));
+
+    ImportedMedia media;
+    media.path = path;
+    media.proxyPath = proxyPathFor(path);
+    media.proxyJob = std::make_shared<ProxyJob>();
+    m_media.append(media);
+
+    // First frame into the preview panel (decoded from the original;
+    // timeline playback in S2 will use the proxy, not the original).
+    QImage firstFrame;
+    QString previewError;
+    QString decodePath;
+    const QSize previewSize = m_previewWidget->size().isEmpty()
+        ? QSize(960, 540) : m_previewWidget->size();
+    if (PreviewRenderer::renderFirstFrame(path, firstFrame, previewSize, previewError, decodePath)) {
+        m_previewWidget->setImage(firstFrame);
+        m_previewStatus->setText(
+            QStringLiteral("首帧已渲染（%1解码）").arg(decodePath == QLatin1String("d3d11va")
+                ? QStringLiteral("硬件") : QStringLiteral("软件")));
+    } else {
+        m_previewStatus->setText(QStringLiteral("首帧渲染失败：%1").arg(previewError));
+    }
+
+    // Background 720p proxy. The finished callback runs on the worker
+    // thread, so hop to the GUI thread before touching the table.
+    QPointer<MainWindow> guard(this);
+    const int jobRow = row;
+    media.proxyJob->startAsync(
+        path, media.proxyPath, 720,
+        [guard, jobRow](bool ok, const QString& error, const QString& encoderUsed) {
+            QMetaObject::invokeMethod(qApp, [guard, jobRow, ok, error, encoderUsed]() {
+                if (guard)
+                    guard->onProxyFinished(jobRow, ok, error, encoderUsed);
+            });
+        });
+    statusBar()->showMessage(QStringLiteral("已导入 %1，正在生成代理…").arg(QFileInfo(path).fileName()), 3000);
+}
+
+void MainWindow::onProxyFinished(int row, bool ok, const QString& error, const QString& encoderUsed)
+{
+    if (row < 0 || row >= m_mediaTable->rowCount())
+        return;
+    // A missing/failed proxy is a hard error: show it plainly, never
+    // silently fall back to the original for playback.
+    m_mediaTable->setItem(row, 3, new QTableWidgetItem(
+        ok ? QStringLiteral("已就绪（%1）").arg(encoderUsed)
+           : QStringLiteral("失败：%1").arg(error)));
+    if (!ok)
+        statusBar()->showMessage(QStringLiteral("代理生成失败：%1").arg(error), 5000);
 }
 
 void MainWindow::closeEvent(QCloseEvent* event)
