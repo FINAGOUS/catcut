@@ -21,6 +21,7 @@
 
 #include "core/ExportPreset.h"
 
+class QCheckBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -46,6 +47,8 @@ public:
     QString currentPresetName() const;
     qint64 currentBitrateBps() const;
     bool exportEnabled() const;
+    // S6: denoise checkbox state (default off; verify-s6 checks it).
+    bool denoiseChecked() const;
 
 private slots:
     void onPresetChanged(int index);
@@ -71,6 +74,7 @@ private:
 
     QComboBox* m_presetCombo = nullptr;
     QComboBox* m_tierCombo = nullptr;
+    QCheckBox* m_denoiseCheck = nullptr; // S6: afftdn denoise, default off
     QSpinBox* m_customBitrateSpin = nullptr; // Mbps, only for Custom tier
     QLabel* m_bitrateLabel = nullptr;
     QLineEdit* m_outputEdit = nullptr;
