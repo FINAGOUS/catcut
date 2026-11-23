@@ -1,4 +1,5 @@
 #include "core/CameraMotion.h"
+#include <QJsonArray>
 
 #include <QtMath>
 #include <algorithm>
