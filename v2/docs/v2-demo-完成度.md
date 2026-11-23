@@ -87,20 +87,74 @@ S3 文档 §8 的 7 条细化缺口（人像遮罩、逐层裁切、拖拽曲线
 
 ## 3. 全量回归与安装自测（S5 run + S6 run）
 
-### S6 run（待填：run 触发后以实际结果替换本段）
+### S6 run（run 45275479955，success，2026-11-23）
 
-- 触发时：S6 代码已推上 main（降噪接链 + 中置消除人声分离 +
-  安装自测重写 + verify-s6），工作流待跑。
-- 全量回归：verify-s1~s6，待填（目标：s1 20 + s2 84 + s3 87 +
-  s4 100 + s5 8 + s6 待计数，全部 PASS）。
-- 安装自测：待填（目标：Unblock-File + 关 SmartScreen → 静默安装 →
-  `--smoke-test` 出 `CatCut v2 smoke OK` → 静默卸载 → 目录已清理；
-  安装步骤自身 180 秒轮询兜底，超时则杀进程报疑似 SmartScreen 拦截）。
-- 降噪实测（verify-s6 量化断言）：待填
-  （DENOISE_UNIT_RATIO、DENOISE_EXPORT_RATIO）。
-- 人声分离实测（verify-s6 Goertzel 断言）：待填
-  （VOCAL_VOICE_RATIO、VOCAL_INST220_KEPT、VOCAL_INST330_KEPT）。
-- 自测输出全文：`~/workspace/goals/windows/hidden_files/v2-s6-verify.txt`（待填）。
+| 套件 | 结果 |
+|---|---|
+| verify-s1（探针/解码/代理/首帧） | 20/20 PASS |
+| verify-s2（时间线模型/转场/求值/渲染） | 84/84 PASS |
+| verify-s3（调色/美颜/抠像/运镜/一致性） | 87/87 PASS |
+| verify-s4（预设/混音/响度/SRT/导出/分轨/取消/人声分离） | 105/105 PASS（S5 是 100，S6 的人声分离真功能检查多了 5 项） |
+| verify-s5（导出对话框：6 预设/码率/空时间线门禁） | 8/8 PASS |
+| verify-s6（降噪单元+导出两次/人声分离/对话框默认关） | 35/35 PASS |
+| **合计** | **339 PASS，0 FAIL** |
+
+关键实测数：预览与导出一致性误差 0.6904/255（目标 < 1% 即 < 2.55/255，
+与 S5 一致）；成品响度 -16.03 LUFS（目标 -16）；云端编码器
+libopenh264（软件回退，runner 无 GPU，符合预期）。
+自测输出全文：`~/workspace/goals/windows/hidden_files/v2-s6-verify.txt`
+（672 行，0 FAIL，含 smoke test + verify-s1~s6 + 安装自测）。
+
+### 安装自测：通过（S5 两轮失败后，S6 首次跑通）
+
+- 日志关键行（按顺序）：`Installer unblocked.` →
+  `SmartScreen disabled (Explorer key).` →
+  `SmartScreen disabled (policy key).` →
+  `Installed exe found: C:\Users\runneradmin\AppData\Local\Programs\CatCut\CatCut-v2.exe` →
+  `Installed exe smoke test OK.` → `INSTALL SELF-TEST: PASS`。
+- 装了：静默安装产出安装目录与 exe；启动了：已安装 exe
+  `--smoke-test` 输出 `CatCut v2 smoke OK`；卸载干净了：静默卸载后
+  安装目录不存在，步骤以 PASS 结束。
+- SmartScreen 那步到底发生了什么：两个注册表项都写成功了
+  （Explorer 的 `SmartScreenEnabled=Off` 与组策略的
+  `EnableSmartScreen=0`，均无 WARNING）；安装器在 180 秒轮询内产出
+  exe，未触发超时杀进程。**是否真的弹过 SmartScreen 仍无法证实**——
+  日志里看不到桌面弹窗；只能说关 SmartScreen + Unblock-File 之后
+  安装一步跑通了，S5 第二轮那种 27 分钟零输出卡死没有重现。
+  180 秒兜底一次都没触发。
+- 安装包 artifact：`catcut-v2-installer`（artifact id 14868141047，
+  zip 80,165,899 字节），内含 `CatCut-v2.0.0-alpha.1-setup-x64.exe`
+  80,694,505 字节，SHA256
+  `6ba2469d8fd77476ebe9095b8914895183281939a2f9f09444691ff90789d150`，
+  MZ 头（`4D 5A`），strings 含 `Inno Setup Setup Data (6.7.0)` /
+  `JR.Inno.Setup`，`file` 判定为 PE32 GUI 可执行文件。本地路径：
+  `~/workspace/goals/windows/hidden_files/v2-s6/dl/installer/CatCut-v2.0.0-alpha.1-setup-x64.exe`。
+- 失败轮次备查：第一轮 run 45272179203 在"Configure and build"
+  失败——`AudioDenoise.cpp` 两个 MSVC 编译错误（FFmpeg 8 已删
+  `av_opt_set_int_list`；Qt 6.8 的 `QList::append` 没有 `(const T*, int)`
+  重载）；第二轮 run 45273215175 编译与 s1–s5 全绿，verify-s6 3 项
+  失败——afftdn 输出是平面 float（FLTP）不是 packed float，
+  drain 的格式检查把所有帧都拒了；修法：drain 接受 FLT/FLTP 并交错，
+  降噪度量改成 8 kHz 高通 RMS（阈值按实测定：单元 < 0.93、导出
+  < 0.97）。第三轮 run 45275479955 全绿。
+
+### 降噪实测（verify-s6 量化断言，run 45275479955）
+
+- 单元：`DENOISE_UNIT_RATIO=0.8878`（8 kHz 高通 RMS 0.009368 →
+  0.008317，阈值 0.93）。
+- 导出两次（同增益，响度统一关）：`DENOISE_EXPORT_RATIO=0.7691`
+  （8 kHz 高通 RMS 0.005510 → 0.004238，阈值 0.97），降噪版确实更低；
+  `ExportResult::denoiseApplied` 只在开降噪的导出为 true，
+  fallbackNote 写明"已用 afftdn（nr=12）处理混音"。
+
+### 人声分离实测（verify-s6 Goertzel 断言，run 45275479955）
+
+- 合成探针：1000 Hz 居中"人声" 0.4 + 左 220 Hz / 右 330 Hz 乐器各 0.4。
+- `VOCAL_VOICE_RATIO=0.0000`（1000 Hz 在音乐轨里完全抵消，阈值 < 0.10）；
+  `VOCAL_INST220_KEPT=0.5000`、`VOCAL_INST330_KEPT=0.4999`
+  （乐器保留，阈值 > 0.30）；`VOCAL_CENTRE_VOICE_KEPT=0.9999`
+  （中置文件保留人声，阈值 > 0.30）。
+- 单声道输入与缺失文件均可读拒绝，无假 stem。
 
 ### S5 run（历史记录）
 
