@@ -7,19 +7,19 @@
 // Checks (exit 0 = all passed):
 //   1. denoise unit: AudioDenoise::applyAfftdn on a synthetic
 //      tone (440 Hz, 0.5) + quiet white hiss (0.02) reduces the
-//      high-frequency (first-difference) RMS — ratio < 0.90.
-//      The threshold is measured, not guessed: FFmpeg 8.1 afftdn
-//      (nr=12) gives ~0.78 on this signal (local probe), while
-//      loud broadband noise (~0.3) is barely touched (~1.0) —
-//      which is why the test signal uses QUIET hiss, the case
-//      afftdn is actually built for. Empty / odd input fails
-//      with a readable error, never a crash.
+//      8 kHz high-pass RMS — ratio < 0.93. The threshold is
+//      measured, not guessed: the same signal gives ~0.77 on
+//      FFmpeg 8.1 (CLI probe) and ~0.89 on FFmpeg 6.1 (C++
+//      filter-graph probe), while loud broadband noise (~0.3) is
+//      barely touched (~1.0) — which is why the test signal uses
+//      QUIET hiss, the case afftdn is actually built for. Empty /
+//      odd input fails with a readable error, never a crash.
 //   2. denoise export: the same noisy timeline exported twice
 //      (denoise off / on, loudness normalisation off so both
-//      exports get the same gain), the denoised file's
-//      first-difference RMS is lower — ratio < 0.95 (AAC adds a
-//      little codec noise, hence the looser threshold than the
-//      unit test). ExportResult::denoiseApplied is true only for
+//      exports get the same gain), the denoised file's 8 kHz
+//      high-pass RMS is lower — ratio < 0.97 (AAC adds a little
+//      codec noise, hence the looser threshold than the unit
+//      test). ExportResult::denoiseApplied is true only for
 //      the denoised export.
 //   3. export dialog: the denoise checkbox exists and defaults
 //      to OFF (verify-s5 covers the rest of the dialog).
@@ -116,6 +116,40 @@ double diffRms(const QVector<float>& samples)
         prev = cur;
     }
     return std::sqrt(sum / (frames - 1));
+}
+
+// RMS of the (L+R)/2 mono mix through an RBJ high-pass biquad
+// (fc = 8 kHz, Q = 0.7071, fs = 48 kHz): the 440 Hz tone is
+// attenuated ~50 dB by it, so this is a pure hiss-band measure.
+// Why not first-difference RMS: the tone dominates a differenced
+// signal (tone diff-RMS 0.020 vs hiss 0.016), so even a perfect
+// hiss cut only moves the ratio to ~0.92 — too tight to assert.
+// The 8 kHz band isolates the hiss: measured ratio ~0.77 on
+// FFmpeg 8.1 (CLI probe) and ~0.89 on FFmpeg 6.1 (C++ filter-graph
+// probe, same signal), hence the 0.93 / 0.97 thresholds below.
+double highpassRms(const QVector<float>& samples)
+{
+    if (samples.size() < 4)
+        return 0.0;
+    const double w0 = 2.0 * M_PI * 8000.0 / 48000.0;
+    const double alpha = std::sin(w0) / (2.0 * 0.7071);
+    const double cw = std::cos(w0);
+    const double a0 = 1.0 + alpha;
+    const double b0 = ((1.0 + cw) / 2.0) / a0;
+    const double b1 = -(1.0 + cw) / a0;
+    const double b2 = ((1.0 + cw) / 2.0) / a0;
+    const double a1 = (-2.0 * cw) / a0;
+    const double a2 = (1.0 - alpha) / a0;
+    const int frames = static_cast<int>(samples.size() / 2);
+    double x1 = 0.0, x2 = 0.0, y1 = 0.0, y2 = 0.0, sum = 0.0;
+    for (int i = 0; i < frames; ++i) {
+        const double x = (samples[static_cast<qsizetype>(i) * 2]
+                          + samples[static_cast<qsizetype>(i) * 2 + 1]) * 0.5;
+        const double y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+        x2 = x1; x1 = x; y2 = y1; y1 = y;
+        sum += y * y;
+    }
+    return std::sqrt(sum / frames);
 }
 
 // Goertzel amplitude of one frequency in one channel of a stereo
@@ -252,15 +286,15 @@ int main(int argc, char* argv[])
                 check(denoised.size() == noisy.samples.size(),
                       "denoise: output length equals input length",
                       QString("%1 vs %2").arg(denoised.size()).arg(noisy.samples.size()));
-                const double before = diffRms(noisy.samples);
-                const double after = diffRms(denoised);
+                const double before = highpassRms(noisy.samples);
+                const double after = highpassRms(denoised);
                 unitRatio = before > 0.0 ? after / before : 1e9;
                 out << "DENOISE_UNIT_RATIO=" << QString::number(unitRatio, 'f', 4) << "\n";
-                out << "DENOISE_UNIT_DIFFRMS=" << QString::number(before, 'f', 6)
+                out << "DENOISE_UNIT_HIGHPASS_RMS=" << QString::number(before, 'f', 6)
                     << " -> " << QString::number(after, 'f', 6) << "\n";
-                check(unitRatio < 0.90,
-                      "denoise: afftdn lowers the high-frequency RMS of the noisy tone",
-                      QString("ratio=%1 (threshold 0.90)").arg(unitRatio, 0, 'f', 4));
+                check(unitRatio < 0.93,
+                      "denoise: afftdn lowers the 8 kHz high-pass RMS of the noisy tone",
+                      QString("ratio=%1 (threshold 0.93)").arg(unitRatio, 0, 'f', 4));
             }
         }
     }
@@ -328,15 +362,15 @@ int main(int argc, char* argv[])
             const bool dnOk = catcut::AudioDecoder::decodeAll(dnMp4, dnAudio, decodeError);
             check(plainOk && dnOk, "denoise-export: both exports decode audio", decodeError);
             if (plainOk && dnOk) {
-                const double before = diffRms(plainAudio.samples);
-                const double after = diffRms(dnAudio.samples);
+                const double before = highpassRms(plainAudio.samples);
+                const double after = highpassRms(dnAudio.samples);
                 exportRatio = before > 0.0 ? after / before : 1e9;
                 out << "DENOISE_EXPORT_RATIO=" << QString::number(exportRatio, 'f', 4) << "\n";
-                out << "DENOISE_EXPORT_DIFFRMS=" << QString::number(before, 'f', 6)
+                out << "DENOISE_EXPORT_HIGHPASS_RMS=" << QString::number(before, 'f', 6)
                     << " -> " << QString::number(after, 'f', 6) << "\n";
-                check(exportRatio < 0.95,
+                check(exportRatio < 0.97,
                       "denoise-export: denoised export has lower noise level than plain",
-                      QString("ratio=%1 (threshold 0.95)").arg(exportRatio, 0, 'f', 4));
+                      QString("ratio=%1 (threshold 0.97)").arg(exportRatio, 0, 'f', 4));
             }
         }
     }
