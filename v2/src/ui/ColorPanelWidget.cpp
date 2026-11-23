@@ -156,7 +156,7 @@ ColorPanelWidget::ColorPanelWidget(QWidget* parent)
         if (clip)
             fn(clip);
     };
-    auto changed = [this]() { emit changed(); };
+    auto notifyChanged = [this]() { emit changed(); };
 
     // --- scopes (live, beside the inspector) ---
     {
@@ -172,15 +172,15 @@ ColorPanelWidget::ColorPanelWidget(QWidget* parent)
         auto* group = new QGroupBox(QStringLiteral("白平衡"));
         auto* form = new QFormLayout(group);
         m_tempSlider = makeSlider(-100, 100, 0);
-        connect(m_tempSlider, &QSlider::valueChanged, this, [withClip, changed](int v) {
+        connect(m_tempSlider, &QSlider::valueChanged, this, [withClip, notifyChanged](int v) {
             withClip([v](Clip* c) { c->grade.temperature = v / 100.0; c->gradeEnabled = true; });
-            changed();
+            notifyChanged();
         });
         form->addRow(QStringLiteral("色温"), m_tempSlider);
         m_tintSlider = makeSlider(-100, 100, 0);
-        connect(m_tintSlider, &QSlider::valueChanged, this, [withClip, changed](int v) {
+        connect(m_tintSlider, &QSlider::valueChanged, this, [withClip, notifyChanged](int v) {
             withClip([v](Clip* c) { c->grade.tint = v / 100.0; c->gradeEnabled = true; });
-            changed();
+            notifyChanged();
         });
         form->addRow(QStringLiteral("色调"), m_tintSlider);
         layout->addWidget(group);
@@ -196,14 +196,14 @@ ColorPanelWidget::ColorPanelWidget(QWidget* parent)
             for (int ch = 0; ch < 3; ++ch) {
                 auto* s = makeSlider(-100, 100, 0);
                 s->setToolTip(QString::fromLatin1(channelLabels[ch]));
-                connect(s, &QSlider::valueChanged, this, [withClip, changed, wheel, ch](int v) {
+                connect(s, &QSlider::valueChanged, this, [withClip, notifyChanged, wheel, ch](int v) {
                     withClip([v, wheel, ch](Clip* c) {
                         double* target = ch == 0 ? &c->grade.wheels[wheel].r
                             : ch == 1 ? &c->grade.wheels[wheel].g : &c->grade.wheels[wheel].b;
                         *target = v / 100.0;
                         c->gradeEnabled = true;
                     });
-                    changed();
+                    notifyChanged();
                 });
                 m_wheelSliders[wheel][ch] = s;
                 row->addWidget(s);
@@ -222,13 +222,13 @@ ColorPanelWidget::ColorPanelWidget(QWidget* parent)
             for (int pt = 0; pt < 5; ++pt) {
                 auto* s = makeSpin(0.0, 1.0, 0.05, 2, pt / 4.0);
                 connect(s, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-                        [withClip, changed, ch, pt](double v) {
+                        [withClip, notifyChanged, ch, pt](double v) {
                             withClip([v, ch, pt](Clip* c) {
                                 c->grade.curves.points[static_cast<size_t>(ch)]
                                                     [static_cast<size_t>(pt)] = v;
                                 c->gradeEnabled = true;
                             });
-                            changed();
+                            notifyChanged();
                         });
                 m_curveSpins[ch][pt] = s;
                 row->addWidget(s);
@@ -247,9 +247,9 @@ ColorPanelWidget::ColorPanelWidget(QWidget* parent)
             auto* hue = makeSpin(-0.5, 0.5, 0.01, 2, 0.0);
             auto* sat = makeSpin(-1.0, 1.0, 0.05, 2, 0.0);
             auto* light = makeSpin(-1.0, 1.0, 0.05, 2, 0.0);
-            auto hook = [this, withClip, changed, zone](QDoubleSpinBox* spin, int which) {
+            auto hook = [this, withClip, notifyChanged, zone](QDoubleSpinBox* spin, int which) {
                 connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-                        [withClip, changed, zone, which](double v) {
+                        [withClip, notifyChanged, zone, which](double v) {
                             withClip([v, zone, which](Clip* c) {
                                 HslZone& z = c->grade.hslZones[static_cast<size_t>(zone)];
                                 if (which == 0) z.hueShift = v;
@@ -257,7 +257,7 @@ ColorPanelWidget::ColorPanelWidget(QWidget* parent)
                                 else z.lightness = v;
                                 c->gradeEnabled = true;
                             });
-                            changed();
+                            notifyChanged();
                         });
             };
             hook(hue, 0);
@@ -282,7 +282,7 @@ ColorPanelWidget::ColorPanelWidget(QWidget* parent)
         gl->addWidget(m_lutLabel);
         auto* row = new QHBoxLayout();
         auto* importButton = new QPushButton(QStringLiteral("导入 .cube…"));
-        connect(importButton, &QPushButton::clicked, this, [this, withClip, changed]() {
+        connect(importButton, &QPushButton::clicked, this, [this, withClip, notifyChanged]() {
             const QString path = QFileDialog::getOpenFileName(
                 this, QStringLiteral("导入 LUT"), QString(), QStringLiteral("Cube LUT (*.cube)"));
             if (path.isEmpty() || !m_model || m_clipId.isEmpty())
@@ -300,16 +300,16 @@ ColorPanelWidget::ColorPanelWidget(QWidget* parent)
             clip->grade.lutEnabled = true;
             clip->gradeEnabled = true;
             rebuildLutLabel();
-            changed();
+            notifyChanged();
         });
         auto* clearButton = new QPushButton(QStringLiteral("清除"));
-        connect(clearButton, &QPushButton::clicked, this, [this, withClip, changed]() {
+        connect(clearButton, &QPushButton::clicked, this, [this, withClip, notifyChanged]() {
             withClip([](Clip* c) {
                 c->grade.lutEnabled = false;
                 c->grade.lut = CubeLut();
             });
             rebuildLutLabel();
-            changed();
+            notifyChanged();
         });
         row->addWidget(importButton);
         row->addWidget(clearButton);
@@ -322,21 +322,21 @@ ColorPanelWidget::ColorPanelWidget(QWidget* parent)
         auto* group = new QGroupBox(QStringLiteral("美颜（磨皮 + 轻微提亮）"));
         auto* form = new QFormLayout(group);
         m_beautyCheck = new QCheckBox(QStringLiteral("启用美颜"));
-        connect(m_beautyCheck, &QCheckBox::toggled, this, [withClip, changed](bool on) {
+        connect(m_beautyCheck, &QCheckBox::toggled, this, [withClip, notifyChanged](bool on) {
             withClip([on](Clip* c) { c->beauty.enabled = on; });
-            changed();
+            notifyChanged();
         });
         form->addRow(m_beautyCheck);
         m_beautyStrengthSlider = makeSlider(0, 100, 50);
-        connect(m_beautyStrengthSlider, &QSlider::valueChanged, this, [withClip, changed](int v) {
+        connect(m_beautyStrengthSlider, &QSlider::valueChanged, this, [withClip, notifyChanged](int v) {
             withClip([v](Clip* c) { c->beauty.strength = v / 100.0; });
-            changed();
+            notifyChanged();
         });
         form->addRow(QStringLiteral("磨皮强度"), m_beautyStrengthSlider);
         m_beautyBrightenSlider = makeSlider(0, 20, 5);
-        connect(m_beautyBrightenSlider, &QSlider::valueChanged, this, [withClip, changed](int v) {
+        connect(m_beautyBrightenSlider, &QSlider::valueChanged, this, [withClip, notifyChanged](int v) {
             withClip([v](Clip* c) { c->beauty.brighten = v / 100.0; });
-            changed();
+            notifyChanged();
         });
         form->addRow(QStringLiteral("提亮"), m_beautyBrightenSlider);
         auto* note = new QLabel(QStringLiteral(
@@ -352,13 +352,13 @@ ColorPanelWidget::ColorPanelWidget(QWidget* parent)
         auto* group = new QGroupBox(QStringLiteral("抠像与蒙版"));
         auto* form = new QFormLayout(group);
         m_keyCheck = new QCheckBox(QStringLiteral("启用色度键（绿幕）"));
-        connect(m_keyCheck, &QCheckBox::toggled, this, [withClip, changed](bool on) {
+        connect(m_keyCheck, &QCheckBox::toggled, this, [withClip, notifyChanged](bool on) {
             withClip([on](Clip* c) { c->chromaKey.enabled = on; });
-            changed();
+            notifyChanged();
         });
         form->addRow(m_keyCheck);
         m_keyColourButton = new QPushButton(QStringLiteral("键色：绿"));
-        connect(m_keyColourButton, &QPushButton::clicked, this, [this, withClip, changed]() {
+        connect(m_keyColourButton, &QPushButton::clicked, this, [this, withClip, notifyChanged]() {
             if (!m_model || m_clipId.isEmpty())
                 return;
             Clip* clip = m_model->findClip(m_clipId);
@@ -378,19 +378,19 @@ ColorPanelWidget::ColorPanelWidget(QWidget* parent)
                 .arg(picked.red(), 2, 16, QChar('0'))
                 .arg(picked.green(), 2, 16, QChar('0'))
                 .arg(picked.blue(), 2, 16, QChar('0')));
-            changed();
+            notifyChanged();
         });
         form->addRow(QStringLiteral("键色"), m_keyColourButton);
         m_keyToleranceSlider = makeSlider(0, 100, 25);
-        connect(m_keyToleranceSlider, &QSlider::valueChanged, this, [withClip, changed](int v) {
+        connect(m_keyToleranceSlider, &QSlider::valueChanged, this, [withClip, notifyChanged](int v) {
             withClip([v](Clip* c) { c->chromaKey.tolerance = v / 100.0; });
-            changed();
+            notifyChanged();
         });
         form->addRow(QStringLiteral("容差"), m_keyToleranceSlider);
         m_keySoftnessSlider = makeSlider(0, 100, 10);
-        connect(m_keySoftnessSlider, &QSlider::valueChanged, this, [withClip, changed](int v) {
+        connect(m_keySoftnessSlider, &QSlider::valueChanged, this, [withClip, notifyChanged](int v) {
             withClip([v](Clip* c) { c->chromaKey.softness = v / 100.0; });
-            changed();
+            notifyChanged();
         });
         form->addRow(QStringLiteral("柔和"), m_keySoftnessSlider);
         m_maskCombo = new QComboBox();
@@ -399,21 +399,21 @@ ColorPanelWidget::ColorPanelWidget(QWidget* parent)
         m_maskCombo->addItem(QStringLiteral("圆形"), static_cast<int>(MaskShapeKind::Circle));
         m_maskCombo->addItem(QStringLiteral("钢笔路径（多边形）"), static_cast<int>(MaskShapeKind::Polygon));
         connect(m_maskCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-                [withClip, changed, this](int) {
+                [withClip, notifyChanged, this](int) {
                     withClip([this](Clip* c) {
                         const int kind = m_maskCombo->currentData().toInt();
                         c->maskEnabled = kind >= 0;
                         if (kind >= 0)
                             c->mask.kind = static_cast<MaskShapeKind>(kind);
                     });
-                    changed();
+                    notifyChanged();
                 });
         form->addRow(QStringLiteral("形状遮罩"), m_maskCombo);
         m_maskFeatherSpin = makeSpin(0.0, 1.0, 0.05, 2, 0.0);
         connect(m_maskFeatherSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-                [withClip, changed](double v) {
+                [withClip, notifyChanged](double v) {
                     withClip([v](Clip* c) { c->mask.feather = v; });
-                    changed();
+                    notifyChanged();
                 });
         form->addRow(QStringLiteral("羽化"), m_maskFeatherSpin);
         layout->addWidget(group);
@@ -429,7 +429,7 @@ ColorPanelWidget::ColorPanelWidget(QWidget* parent)
             auto* s = makeSpin(0.0, 1.0, 0.05, 2, i < 2 ? 0.0 : 1.0);
             s->setToolTip(QString::fromUtf8(cropLabels[i]));
             connect(s, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-                    [this, changed, i](double v) {
+                    [this, notifyChanged, i](double v) {
                         if (m_refreshing || !m_model)
                             return;
                         CanvasStyle canvas = m_model->canvasStyle();
@@ -437,46 +437,46 @@ ColorPanelWidget::ColorPanelWidget(QWidget* parent)
                             : i == 2 ? &canvas.crop.width : &canvas.crop.height;
                         *target = v;
                         m_model->setCanvasStyle(canvas);
-                        changed();
+                        notifyChanged();
                     });
             m_cropSpins[i] = s;
             cropRow->addWidget(s);
         }
         form->addRow(QStringLiteral("裁切（归一化）"), cropRow);
         m_paddingSlider = makeSlider(0, 25, 0);
-        connect(m_paddingSlider, &QSlider::valueChanged, this, [this, changed](int v) {
+        connect(m_paddingSlider, &QSlider::valueChanged, this, [this, notifyChanged](int v) {
             if (m_refreshing || !m_model) return;
             CanvasStyle canvas = m_model->canvasStyle();
             canvas.padding = v / 100.0;
             m_model->setCanvasStyle(canvas);
-            changed();
+            notifyChanged();
         });
         form->addRow(QStringLiteral("留白"), m_paddingSlider);
         m_cornerSlider = makeSlider(0, 100, 0);
-        connect(m_cornerSlider, &QSlider::valueChanged, this, [this, changed](int v) {
+        connect(m_cornerSlider, &QSlider::valueChanged, this, [this, notifyChanged](int v) {
             if (m_refreshing || !m_model) return;
             CanvasStyle canvas = m_model->canvasStyle();
             canvas.cornerRadius = v;
             m_model->setCanvasStyle(canvas);
-            changed();
+            notifyChanged();
         });
         form->addRow(QStringLiteral("圆角"), m_cornerSlider);
         m_strokeSlider = makeSlider(0, 40, 0);
-        connect(m_strokeSlider, &QSlider::valueChanged, this, [this, changed](int v) {
+        connect(m_strokeSlider, &QSlider::valueChanged, this, [this, notifyChanged](int v) {
             if (m_refreshing || !m_model) return;
             CanvasStyle canvas = m_model->canvasStyle();
             canvas.strokeWidth = v;
             m_model->setCanvasStyle(canvas);
-            changed();
+            notifyChanged();
         });
         form->addRow(QStringLiteral("描边"), m_strokeSlider);
         m_shadowSlider = makeSlider(0, 100, 0);
-        connect(m_shadowSlider, &QSlider::valueChanged, this, [this, changed](int v) {
+        connect(m_shadowSlider, &QSlider::valueChanged, this, [this, notifyChanged](int v) {
             if (m_refreshing || !m_model) return;
             CanvasStyle canvas = m_model->canvasStyle();
             canvas.shadowStrength = v / 100.0;
             m_model->setCanvasStyle(canvas);
-            changed();
+            notifyChanged();
         });
         form->addRow(QStringLiteral("阴影"), m_shadowSlider);
         m_frameCombo = new QComboBox();
@@ -488,21 +488,21 @@ ColorPanelWidget::ColorPanelWidget(QWidget* parent)
         m_frameCombo->addItem(QStringLiteral("手机"), QStringLiteral("phone"));
         m_frameCombo->addItem(QStringLiteral("平板"), QStringLiteral("tablet"));
         connect(m_frameCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-                [this, changed](int) {
+                [this, notifyChanged](int) {
                     if (m_refreshing || !m_model) return;
                     CanvasStyle canvas = m_model->canvasStyle();
                     canvas.frame = frameStyleFromName(m_frameCombo->currentData().toString());
                     m_model->setCanvasStyle(canvas);
-                    changed();
+                    notifyChanged();
                 });
         form->addRow(QStringLiteral("样机外框"), m_frameCombo);
         m_frameLandscapeCheck = new QCheckBox(QStringLiteral("横屏"));
-        connect(m_frameLandscapeCheck, &QCheckBox::toggled, this, [this, changed](bool on) {
+        connect(m_frameLandscapeCheck, &QCheckBox::toggled, this, [this, notifyChanged](bool on) {
             if (m_refreshing || !m_model) return;
             CanvasStyle canvas = m_model->canvasStyle();
             canvas.frameLandscape = on;
             m_model->setCanvasStyle(canvas);
-            changed();
+            notifyChanged();
         });
         form->addRow(m_frameLandscapeCheck);
         layout->addWidget(group);
@@ -514,39 +514,39 @@ ColorPanelWidget::ColorPanelWidget(QWidget* parent)
         auto* form = new QFormLayout(group);
         m_autoZoomCheck = new QCheckBox(QStringLiteral("自动缩放（按点击分组）"));
         m_autoZoomCheck->setChecked(true);
-        connect(m_autoZoomCheck, &QCheckBox::toggled, this, [this, changed](bool on) {
+        connect(m_autoZoomCheck, &QCheckBox::toggled, this, [this, notifyChanged](bool on) {
             if (m_refreshing || !m_model) return;
             m_model->setAutoZoomEnabled(on);
-            changed();
+            notifyChanged();
         });
         form->addRow(m_autoZoomCheck);
         m_autoZoomLabel = new QLabel(QStringLiteral("自动缩放片段：0"));
         form->addRow(m_autoZoomLabel);
         m_springStiffnessSpin = makeSpin(1.0, 400.0, 10.0, 0, 120.0);
         connect(m_springStiffnessSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-                [this, changed](double v) {
+                [this, notifyChanged](double v) {
                     if (m_refreshing || !m_model) return;
                     SpringParams s = m_model->screenSpring();
                     s.stiffness = v;
                     m_model->setScreenSpring(s);
-                    changed();
+                    notifyChanged();
                 });
         form->addRow(QStringLiteral("弹簧刚度"), m_springStiffnessSpin);
         m_springDampingSpin = makeSpin(0.0, 60.0, 1.0, 1, 14.0);
         connect(m_springDampingSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-                [this, changed](double v) {
+                [this, notifyChanged](double v) {
                     if (m_refreshing || !m_model) return;
                     SpringParams s = m_model->screenSpring();
                     s.damping = v;
                     m_model->setScreenSpring(s);
-                    changed();
+                    notifyChanged();
                 });
         form->addRow(QStringLiteral("弹簧阻尼"), m_springDampingSpin);
         // 3D sliders edit the first screen-motion segment (created on
         // demand, spanning the timeline, from identity to the pose).
-        auto make3DSlider = [this, changed](int min, int max, int value) {
+        auto make3DSlider = [this, notifyChanged](int min, int max, int value) {
             auto* s = makeSlider(min, max, value);
-            connect(s, &QSlider::valueChanged, this, [this, changed](int) { applyProjectSettings(); });
+            connect(s, &QSlider::valueChanged, this, [this, notifyChanged](int) { applyProjectSettings(); });
             return s;
         };
         m_tiltXSlider = make3DSlider(-60, 60, 0);
@@ -560,21 +560,21 @@ ColorPanelWidget::ColorPanelWidget(QWidget* parent)
         m_size3DSlider = make3DSlider(50, 200, 100);
         form->addRow(QStringLiteral("大小（%）"), m_size3DSlider);
         m_zoomFocusCheck = new QCheckBox(QStringLiteral("缩放焦点虚化"));
-        connect(m_zoomFocusCheck, &QCheckBox::toggled, this, [this, changed](bool on) {
+        connect(m_zoomFocusCheck, &QCheckBox::toggled, this, [this, notifyChanged](bool on) {
             if (m_refreshing || !m_model) return;
             FocusEffect f = m_model->zoomFocus();
             f.enabled = on;
             m_model->setZoomFocus(f);
-            changed();
+            notifyChanged();
         });
         form->addRow(m_zoomFocusCheck);
         m_3dFocusCheck = new QCheckBox(QStringLiteral("3D 焦点虚化（与缩放焦点重叠时只用它）"));
-        connect(m_3dFocusCheck, &QCheckBox::toggled, this, [this, changed](bool on) {
+        connect(m_3dFocusCheck, &QCheckBox::toggled, this, [this, notifyChanged](bool on) {
             if (m_refreshing || !m_model) return;
             FocusEffect f = m_model->screen3DFocus();
             f.enabled = on;
             m_model->setScreen3DFocus(f);
-            changed();
+            notifyChanged();
         });
         form->addRow(m_3dFocusCheck);
         layout->addWidget(group);
