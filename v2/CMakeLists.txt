@@ -136,6 +136,8 @@ add_library(catcut_media STATIC
   src/media/AudioDecoder.cpp
   src/media/Loudness.h
   src/media/Loudness.cpp
+  src/media/AudioDenoise.h
+  src/media/AudioDenoise.cpp
   src/media/ExportPipeline.h
   src/media/ExportPipeline.cpp
   src/media/VocalSeparation.h
@@ -316,3 +318,22 @@ target_include_directories(verify-s5 PRIVATE
 )
 
 target_link_libraries(verify-s5 PRIVATE catcut_media catcut_core Qt6::Widgets)
+
+# ---------------------------------------------------------------- self-test
+# verify-s6: S6 denoise (afftdn unit + export twice, quantified noise
+# reduction) + vocal separation by centre-channel elimination (Goertzel
+# band check: centred voice cancelled, instruments kept; mono/missing
+# refusals) + export dialog denoise checkbox default off.
+# Console program (QApplication, offscreen platform in CI).
+# Exit 0 = all checks passed.
+add_executable(verify-s6
+  tests/verify-s6/main.cpp
+  src/ui/ExportDialog.h
+  src/ui/ExportDialog.cpp
+)
+
+target_include_directories(verify-s6 PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/src"
+)
+
+target_link_libraries(verify-s6 PRIVATE catcut_media catcut_core Qt6::Widgets)
