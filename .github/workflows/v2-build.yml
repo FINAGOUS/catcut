@@ -1,7 +1,11 @@
-# CatCut v2 — S0 skeleton build (manual trigger only).
-# Builds the Qt 6 skeleton, runs the headless smoke test, then packs an
-# Inno Setup exe installer as a private workflow artifact.
-# No Release is created, no FFmpeg is involved (S1).
+# CatCut v2 — S1 media pipeline build (manual trigger only).
+# Builds the Qt 6 app with the FFmpeg LGPL media pipeline, runs the
+# headless smoke test + the verify-s1 self-test (probe / decode /
+# proxy / offscreen first-frame render), then packs an Inno Setup exe
+# installer as a private workflow artifact.
+# No Release is created. No GPL encoder (libx264/libx265) is involved:
+# the FFmpeg tree is checked for them at download time and again at
+# CMake configure time.
 
 name: Build CatCut v2
 
@@ -32,18 +36,49 @@ jobs:
           host: windows
           target: desktop
           arch: win64_msvc2022_64
-          # NOTE: no `modules:` here. `qtbase` is the base package itself,
-          # not an aqt module — passing `modules: qtbase` makes aqt fail
-          # with "The packages ['qtbase'] were not found". Qt Widgets
-          # ships in the base package, which is all S0 needs.
+          modules: qtshadertools
+          # NOTE: no `qtbase` in `modules:`. `qtbase` is the base package
+          # itself, not an aqt module — passing `modules: qtbase` makes
+          # aqt fail with "The packages ['qtbase'] were not found".
+          # qtshadertools is needed for qt_add_shaders (qsb) in S1.
+
+      - name: Download FFmpeg (LGPL shared)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $zip = Join-Path $PWD 'ffmpeg-lgpl-shared.zip'
+          Invoke-WebRequest -Uri 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl-shared.zip' -OutFile $zip
+          $ffDir = Join-Path $PWD 'ffmpeg'
+          Expand-Archive -LiteralPath $zip -DestinationPath $ffDir -Force
+          $root = (Get-ChildItem -Path $ffDir -Directory | Select-Object -First 1).FullName
+          if (-not $root) { throw 'FFmpeg archive layout unexpected: no top-level directory.' }
+          foreach ($p in @('include/libavcodec/avcodec.h', 'include/libavformat/avformat.h', 'include/libavfilter/avfilter.h', 'include/libavutil/avutil.h', 'include/libswscale/swscale.h', 'include/libswresample/swresample.h', 'lib/avcodec.lib', 'lib/avformat.lib', 'lib/avfilter.lib', 'lib/avutil.lib', 'lib/swscale.lib', 'lib/swresample.lib', 'bin/ffmpeg.exe')) {
+            if (-not (Test-Path (Join-Path $root $p))) { throw "FFmpeg layout check failed: missing $p" }
+          }
+          $dlls = Get-ChildItem -Path (Join-Path $root 'bin') -Filter '*.dll'
+          if ($dlls.Count -eq 0) { throw 'FFmpeg layout check failed: no DLLs in bin/.' }
+          $dlls.Name | Out-Host
+          # GPL guard: an LGPL build must not contain x264/x265 binaries.
+          $gpl = Get-ChildItem -Path $root -Recurse -Filter '*x264*' -ErrorAction SilentlyContinue
+          $gpl += Get-ChildItem -Path $root -Recurse -Filter '*x265*' -ErrorAction SilentlyContinue
+          if ($gpl) { throw "GPL encoder binaries found in FFmpeg tree: $($gpl.FullName -join ', ')" }
+          "FFMPEG_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "FFmpeg root: $root" | Out-Host
 
       - name: Configure and build (Release)
         run: |
           $ErrorActionPreference = 'Stop'
-          cmake -S v2 -B v2/build -G "Visual Studio 18 2026" -A x64 -DCMAKE_BUILD_TYPE=Release
+          cmake -S v2 -B v2/build -G "Visual Studio 18 2026" -A x64 -DCMAKE_BUILD_TYPE=Release "-DFFMPEG_ROOT=$env:FFMPEG_ROOT"
           if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed.' }
           cmake --build v2/build --config Release
           if ($LASTEXITCODE -ne 0) { throw 'CMake build failed.' }
+
+      - name: Copy FFmpeg DLLs next to the exe (runtime)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $outDir = Join-Path $PWD 'v2/build/Release'
+          Copy-Item (Join-Path $env:FFMPEG_ROOT 'bin/*.dll') -Destination $outDir
+          Get-ChildItem -Path $outDir -Filter 'av*.dll' | Select-Object Name | Out-Host
 
       - name: Smoke test
         run: |
@@ -55,6 +90,44 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Smoke test failed.' }
           if (-not ($smokeOut -match 'CatCut v2 smoke OK')) { throw 'Smoke test output missing.' }
 
+      - name: Generate probe media
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ff = Join-Path $env:FFMPEG_ROOT 'bin/ffmpeg.exe'
+          $probe = Join-Path $PWD 'probe-media'
+          New-Item -ItemType Directory -Path $probe -Force | Out-Null
+          $encoders = & $ff -hide_banner -encoders
+          $hasOpenh264 = $encoders -match 'libopenh264'
+          "openh264 available: $([bool]$hasOpenh264)" | Out-Host
+          # 8K30 VP9, 5 s. Realtime deadline + cpu-used 5 keeps generation
+          # fast enough for the 30-minute job timeout.
+          & $ff -y -f lavfi -i testsrc2=size=7680x4320:rate=30:duration=5 -an -c:v libvpx-vp9 -deadline realtime -cpu-used 5 -row-mt 1 -b:v 8M -pix_fmt yuv420p (Join-Path $probe 'test_8k.mp4')
+          if ($LASTEXITCODE -ne 0) { throw '8K probe generation failed.' }
+          # 4K30 H.264, 5 s (libopenh264 when present, else VP9).
+          if ($hasOpenh264) {
+            & $ff -y -f lavfi -i testsrc2=size=3840x2160:rate=30:duration=5 -an -c:v libopenh264 -b:v 8M -pix_fmt yuv420p (Join-Path $probe 'test_4k.mp4')
+          } else {
+            & $ff -y -f lavfi -i testsrc2=size=3840x2160:rate=30:duration=5 -an -c:v libvpx-vp9 -deadline realtime -cpu-used 5 -row-mt 1 -b:v 8M -pix_fmt yuv420p (Join-Path $probe 'test_4k.mp4')
+          }
+          if ($LASTEXITCODE -ne 0) { throw '4K probe generation failed.' }
+          # Corrupt probe: first half of the 4K file (truncated mp4).
+          $src = Join-Path $probe 'test_4k.mp4'
+          $bytes = [System.IO.File]::ReadAllBytes($src)
+          $half = [int]($bytes.Length / 2)
+          [System.IO.File]::WriteAllBytes((Join-Path $probe 'test_corrupt.mp4'), $bytes[0..($half - 1)])
+          Get-ChildItem $probe | Select-Object Name, Length | Out-Host
+
+      - name: Run verify-s1
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $log = Join-Path $PWD 'v2-s1-verify.txt'
+          $exe = Join-Path $PWD 'v2/build/Release/verify-s1.exe'
+          & $exe (Join-Path $PWD 'probe-media') (Join-Path $PWD 'verify-s1-out') > $log 2>&1
+          $code = $LASTEXITCODE
+          Get-Content -LiteralPath $log | Out-Host
+          if ($code -ne 0) { throw "verify-s1 failed with exit code $code." }
+
       - name: Stage package
         run: |
           $ErrorActionPreference = 'Stop'
@@ -62,6 +135,9 @@ jobs:
           New-Item -ItemType Directory -Path $pkg | Out-Null
           Copy-Item -LiteralPath (Join-Path $PWD 'v2/build/Release/CatCut-v2.exe') -Destination $pkg
           Copy-Item -LiteralPath (Join-Path $PWD 'v2/version.txt') -Destination $pkg
+          # FFmpeg runtime DLLs (LGPL shared build). The installer copies
+          # the whole package dir, so these ship with the app.
+          Copy-Item (Join-Path $env:FFMPEG_ROOT 'bin/*.dll') -Destination $pkg
           $windeployqt = (Get-Command windeployqt -ErrorAction SilentlyContinue).Source
           if (-not $windeployqt) { $windeployqt = Join-Path $env:Qt6_DIR 'bin/windeployqt.exe' }
           & $windeployqt (Join-Path $pkg 'CatCut-v2.exe')
@@ -95,4 +171,13 @@ jobs:
         with:
           name: catcut-v2-installer
           path: installer-output/CatCut-v2.0.0-alpha.1-setup-x64.exe
+          retention-days: 7
+
+      - name: Upload verify-s1 log
+        uses: actions/upload-artifact@v4
+        with:
+          name: catcut-v2-s1-verify
+          path: |
+            v2-s1-verify.txt
+            verify-s1-out/first-frame.png
           retention-days: 7
