@@ -76,6 +76,7 @@ bool ProjectModel::loadFromFile(const QString& path, QString& error)
     }
     m_canvasWidth = width;
     m_canvasHeight = height;
+    m_timelineJson = root.value(QStringLiteral("timeline")).toObject();
     return true;
 }
 
@@ -90,6 +91,8 @@ bool ProjectModel::saveToFile(const QString& path, QString& error) const
     root.insert(QStringLiteral("version"), kCurrentVersion);
     root.insert(QStringLiteral("title"), m_title);
     root.insert(QStringLiteral("canvas"), canvas);
+    if (!m_timelineJson.isEmpty())
+        root.insert(QStringLiteral("timeline"), m_timelineJson);
 
     const QJsonDocument doc(root);
 
